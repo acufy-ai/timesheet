@@ -11,7 +11,8 @@ from app.schemas import (
 )
 from app.crud.time_entry import (
     get_time_entry_by_id, create_time_entry, update_time_entry, delete_time_entry,
-    get_weekly_submission_status, list_user_entries, list_tenant_entries, submit_time_entries
+    get_weekly_submission_status, list_user_entries, list_tenant_entries, submit_time_entries,
+    recall_time_entries,
 )
 from app.crud.project import user_has_project_access, get_project_by_id
 from app.crud.task import get_task_by_id
@@ -24,6 +25,23 @@ from typing import Optional
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/timesheets", tags=["timesheets"])
+
+
+def _ensure_not_locked(user: User) -> None:
+    """F-025: gate write paths on users.timesheet_locked.
+
+    Raises 403 with the locked_reason in the detail when the user has
+    been auto-locked (by the reminder worker) or manually locked by an
+    admin. Approvals are intentionally NOT gated here - a manager can
+    still process entries that were submitted before the lock.
+    """
+    if getattr(user, "timesheet_locked", False):
+        reason = (getattr(user, "timesheet_locked_reason", None) or "").strip()
+        detail = "Your timesheet has been locked."
+        if reason:
+            detail = f"{detail} {reason}"
+        detail += " Contact your administrator to unlock."
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 # ── Natural Language Parsing ────────────────────────────────────────
@@ -268,6 +286,7 @@ async def create_timesheet_entry(
     Create a new time entry for the current user.
     Employees can only create entries for themselves.
     """
+    _ensure_not_locked(current_user)
     # Employees, managers, and system admins can create their own time entries
     old_decision = current_user.role in (
         UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN,
@@ -341,6 +360,7 @@ async def update_timesheet_entry(
     Update a time entry (only DRAFT entries can be updated).
     Users can only edit their own DRAFT entries.
     """
+    _ensure_not_locked(current_user)
     entry = await get_time_entry_by_id(db, entry_id, tenant_id=current_user.tenant_id)
     if not entry:
         raise HTTPException(
@@ -440,11 +460,42 @@ async def submit_timesheets(
     Submit time entries for approval.
     Employees submit their own entries; managers can submit for their team.
     """
+    _ensure_not_locked(current_user)
     try:
         submitted_entries = await submit_time_entries(db, current_user.id, submit_request.entry_ids)
         return submitted_entries
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/recall", response_model=list[TimeEntryResponse])
+async def recall_timesheets(
+    submit_request: TimeEntrySubmitRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> list:
+    """
+    Recall a set of SUBMITTED time entries back to DRAFT so the user
+    can edit and resubmit. Refuses with 409 if any of the entries have
+    already been approved or rejected (manager-side action wins the
+    race). Audit-logged via TimeEntryEditHistory.
+
+    Reuses TimeEntrySubmitRequest body shape since the contract is
+    symmetric to /submit.
+    """
+    _ensure_not_locked(current_user)
+    try:
+        recalled = await recall_time_entries(db, current_user.id, submit_request.entry_ids)
+        return recalled
+    except ValueError as e:
+        msg = str(e)
+        # The actioned-race case is a 409 so the frontend can show a
+        # distinct "your manager already acted" toast instead of a
+        # generic 400. Everything else is a plain client error.
+        if "already been approved or rejected" in msg:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
 

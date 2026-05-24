@@ -255,22 +255,22 @@ async def _check_external_reminders(
     uses ``now.tzinfo`` directly.
     """
     del tenant_timezone  # already encoded in ``now.tzinfo``
-    day_of_month_str = tenant_settings.get("reminder_external_deadline_day_of_month", "-2")
+    day_of_month_str = tenant_settings.get("reminder_external_deadline_day_of_month", "28")
     deadline_time_str = tenant_settings.get("reminder_external_deadline_time", "17:00")
 
     try:
-        day_offset = int(day_of_month_str)
+        day_of_month = int(day_of_month_str)
         dh, dm = map(int, deadline_time_str.split(":"))
     except (ValueError, AttributeError):
         return
 
+    # Day-of-month is 1–31. If the configured day doesn't exist in the
+    # current month (e.g. 31 in February) the deadline falls on the last
+    # day of the month so contractors with a "near end of month" deadline
+    # never get a silent skipped month.
     import calendar
     last_day = calendar.monthrange(now.year, now.month)[1]
-    if day_offset < 0:
-        target_day = last_day + day_offset + 1
-    else:
-        target_day = day_offset
-    target_day = max(1, min(target_day, last_day))
+    target_day = max(1, min(day_of_month, last_day))
 
     # Build deadline in the tenant's timezone so the wall-clock match fires
     # at the correct moment for non-UTC tenants.
@@ -332,6 +332,15 @@ async def _check_external_reminders(
 
 
 async def _load_tenant_settings(tenant_id: int, session) -> dict:
+    """Load tenant settings as a flat key→string dict.
+
+    Settings are stored JSON-encoded by ``app.core.tenant_settings.set_setting``
+    (so e.g. a string value like "08:00" round-trips as the 6-character literal
+    ``"08:00"``, quotes included). Callers here read raw strings, so we
+    json.decode each value and stringify the result. Non-JSON legacy rows
+    pass through unchanged.
+    """
+    import json
     from app.models.tenant_settings import TenantSettings
     result = await session.execute(
         select(TenantSettings).where(
@@ -339,4 +348,20 @@ async def _load_tenant_settings(tenant_id: int, session) -> dict:
         )
     )
     rows = result.scalars().all()
-    return {row.key: row.value for row in rows}
+    out: dict[str, str] = {}
+    for row in rows:
+        raw = row.value
+        if raw is None:
+            continue
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            out[row.key] = raw
+            continue
+        if isinstance(decoded, bool):
+            out[row.key] = "true" if decoded else "false"
+        elif decoded is None:
+            continue
+        else:
+            out[row.key] = str(decoded)
+    return out

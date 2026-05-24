@@ -671,9 +671,21 @@ async def test_connection(mailbox: Mailbox, session: AsyncSession) -> dict:
         }
     except Exception as exc:
         latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        # F-028: surface enough detail that an operator can triage from
+        # the response alone. str(exc) was sometimes empty (e.g., for
+        # bare socket timeouts), leaving the UI with no signal.
+        exc_msg = str(exc).strip()
+        if not exc_msg:
+            exc_msg = exc.__class__.__name__ or "Unknown error"
+        else:
+            exc_msg = f"{exc.__class__.__name__}: {exc_msg}"
+        logger.exception(
+            "Mailbox %s connection test failed (latency=%dms): %s",
+            getattr(mailbox, "id", "?"), latency_ms, exc_msg,
+        )
         return {
             "success": False,
-            "error": str(exc),
+            "error": exc_msg,
             "needs_reauth": False,
             "latency_ms": latency_ms,
             "message_count": 0,

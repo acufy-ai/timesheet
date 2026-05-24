@@ -6,11 +6,11 @@ Tenant ID is read from X-Tenant-ID header, not the URL or body.
 
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.core.deps import get_db, get_service_token_tenant
+from app.core.deps import get_db, get_service_token_tenant, get_service_token_tenant_db
 from app.models.client import Client
 from app.models.sync_log import SyncLog, SyncDirection, SyncEntityType, SyncStatus
 from app.schemas.sync import (
@@ -33,10 +33,9 @@ logger = logging.getLogger(__name__)
              summary="Upsert an employee from the ingestion platform")
 async def sync_employee_endpoint(
     body: SyncEmployeeRequest,
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    ctx=Depends(get_service_token_tenant_db),
 ):
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
     result = await sync_employee(
         session,
         tenant_id=tenant_id,
@@ -55,10 +54,9 @@ async def sync_employee_endpoint(
              summary="Upsert a client from the ingestion platform")
 async def sync_client_endpoint(
     body: SyncClientRequest,
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    ctx=Depends(get_service_token_tenant_db),
 ):
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
     result = await sync_client(
         session,
         tenant_id=tenant_id,
@@ -74,10 +72,9 @@ async def sync_client_endpoint(
              summary="Upsert a project from the ingestion platform")
 async def sync_project_endpoint(
     body: SyncProjectRequest,
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    ctx=Depends(get_service_token_tenant_db),
 ):
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
 
     # Resolve local client_id from ingestion cross-reference
     result = await session.execute(
@@ -115,10 +112,10 @@ async def sync_project_endpoint(
              summary="Push an approved timesheet as APPROVED time entries")
 async def push_timesheet_endpoint(
     body: PushTimesheetRequest,
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    response: Response,
+    ctx=Depends(get_service_token_tenant_db),
 ):
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
     result = await push_approved_timesheet(
         session,
         tenant_id=tenant_id,
@@ -131,6 +128,25 @@ async def push_timesheet_endpoint(
         line_items=[item.model_dump() for item in body.line_items],
         payload=body.model_dump(),
     )
+
+    # F-029: map result-status to HTTP status so integration clients can
+    # branch on response.ok rather than parsing the body. The body still
+    # carries the full PushTimesheetResponse so per-line-item detail is
+    # available on every outcome.
+    status_str = (result or {}).get("status", "failed")
+    error_msg = (result or {}).get("error") or ""
+    if status_str in ("success", "skipped"):
+        pass  # default 200
+    elif status_str == "partial":
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    else:
+        # "failed": prefer a precondition code when the failure was a
+        # known operator-correctable state (system user missing, employee
+        # not synced yet, etc.), otherwise 500.
+        if "not found" in error_msg.lower() or "not synced" in error_msg.lower():
+            response.status_code = status.HTTP_412_PRECONDITION_FAILED
+        else:
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
     return PushTimesheetResponse(**result)
 
 
@@ -138,12 +154,11 @@ async def push_timesheet_endpoint(
             response_model=list[SyncLogRead],
             summary="View sync log for this tenant (via service token)")
 async def list_sync_logs(
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    ctx=Depends(get_service_token_tenant_db),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
     result = await session.execute(
         select(SyncLog)
         .where(SyncLog.tenant_id == tenant_id)
@@ -166,8 +181,7 @@ async def sync_health(
              summary="Receive change notifications from the ingestion platform")
 async def receive_webhook(
     request: Request,
-    auth: tuple = Depends(get_service_token_tenant),
-    session: AsyncSession = Depends(get_db),
+    ctx=Depends(get_service_token_tenant_db),
 ):
     """
     Receives change notifications from the ingestion platform.
@@ -176,7 +190,7 @@ async def receive_webhook(
 
     Expected payload: WebhookEntityChanged schema
     """
-    tenant_id, _ = auth
+    tenant_id, _, session = ctx
     try:
         body = await request.json()
     except Exception:

@@ -19,8 +19,10 @@ from app.core.config import settings
 # Alembic Config object
 config = context.config
 
-# Override the placeholder URL in alembic.ini with the real one from settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Override the placeholder URL in alembic.ini with the real one from settings.
+# configparser interprets `%` as variable interpolation; escape it to `%%` so
+# percent-encoded password chars (e.g. "%21" for "!") survive the round-trip.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

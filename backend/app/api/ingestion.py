@@ -105,6 +105,8 @@ def _timesheet_to_summary(timesheet: IngestionTimesheet, rejected_sender_set: se
         "received_at": email.received_at if email else None,
         "submitted_at": timesheet.submitted_at,
         "reviewed_at": timesheet.reviewed_at,
+        "reviewer_id": timesheet.reviewer_id,
+        "reviewer_name": timesheet.reviewer.full_name if getattr(timesheet, "reviewer", None) else None,
         "created_at": timesheet.created_at,
         "is_likely_resubmission": is_likely_resubmission,
     }
@@ -466,7 +468,21 @@ async def _resolve_project_for_line_item(
         if project:
             return project.id
 
-    # Non-blocking path: reviewer can approve even when project mapping is incomplete.
+    # Fall back to a client-default project so approval never silently
+    # creates zero time entries. ``timesheet.client_id`` is the
+    # reviewer's chosen client on the timesheet; the helper auto-creates
+    # a "<Client> Default" project the first time it's needed.
+    ts = item.ingestion_timesheet
+    if ts is not None and ts.client_id is not None:
+        from app.services.ingestion_entry_expansion import resolve_default_project_for_client
+        project = await resolve_default_project_for_client(
+            session,
+            tenant_id=current_user.tenant_id,
+            client_id=ts.client_id,
+            actor_user_id=current_user.id,
+        )
+        return project.id
+
     return None
 
 
@@ -514,6 +530,15 @@ async def fetch_email_status(
 @router.get("/skipped-emails", response_model=SkippedEmailOverview)
 async def list_skipped_emails(
     limit: int = Query(10, ge=1, le=50),
+    include_classifier_skips: bool = Query(
+        False,
+        description=(
+            "When true, include emails the LLM classifier rejected as "
+            "non-timesheets or low-confidence. Default false to keep the "
+            "Inbox toolbar's actionable-only count tight; the dedicated "
+            "Skipped drawer passes true so the reviewer can audit drops."
+        ),
+    ),
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
@@ -536,8 +561,13 @@ async def list_skipped_emails(
         )
         attachments = list(attachment_result.scalars().all())
         llm_classification = email.llm_classification or {}
+        # Reviewer-confirmed "this really wasn't a timesheet" rows are
+        # hidden from the list regardless of include_classifier_skips —
+        # once a human has confirmed, we don't keep showing them.
+        if llm_classification.get("reviewer_confirmed_skip"):
+            continue
         skip_reason, skip_detail = _infer_skipped_email_reason(email, attachments)
-        if not _is_actionable_skipped_email(email, attachments, skip_reason):
+        if not include_classifier_skips and not _is_actionable_skipped_email(email, attachments, skip_reason):
             continue
         summary_rows.append(
             {
@@ -550,6 +580,7 @@ async def list_skipped_emails(
                 "has_attachments": email.has_attachments,
                 "timesheet_attachment_count": sum(1 for attachment in attachments if attachment.is_timesheet),
                 "classification_intent": llm_classification.get("intent"),
+                "classification_confidence": llm_classification.get("confidence"),
                 "skip_reason": skip_reason,
                 "skip_detail": skip_detail,
                 "reprocessable_attachments": [
@@ -623,6 +654,108 @@ async def cleanup_skipped_email_noise(
         "deleted_files": deleted_files,
         "file_delete_errors": file_delete_errors,
     }
+
+
+@router.post("/skipped-emails/{email_id}/promote", status_code=status.HTTP_200_OK)
+async def promote_skipped_email(
+    email_id: int,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Reviewer override: take a classifier-skipped email and stage it as
+    a pending IngestionTimesheet so it appears in the regular review
+    queue. Used when the LLM mis-classified a real timesheet as noise.
+
+    Creates a minimal IngestionTimesheet row with status=pending so the
+    reviewer can fill in employee / client / hours. If the email has
+    candidate attachments, the first one is linked to the new row so the
+    reviewer can preview it; further extraction can be re-triggered via
+    the existing reprocess endpoint after this promotion.
+    """
+    email = (
+        await session.execute(
+            select(IngestedEmail)
+            .where(
+                (IngestedEmail.id == email_id)
+                & (IngestedEmail.tenant_id == current_user.tenant_id)
+            )
+            .options(selectinload(IngestedEmail.attachments))
+        )
+    ).scalar_one_or_none()
+    if email is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found")
+
+    existing = (
+        await session.execute(
+            select(IngestionTimesheet).where(IngestionTimesheet.email_id == email.id)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Already in the queue (perhaps a prior promote, or the row was
+        # created the normal way after all). Just bounce back the id.
+        return {"timesheet_id": existing.id, "already_promoted": True}
+
+    candidate_attachment = next(
+        (a for a in (email.attachments or []) if a.is_timesheet),
+        None,
+    )
+
+    now = datetime.now(timezone.utc)
+    timesheet = IngestionTimesheet(
+        tenant_id=current_user.tenant_id,
+        email_id=email.id,
+        attachment_id=candidate_attachment.id if candidate_attachment else None,
+        status=IngestionTimesheetStatus.pending,
+        extracted_data={"promoted_from_skip": True},
+        submitted_at=email.received_at,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(timesheet)
+    await session.flush()
+
+    # Clear the skip flag on the email so it stops appearing in the
+    # skipped list — the row now belongs to the regular queue.
+    payload = dict(email.llm_classification or {})
+    payload.pop("pipeline_skip_reason", None)
+    payload.pop("pipeline_skip_detail", None)
+    payload["promoted_by_reviewer"] = True
+    email.llm_classification = payload
+
+    await session.commit()
+    return {"timesheet_id": timesheet.id, "already_promoted": False}
+
+
+@router.post("/skipped-emails/{email_id}/confirm-skip", status_code=status.HTTP_200_OK)
+async def confirm_skipped_email(
+    email_id: int,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Reviewer override: mark a skipped email as "yes, this really
+    isn't a timesheet." The row stays in the DB for audit but is hidden
+    from the default skipped list (we won't keep showing rows a human
+    has already vetted)."""
+    email = (
+        await session.execute(
+            select(IngestedEmail).where(
+                (IngestedEmail.id == email_id)
+                & (IngestedEmail.tenant_id == current_user.tenant_id)
+            )
+        )
+    ).scalar_one_or_none()
+    if email is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found")
+
+    payload = dict(email.llm_classification or {})
+    payload["reviewer_confirmed_skip"] = True
+    payload["reviewer_confirmed_skip_by"] = current_user.id
+    payload["reviewer_confirmed_skip_at"] = datetime.now(timezone.utc).isoformat()
+    email.llm_classification = payload
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/fetch-emails/reprocess-skipped", response_model=ReprocessSkippedResponse)
@@ -1329,6 +1462,36 @@ async def update_timesheet_data(
         previous_value=previous,
         new_value=serialized_updates,
     )
+
+    # Mirror the client→user assignment whenever this timesheet now
+    # carries both a client_id and an employee_id, regardless of which
+    # field this particular PATCH changed. The User Management surface
+    # treats clients as a multi-value list (consultants often serve N
+    # clients), so we never remove existing assignments — add_assignment
+    # is idempotent and swallows duplicates.
+    #
+    # The earlier version fired only when ``client_id`` was in the
+    # current update, which missed the common ordering "assign client
+    # first, then assign employee" — the second PATCH carried only
+    # employee_id and the user-client mapping never got created.
+    touched_client_or_employee = "client_id" in updates or "employee_id" in updates
+    if (
+        touched_client_or_employee
+        and timesheet.client_id is not None
+        and timesheet.employee_id is not None
+    ):
+        from app.crud.user_client_assignment import add_assignment as _add_user_client_assignment
+        try:
+            await _add_user_client_assignment(
+                session,
+                user_id=timesheet.employee_id,
+                client_id=timesheet.client_id,
+                tenant_id=current_user.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - cascade is best-effort
+            # Never fail the primary update because of the side-effect.
+            pass
+
     await session.commit()
     return {"status": "updated"}
 
@@ -1589,22 +1752,102 @@ async def approve_timesheet(
         created_entry_ids.append(entry.id)
         project_ids_used.add(project_id)
 
+    # Total-only timesheet path: no line items extracted but the LLM
+    # captured a period + total. Common when a contractor sends a
+    # monthly invoice that summarises hours without a daily breakdown.
+    # Synthesize per-day TimeEntry rows by spreading the total evenly
+    # across the working days of the period so month-boundary
+    # filters (and the calendar) get the right scoping for free.
+    synthesized_entries: list[dict] = []
+    if (
+        len(created_entry_ids) == 0
+        and len(timesheet.line_items) == 0
+        and timesheet.total_hours is not None
+        and timesheet.period_start is not None
+        and timesheet.period_end is not None
+        and timesheet.client_id is not None
+    ):
+        from app.services.ingestion_entry_expansion import (
+            distribute_hours_evenly,
+            resolve_default_project_for_client,
+        )
+        synthesized = distribute_hours_evenly(
+            total_hours=timesheet.total_hours,
+            period_start=timesheet.period_start,
+            period_end=timesheet.period_end,
+        )
+        if synthesized:
+            # Avoid duplicate dates if a prior approval (or manual
+            # entry) already covers part of this synthesized range.
+            from sqlalchemy import func as sa_func
+            existing_rows = await session.execute(
+                select(TimeEntry.entry_date).where(
+                    (TimeEntry.user_id == timesheet.employee_id)
+                    & (TimeEntry.tenant_id == current_user.tenant_id)
+                    & (TimeEntry.entry_date.in_([d.work_date for d in synthesized]))
+                )
+            )
+            existing_dates = {row[0] for row in existing_rows.all()}
+
+            default_project = await resolve_default_project_for_client(
+                session,
+                tenant_id=current_user.tenant_id,
+                client_id=timesheet.client_id,
+                actor_user_id=current_user.id,
+            )
+            for syn in synthesized:
+                if syn.work_date in existing_dates:
+                    continue
+                entry = TimeEntry(
+                    tenant_id=current_user.tenant_id,
+                    user_id=timesheet.employee_id,
+                    project_id=default_project.id,
+                    task_id=None,
+                    entry_date=syn.work_date,
+                    hours=syn.hours,
+                    description="Synthesized from total-only timesheet",
+                    is_billable=True,
+                    status=TimeEntryStatus.APPROVED,
+                    submitted_at=now,
+                    approved_by=current_user.id,
+                    approved_at=now,
+                    created_by=current_user.id,
+                    updated_by=current_user.id,
+                    ingestion_timesheet_id=str(timesheet.id),
+                    ingestion_line_item_id=None,
+                    ingestion_approved_by_name=current_user.full_name,
+                    ingestion_source_tenant=str(current_user.tenant_id),
+                    supervisor_name=timesheet.extracted_supervisor_name,
+                )
+                session.add(entry)
+                await session.flush()
+                created_entry_ids.append(entry.id)
+                project_ids_used.add(default_project.id)
+                synthesized_entries.append({
+                    "entry_id": entry.id,
+                    "work_date": syn.work_date.isoformat(),
+                    "hours": str(syn.hours),
+                })
+
     timesheet.status = IngestionTimesheetStatus.approved
     timesheet.reviewer_id = current_user.id
     timesheet.reviewed_at = now
     timesheet.updated_at = now
     timesheet.time_entries_created = len(created_entry_ids) > 0
+    audit_payload: dict = {
+        "time_entries_created": len(created_entry_ids),
+        "project_ids": list(project_ids_used),
+        "skipped_line_items": skipped_line_items,
+        "reviewer": current_user.full_name,
+    }
+    if synthesized_entries:
+        audit_payload["synthesized_entries"] = synthesized_entries
     await write_audit_log(
         session,
         timesheet_id,
         current_user.id,
         "approved",
-        new_value={
-            "time_entries_created": len(created_entry_ids),
-            "project_ids": list(project_ids_used),
-            "skipped_line_items": skipped_line_items,
-            "reviewer": current_user.full_name,
-        },
+        new_value=audit_payload,
         comment=body.comment,
     )
     await session.commit()
@@ -1686,7 +1929,7 @@ async def reject_timesheet(
                     timesheet.employee.full_name
                     if timesheet.employee else "Contractor"
                 )
-                subject = f"Timesheet Rejected — {period_str or email_record.subject or 'Your recent submission'}"
+                subject = f"Timesheet Rejected: {period_str or email_record.subject or 'Your recent submission'}"
                 body_text = (
                     f"Dear {employee_name},\n\n"
                     f"Your timesheet submission has been reviewed and rejected.\n\n"

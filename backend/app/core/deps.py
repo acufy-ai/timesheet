@@ -154,10 +154,25 @@ async def get_current_user(
             adapter.email = pa.email
             adapter.username = pa.username
             adapter.full_name = pa.full_name
+            # change-password reads current_user.hashed_password to verify
+            # the current password before mutating. Must mirror from the
+            # control-plane row so PA self-service password changes work.
+            adapter.hashed_password = pa.hashed_password
             adapter.title = None
             adapter.department = None
             adapter.timezone = "UTC"
             adapter.role = UserRole.PLATFORM_ADMIN
+            # F-032: UserResponse schema requires list[str] for these
+            # JSONB fields. The PA adapter is in-memory only and never
+            # commits, so empty defaults are correct.
+            adapter.roles = []
+            adapter.phones = []
+            # preferences was added to UserResponse in the inbox-view-mode
+            # slice. Default to empty dict on the PA adapter so /auth/me
+            # serialization doesn't fail with a ResponseValidationError.
+            # PAs have no inbox / per-user UI prefs today; if that changes
+            # we'd need to back it with a real column on PlatformAdmin.
+            adapter.preferences = {}
             adapter.is_active = pa.is_active
             adapter.has_changed_password = pa.has_changed_password
             adapter.email_verified = pa.email_verified
@@ -171,7 +186,25 @@ async def get_current_user(
             request.state.current_user = adapter
             return adapter
 
-        user = await get_user_by_id(db, user_id)
+        # Resolve the user. When the token carries a tenant_slug we go
+        # to the tenant DB first — its ids are the canonical ones the
+        # token's ``sub`` came from. Falling back to the shared DB only
+        # for tokens minted before isolation existed (no tenant_slug
+        # claim) keeps every other path identical to before.
+        token_tenant_slug = payload.get("tenant_slug")
+        user = None
+        if token_tenant_slug:
+            from app.db_tenant import tenant_session
+            try:
+                async with tenant_session(token_tenant_slug) as tenant_db:
+                    user = await get_user_by_id(tenant_db, user_id)
+            except (LookupError, ValueError) as exc:
+                logger.warning(
+                    "tenant DB lookup failed for slug=%s user=%s: %s",
+                    token_tenant_slug, user_id, exc,
+                )
+        if user is None:
+            user = await get_user_by_id(db, user_id)
         if user is None:
             logger.warning(f"User {user_id} not found")
             raise HTTPException(
@@ -186,22 +219,6 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Inactive user",
             )
-
-        # When the token has a tenant_slug, the per-tenant DB is the
-        # source of truth — refresh from there so writes are visible.
-        token_tenant_slug = payload.get("tenant_slug")
-        if token_tenant_slug:
-            from app.db_tenant import tenant_session
-            try:
-                async with tenant_session(token_tenant_slug) as tenant_db:
-                    refreshed = await get_user_by_id(tenant_db, user_id)
-                if refreshed is not None:
-                    user = refreshed
-            except (LookupError, ValueError) as exc:
-                logger.warning(
-                    "tenant DB refresh failed for slug=%s user=%s: %s",
-                    token_tenant_slug, user_id, exc,
-                )
 
         # active_role on the token is the role this request acts as.
         # Must still be in the user's allowed roles — a token cannot
@@ -243,6 +260,27 @@ async def get_current_user(
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # F-022/F-023: cross-check the tenant_slug claim against the
+        # resolved user's actual tenant slug. Without this check, a
+        # forged token with mismatched (tenant_id, tenant_slug) can
+        # exploit the shared-DB fallback to authenticate as any user.
+        if token_tenant_slug and user.tenant_id is not None:
+            from app.db_tenant import resolve_slug_for_tenant_id
+            try:
+                expected_slug = await resolve_slug_for_tenant_id(user.tenant_id)
+            except LookupError:
+                expected_slug = None
+            if expected_slug and expected_slug != token_tenant_slug:
+                logger.warning(
+                    "User %s tenant_slug mismatch: token=%s, db=%s",
+                    user_id, token_tenant_slug, expected_slug,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid authentication credentials",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
         logger.debug("User validated successfully")
         request.state.current_user = user
@@ -353,6 +391,38 @@ async def get_service_token_tenant(
         logger.warning("Failed to update service token last_used_at: %s", e)
 
     return tenant_id, matched_token
+
+
+async def get_service_token_tenant_db(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Authenticate the service token AND yield a session bound to the
+    tenant's per-tenant DB.
+
+    Service tokens are stored on the shared ``timesheet_db`` (control-plane-ish
+    auth lookup), but the data operations they drive (employee/client/project
+    upserts, timesheet pushes) must land in the tenant's per-tenant DB for
+    isolated tenants. Returns a 3-tuple yielded into the route:
+    ``(tenant_id, matched_token, tenant_session)``.
+
+    For non-isolated tenants this still routes to the shared DB by way of
+    ``db_tenant.tenant_session`` resolving to the shared URL.
+    """
+    tenant_id, matched_token = await get_service_token_tenant(request, db)
+
+    from app.db_tenant import resolve_slug_for_tenant_id, tenant_session
+
+    try:
+        slug = await resolve_slug_for_tenant_id(tenant_id)
+    except LookupError:
+        # Tenant exists in legacy DB but not in control plane (F-011 family).
+        # Fall back to the shared DB session passed in.
+        yield tenant_id, matched_token, db
+        return
+
+    async with tenant_session(slug) as tenant_db:
+        yield tenant_id, matched_token, tenant_db
 
 
 def get_tenant_id(current_user: User = Depends(get_current_user)) -> int:

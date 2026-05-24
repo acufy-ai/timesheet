@@ -287,31 +287,44 @@ async def test_draft_pto_does_not_consume_capacity(db_session, org):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pattern: repeatedly late
+# Pattern: late for last closed submission period (cadence-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _last_week_range(today: date) -> tuple[date, date]:
+    """Returns (period_start_monday, period_end_friday) for the week
+    immediately before this week. Used as the "closed weekly period"
+    when the run-time today is past Monday."""
+    this_monday = today - timedelta(days=today.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    return last_monday, last_monday + timedelta(days=4)
+
+
+def _is_in_post_deadline_grace_window(today: date) -> bool:
+    """The cadence-aware late check requires today to be past the
+    most recent deadline + grace. For a Friday deadline with a 1
+    business-day grace, that means today must be Monday or later of
+    *this* week (or any later day before next Friday). The exception
+    is Friday itself, where the test of whether *this week* is the
+    closed period depends on time-of-day, which we can't pin in a
+    unit test. So we skip when today is Friday or weekend."""
+    return today.weekday() in (0, 1, 2, 3)  # Mon-Thu inclusive
+
+
 @pytest.mark.asyncio
-async def test_repeatedly_late_flag_triggers_when_two_of_three_missed(db_session, org):
+async def test_late_flag_triggers_when_last_week_unsubmitted(db_session, org):
+    """An employee who existed before last week and submitted nothing
+    for that week's working days should be flagged late once the
+    deadline + grace has passed."""
+    today = date.today()
+    if not _is_in_post_deadline_grace_window(today):
+        pytest.skip("Test only deterministic Mon-Thu; skipping due to today's weekday.")
+
     mgr = org["manager"]
     emp = await _user(db_session, email="f@t.io", role=UserRole.EMPLOYEE, tenant_id=mgr.tenant_id, full_name="Frank")
+    # Backdate created_at so the user existed before last week.
+    emp.created_at = datetime.now(timezone.utc) - timedelta(days=30)
     await _assign(db_session, manager=mgr, employee=emp)
-    # Backfill: only 1 of the last 3 weekdays has a submitted entry.
-    # The endpoint computes the lookback at request time, so we don't
-    # know exact dates — instead, leave only one SUBMITTED entry from
-    # several days back. The endpoint will see "missed 2 of last 3".
-    today = date.today()
-    # Pick a weekday more than 4 days ago to ensure it falls outside
-    # the lookback window. We add a SUBMITTED entry there to ensure
-    # the user has *some* history but not in the lookback.
-    far_back = today - timedelta(days=10)
-    while far_back.weekday() >= 5:
-        far_back -= timedelta(days=1)
-    db_session.add(TimeEntry(
-        tenant_id=mgr.tenant_id, user_id=emp.id, project_id=org["project"].id,
-        entry_date=far_back, hours=Decimal("8"),
-        status=TimeEntryStatus.SUBMITTED, description="x",
-    ))
     await db_session.commit()
     with _make_app(db_session) as client:
         resp = client.get("/dashboard/manager-team-overview", headers=_auth(mgr))
@@ -320,12 +333,15 @@ async def test_repeatedly_late_flag_triggers_when_two_of_three_missed(db_session
 
 
 @pytest.mark.asyncio
-async def test_repeatedly_late_flag_clear_for_user_with_no_history(db_session, org):
-    """A brand-new user (or freshly-onboarded employee) with zero
-    submissions in the last 30 days should not be flagged as
-    repeatedly-late — there's no signal yet, just an empty record."""
+async def test_late_flag_clear_for_brand_new_user(db_session, org):
+    """The Yaswanth case: a user created today (or after last week
+    started) is never flagged late for a period that predates their
+    account, even if backdated entries exist in the data."""
     mgr = org["manager"]
     emp = await _user(db_session, email="new@t.io", role=UserRole.EMPLOYEE, tenant_id=mgr.tenant_id, full_name="Brand New")
+    # created_at defaults to "now"; explicitly set to today to make
+    # the intent obvious.
+    emp.created_at = datetime.now(timezone.utc)
     await _assign(db_session, manager=mgr, employee=emp)
     await db_session.commit()
     with _make_app(db_session) as client:
@@ -335,23 +351,55 @@ async def test_repeatedly_late_flag_clear_for_user_with_no_history(db_session, o
 
 
 @pytest.mark.asyncio
-async def test_repeatedly_late_flag_clear_when_recent_submissions_present(db_session, org):
+async def test_late_flag_clear_when_last_period_was_submitted(db_session, org):
+    """A pre-existing user with SUBMITTED entries covering every
+    working day of the last closed week is not flagged."""
+    today = date.today()
+    if not _is_in_post_deadline_grace_window(today):
+        pytest.skip("Test only deterministic Mon-Thu; skipping due to today's weekday.")
+
     mgr = org["manager"]
     emp = await _user(db_session, email="g@t.io", role=UserRole.EMPLOYEE, tenant_id=mgr.tenant_id, full_name="Gina")
+    emp.created_at = datetime.now(timezone.utc) - timedelta(days=30)
     await _assign(db_session, manager=mgr, employee=emp)
-    # Submit on each of the last 5 weekdays. Pattern flag should not trip.
+    period_start, period_end = _last_week_range(today)
+    cursor = period_start
+    while cursor <= period_end:
+        db_session.add(TimeEntry(
+            tenant_id=mgr.tenant_id, user_id=emp.id, project_id=org["project"].id,
+            entry_date=cursor, hours=Decimal("8"),
+            status=TimeEntryStatus.SUBMITTED, description="x",
+        ))
+        cursor += timedelta(days=1)
+    await db_session.commit()
+    with _make_app(db_session) as client:
+        resp = client.get("/dashboard/manager-team-overview", headers=_auth(mgr))
+    member = resp.json()["members"][0]
+    assert member["is_repeatedly_late"] is False
+
+
+@pytest.mark.asyncio
+async def test_late_flag_clear_when_approved_pto_covers_last_period(db_session, org):
+    """APPROVED time-off counts as covering a working day, just like
+    a SUBMITTED time entry."""
     today = date.today()
-    cursor = today - timedelta(days=1)
-    added = 0
-    while added < 5:
-        if cursor.weekday() < 5:
-            db_session.add(TimeEntry(
-                tenant_id=mgr.tenant_id, user_id=emp.id, project_id=org["project"].id,
-                entry_date=cursor, hours=Decimal("8"),
-                status=TimeEntryStatus.SUBMITTED, description="x",
-            ))
-            added += 1
-        cursor -= timedelta(days=1)
+    if not _is_in_post_deadline_grace_window(today):
+        pytest.skip("Test only deterministic Mon-Thu; skipping due to today's weekday.")
+
+    mgr = org["manager"]
+    emp = await _user(db_session, email="pto@t.io", role=UserRole.EMPLOYEE, tenant_id=mgr.tenant_id, full_name="Penny")
+    emp.created_at = datetime.now(timezone.utc) - timedelta(days=30)
+    await _assign(db_session, manager=mgr, employee=emp)
+    period_start, period_end = _last_week_range(today)
+    cursor = period_start
+    while cursor <= period_end:
+        db_session.add(TimeOffRequest(
+            tenant_id=mgr.tenant_id, user_id=emp.id,
+            request_date=cursor, hours=Decimal("8"),
+            leave_type="vacation", reason="vac",
+            status=TimeOffStatus.APPROVED,
+        ))
+        cursor += timedelta(days=1)
     await db_session.commit()
     with _make_app(db_session) as client:
         resp = client.get("/dashboard/manager-team-overview", headers=_auth(mgr))

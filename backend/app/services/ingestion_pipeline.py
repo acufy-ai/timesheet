@@ -279,27 +279,41 @@ async def process_email(
     }
 
     # Skip only when: not a timesheet AND no submission intent AND no attachments
+    # Keep the ``ingested_emails`` row so the /ingestion/skipped-emails
+    # endpoint can surface it for human review. The classifier may have
+    # been wrong; a reviewer can promote the row back into the queue.
+    # ``_persist_skip_metadata`` stamps the reason onto llm_classification
+    # so the UI can render it without an extra column.
     if not is_timesheet and intent not in SUBMISSION_INTENTS and not has_candidates:
         detail = f"Classifier intent was {intent}."
-        storage_keys = await _drop_email_and_attachments(email_record, attachment_records, session)
+        _persist_skip_metadata(
+            email_record,
+            classification,
+            reason=f"not_timesheet_email:{intent}",
+            detail=detail,
+        )
         await session.commit()
-        await _cleanup_storage_keys(storage_keys)
         result.skipped = True
         result.skip_reason = f"not_timesheet_email:{intent}"
-        result.skip_detail = f"{detail} Discarded as non-actionable."
-        result.email_id = None
+        result.skip_detail = f"{detail} Kept on /skipped-emails for review."
+        result.email_id = email_record.id
         return result
 
-    # Also skip low-confidence emails with no attachments
+    # Also skip low-confidence emails with no attachments. Same idea:
+    # keep the row instead of dropping so admins can audit classifier misses.
     if confidence < 0.3 and not has_candidates:
         detail = f"Low confidence ({confidence:.2f}) and no candidate attachments."
-        storage_keys = await _drop_email_and_attachments(email_record, attachment_records, session)
+        _persist_skip_metadata(
+            email_record,
+            classification,
+            reason=f"low_confidence_no_attachments:{confidence:.2f}",
+            detail=detail,
+        )
         await session.commit()
-        await _cleanup_storage_keys(storage_keys)
         result.skipped = True
         result.skip_reason = f"low_confidence_no_attachments:{confidence:.2f}"
-        result.skip_detail = f"{detail} Discarded as non-actionable."
-        result.email_id = None
+        result.skip_detail = f"{detail} Kept on /skipped-emails for review."
+        result.email_id = email_record.id
         return result
 
     candidate_attachment_count = 0
@@ -1007,10 +1021,13 @@ async def _process_timesheet_attachment(
         # Client resolution: consultant email domain wins; LLM client_name
         # is last-resort. See _resolve_client_id for the full precedence.
         employee_default_client_id: int | None = None
+        employee_assigned_client_ids: list[int] = []
         if employee_id is not None:
             for emp in employees:
-                if emp["id"] == employee_id and emp.get("default_client_id"):
-                    employee_default_client_id = emp["default_client_id"]
+                if emp["id"] == employee_id:
+                    if emp.get("default_client_id"):
+                        employee_default_client_id = emp["default_client_id"]
+                    employee_assigned_client_ids = emp.get("assigned_client_ids") or []
                     break
 
         body_emails_raw = extracted_data.get("contact_emails") or []
@@ -1021,6 +1038,7 @@ async def _process_timesheet_attachment(
 
         client_id = _resolve_client_id(
             employee_default_client_id=employee_default_client_id,
+            employee_assigned_client_ids=employee_assigned_client_ids,
             forwarded_from_email=email_record.forwarded_from_email,
             body_emails=body_emails_list,
             sender_email=email_record.sender_email,
@@ -1030,7 +1048,12 @@ async def _process_timesheet_attachment(
             clients=clients,
         )
 
-        # Normalize line items
+        # Normalize line items. Each row keeps its own work_date so when
+        # the reviewer approves, every line item becomes a TimeEntry on
+        # its natural calendar day. Bridge-week pills (e.g. Mar 29 - Apr 4)
+        # split across months on their own: the per-day TimeEntry rows
+        # land in whichever calendar month each day belongs to, and the
+        # Approved Timesheets table sums by date.
         line_items_data = _normalize_line_items(
             line_items=extracted_data.get("line_items", []),
             period_start=extracted_data.get("period_start"),
@@ -1286,6 +1309,7 @@ async def _process_timesheet_attachment(
 
 async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[dict]:
     from app.models.user_email_alias import UserEmailAlias
+    from app.models.user_client_assignment import UserClientAssignment
 
     result = await session.execute(
         select(User.id, User.full_name, User.email, User.default_client_id).where(
@@ -1296,6 +1320,7 @@ async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[d
     user_ids = [row.id for row in rows]
 
     aliases_by_user: dict[int, list[str]] = {uid: [] for uid in user_ids}
+    assigned_clients_by_user: dict[int, list[int]] = {uid: [] for uid in user_ids}
     if user_ids:
         alias_rows = await session.execute(
             select(UserEmailAlias.user_id, UserEmailAlias.email).where(
@@ -1306,6 +1331,15 @@ async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[d
             if alias_email:
                 aliases_by_user.setdefault(uid, []).append(alias_email)
 
+        assignment_rows = await session.execute(
+            select(UserClientAssignment.user_id, UserClientAssignment.client_id).where(
+                UserClientAssignment.user_id.in_(user_ids),
+                UserClientAssignment.tenant_id == tenant_id,
+            )
+        )
+        for uid, cid in assignment_rows:
+            assigned_clients_by_user.setdefault(uid, []).append(cid)
+
     return [
         {
             "id": row.id,
@@ -1313,6 +1347,7 @@ async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[d
             "email": row.email or "",
             "emails": [e for e in [row.email, *aliases_by_user.get(row.id, [])] if e],
             "default_client_id": row.default_client_id,
+            "assigned_client_ids": assigned_clients_by_user.get(row.id, []),
         }
         for row in rows
     ]
@@ -1396,6 +1431,7 @@ def is_personal_email_domain(domain: str | None) -> bool:
 def _resolve_client_id(
     *,
     employee_default_client_id: int | None,
+    employee_assigned_client_ids: list[int] | None = None,
     forwarded_from_email: str | None,
     body_emails: list[str] | None,
     sender_email: str | None,
@@ -1404,19 +1440,41 @@ def _resolve_client_id(
 ) -> int | None:
     """
     Apply the staffing-firm client precedence:
-      1. The employee's pinned default client.
-      2. Forwarded-from sender domain (real submitter on a forwarded email).
-      3. Any email domain mentioned in the document body.
-      4. Outer sender domain (direct submissions with no forward chain).
-      5. LLM-extracted client name fuzzy-matched to existing clients.
+      1. The employee's pinned default client (legacy single-pin).
+      2. LLM-extracted client name fuzzy-matched (the timesheet itself
+         names the client; this is the most direct signal we have after
+         an explicit default):
+         - First against the employee's assigned clients (narrowed pool).
+         - Then against the full tenant client list.
+         - If no Client row matches, fall through to the domain chain.
+      3. Forwarded-from sender domain (real submitter on a forwarded email).
+      4. Any email domain mentioned in the document body.
+      5. Outer sender domain (direct submissions with no forward chain).
+      6. Sole-assigned-client auto-pick: if the user has exactly one
+         assigned client and nothing above matched, use it.
     Returns None if nothing matches; the reviewer picks in the UI.
 
-    Pure function — no DB access, no I/O. Domain → client lookup is delegated
-    to the existing _client_id_for_domain helper which already handles the
-    "multiple clients share a domain" tie-break.
+    Pure function — no DB access, no I/O.
     """
     if employee_default_client_id is not None:
         return employee_default_client_id
+
+    # Priority 2: trust the timesheet itself. Whatever the LLM extracted
+    # from the document text gets to resolve before we infer from email
+    # routing metadata.
+    assigned_ids = employee_assigned_client_ids or []
+    if extracted_client_name:
+        if assigned_ids:
+            assigned_clients = [c for c in clients if c["id"] in assigned_ids]
+            match = _find_existing_client_id(extracted_client_name, assigned_clients)
+            if match is not None:
+                return match
+        match = _find_existing_client_id(extracted_client_name, clients)
+        if match is not None:
+            return match
+        # LLM named a client we don't have a record of — fall through to
+        # the domain chain. The reviewer will see the extracted name in
+        # the panel and can create the Client row if needed.
 
     if forwarded_from_email:
         match = _client_id_for_domain(_domain_of(forwarded_from_email), clients)
@@ -1433,7 +1491,12 @@ def _resolve_client_id(
         if match is not None:
             return match
 
-    return _find_existing_client_id(extracted_client_name, clients)
+    # Sole-assigned-client auto-pick: a user with exactly one linked
+    # client and no other signal still has an unambiguous answer.
+    if len(assigned_ids) == 1:
+        return assigned_ids[0]
+
+    return None
 
 
 def _client_id_for_domain(domain: str, clients: list[dict]) -> int | None:
@@ -1584,9 +1647,11 @@ def _fuzzy_match_employee(
 
         # Require at least 2 overlapping name tokens to avoid surname-only
         # false positives (e.g. "Banuchander Reddy" matching "Vardhan Reddy").
+        # Exception: allow 1-token overlap when ratio is very high (>=0.90), which
+        # handles transliteration variants like "Ramanarayanan" / "Ramnarayan".
         emp_tokens = _name_tokens(emp_normalized)
         overlap = extracted_tokens & emp_tokens
-        if len(overlap) < 2:
+        if len(overlap) < 2 and not (ratio >= 0.90 and len(overlap) >= 1):
             continue
 
         best_ratio = ratio
@@ -1601,8 +1666,10 @@ def _fuzzy_match_employee(
 def _normalize_person_name(value: str | None) -> str:
     if not value:
         return ""
-    cleaned = " ".join(str(value).strip().split())
-    return cleaned.lower().strip()
+    # Strip punctuation that bleeds into tokens (e.g. "Rajendran, Reddy" -> "Rajendran Reddy")
+    import re as _re
+    cleaned = _re.sub(r"[^\w\s]", " ", str(value).strip())
+    return " ".join(cleaned.split()).lower().strip()
 
 
 _FILENAME_NAME_STOPWORDS = {

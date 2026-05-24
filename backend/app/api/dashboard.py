@@ -73,22 +73,41 @@ async def _get_managed_active_employee_ids(db: AsyncSession, manager_id: int, as
 
 
 async def _get_direct_active_report_ids(db: AsyncSession, manager_id: int, as_of: Optional[date] = None) -> list[int]:
-    query = (
-        select(User.id)
-        .join(EmployeeManagerAssignment, EmployeeManagerAssignment.employee_id == User.id)
-        .where(
-            EmployeeManagerAssignment.manager_id == manager_id,
-            User.role == UserRole.EMPLOYEE,
+    """Active users in the manager's report tree.
+
+    Matches the /user-management tree walk (BFS over EmployeeManagerAssignment),
+    so the dashboard's team view sees the same people the manager sees on
+    their My Team page: direct reports plus everyone below them, regardless
+    of role. This is broader than the historical EMPLOYEE-only filter, which
+    hid managers' sub-managers and any admin who reported into them.
+    """
+    descendant_ids: set[int] = set()
+    frontier: set[int] = {manager_id}
+    while frontier:
+        sub_query = (
+            select(EmployeeManagerAssignment.employee_id)
+            .where(EmployeeManagerAssignment.manager_id.in_(frontier))
+        )
+        if as_of is not None:
+            sub_query = sub_query.where(
+                EmployeeManagerAssignment.created_at <= datetime.combine(as_of, time.max)
+            )
+        result = await db.execute(sub_query)
+        children = set(result.scalars().all())
+        next_frontier = children - descendant_ids
+        descendant_ids.update(next_frontier)
+        frontier = next_frontier
+
+    if not descendant_ids:
+        return []
+
+    active_result = await db.execute(
+        select(User.id).where(
+            User.id.in_(descendant_ids),
             User.is_active.is_(True),
         )
     )
-    if as_of is not None:
-        # Historical "as_of end-of-day" filter, not current wall-clock deadline
-        # math. This intentionally stays date-scoped rather than tenant-now based.
-        query = query.where(EmployeeManagerAssignment.created_at <=
-                            datetime.combine(as_of, time.max))
-    result = await db.execute(query)
-    return list(result.scalars().all())
+    return list(active_result.scalars().all())
 
 
 async def _get_scoped_employee_ids(db: AsyncSession, current_user: "User") -> list[int]:
@@ -711,17 +730,6 @@ def _working_days_between(start: date, end_inclusive: date) -> int:
     return days
 
 
-def _last_n_working_days(reference: date, n: int) -> list[date]:
-    """The N most recent weekdays at or before `reference`, oldest first."""
-    out: list[date] = []
-    cursor = reference
-    while len(out) < n:
-        if cursor.weekday() < 5:
-            out.append(cursor)
-        cursor -= timedelta(days=1)
-    return list(reversed(out))
-
-
 @router.get("/manager-team-overview", response_model=ManagerTeamOverviewResponse)
 async def get_manager_team_overview(
     db: AsyncSession = Depends(get_tenant_db),
@@ -825,52 +833,31 @@ async def get_manager_team_overview(
             if existing is None or req_date < existing:
                 upcoming_pto_start_by_user[user_id] = req_date
 
-    # Repeatedly-late: missed >=2 of last 3 working days (excluding today).
-    # Gated on having any submission history so day-one users aren't critical.
-    lookback_dates = _last_n_working_days(today - timedelta(days=1), 3)
-    late_eval = await db.execute(
-        select(TimeEntry.user_id, TimeEntry.entry_date)
-        .where(
-            TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date.in_(lookback_dates),
-            TimeEntry.status.in_(
-                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
-            ),
-        )
+    # Late: did the user miss the most recent closed submission
+    # period for their cadence (weekly or monthly)? The cadence and
+    # deadlines are tenant settings; new accounts created on or after
+    # the period start are exempt. See app.services.submission_period.
+    from app.services.submission_period import (
+        is_user_late_for_period,
+        latest_closed_period,
     )
-    on_time_dates_by_user: dict[int, set[date]] = {}
-    for user_id, entry_date in late_eval.all():
-        on_time_dates_by_user.setdefault(user_id, set()).add(entry_date)
 
-    # Wider history check: user has any submission in the last 30 days.
-    # Without this gate, a freshly-onboarded employee or a tenant
-    # without seeded data would all read as critical, which is noise.
-    history_window_start = today - timedelta(days=30)
-    history_eval = await db.execute(
-        select(TimeEntry.user_id)
-        .where(
-            TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date >= history_window_start,
-            TimeEntry.entry_date < lookback_dates[0] if lookback_dates else today,
-            TimeEntry.status.in_(
-                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
-            ),
-        )
-        .distinct()
-    )
-    has_history: set[int] = set(history_eval.scalars().all())
+    late_user_ids: set[int] = set()
+    if current_user.tenant_id is not None:
+        for member in team_members:
+            period = await latest_closed_period(
+                db, current_user.tenant_id, member, today, tenant_timezone
+            )
+            if period is None:
+                continue
+            if await is_user_late_for_period(db, member, period):
+                late_user_ids.add(member.id)
 
     members: list[ManagerTeamMemberStatus] = []
     for member in team_members:
         submitted_dates = submitted_dates_by_user.get(member.id, set())
         working_days = _working_days_between(week_start, today)
-        on_time = on_time_dates_by_user.get(member.id, set())
-        missed_count = sum(1 for d in lookback_dates if d not in on_time)
-        is_repeatedly_late = (
-            len(lookback_dates) >= 3
-            and missed_count >= 2
-            and member.id in has_history
-        )
+        is_repeatedly_late = member.id in late_user_ids
 
         members.append(
             ManagerTeamMemberStatus(

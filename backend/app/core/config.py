@@ -59,6 +59,14 @@ ENV_FIELD_MAP = {
     "email_fetch_start_time": "EMAIL_FETCH_START_TIME",
     "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
     "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
+    "auth0_domain": "AUTH0_DOMAIN",
+    "auth0_client_id": "AUTH0_CLIENT_ID",
+    "auth0_client_secret": "AUTH0_CLIENT_SECRET",
+    "auth0_audience": "AUTH0_AUDIENCE",
+    "auth0_connection": "AUTH0_CONNECTION",
+    "auth0_connection_id": "AUTH0_CONNECTION_ID",
+    "auth0_mgmt_client_id": "AUTH0_MGMT_CLIENT_ID",
+    "auth0_mgmt_client_secret": "AUTH0_MGMT_CLIENT_SECRET",
 }
 
 
@@ -340,6 +348,63 @@ class Settings(BaseModel):
         default=30,
         description="On first fetch (no cursor), only fetch emails from this many days back."
     )
+
+    # Auth0 (identity provider). Backend still issues its own JWTs after
+    # verifying the Auth0 token. Empty values disable the Auth0 path so
+    # local dev can fall back to the legacy bcrypt login during the
+    # transition window.
+    auth0_domain: str = Field(
+        default="",
+        description="Auth0 tenant domain, e.g. 'acufy.us.auth0.com'. Empty disables Auth0 login."
+    )
+    auth0_client_id: str = Field(
+        default="",
+        description="Auth0 application client ID."
+    )
+    auth0_client_secret: str = Field(
+        default="",
+        description="Auth0 application client secret. Used to call /userinfo with client auth."
+    )
+    auth0_audience: str = Field(
+        default="",
+        description="Auth0 API identifier (audience) for the backend API."
+    )
+    auth0_connection: str = Field(
+        default="Username-Password-Authentication",
+        description="Auth0 database connection name used for Resource Owner Password grant + bulk import."
+    )
+    auth0_connection_id: str = Field(
+        default="",
+        description="Auth0 database connection ID (con_...). Required for Management API user provisioning."
+    )
+    auth0_mgmt_client_id: str = Field(
+        default="",
+        description="Client ID of the Auth0 Machine-to-Machine app authorized for the Management API."
+    )
+    auth0_mgmt_client_secret: str = Field(
+        default="",
+        description="Client secret of the Auth0 Machine-to-Machine app."
+    )
+
+    @property
+    def auth0_enabled(self) -> bool:
+        """True iff enough Auth0 settings are present to verify tokens."""
+        return bool(self.auth0_domain and self.auth0_client_id)
+
+    @property
+    def auth0_mgmt_enabled(self) -> bool:
+        """True iff Management API credentials are present.
+
+        Provisioning Auth0 users at admin-create time and generating
+        password-change tickets both need the M2M app — separate from
+        the user-facing Auth0 app used for login.
+        """
+        return bool(
+            self.auth0_domain
+            and self.auth0_mgmt_client_id
+            and self.auth0_mgmt_client_secret
+            and self.auth0_connection_id
+        )
 
     @property
     def effective_cors_origins(self) -> list[str]:

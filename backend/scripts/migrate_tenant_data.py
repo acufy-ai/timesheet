@@ -155,7 +155,11 @@ TABLES: list[tuple[str, str]] = [
 
 
 def _tenant_db_name(slug: str) -> str:
-    return f"acufy_tenant_{slug}"
+    # Delegate to the shared service helper so the migration target
+    # matches what ``provision_tenant_db.py`` produced. The naming is
+    # env-aware (see ``app.services.tenant_provisioning.tenant_db_name``).
+    from app.services.tenant_provisioning import tenant_db_name
+    return tenant_db_name(slug)
 
 
 def _tenant_db_url(db_name: str) -> str:

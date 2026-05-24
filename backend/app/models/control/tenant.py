@@ -57,5 +57,16 @@ class ControlTenant(ControlBase, TimestampMixin):
         Boolean, default=False, nullable=False
     )
 
+    # Soft-delete marker for the platform Advanced "Delete tenant" action.
+    # Archived tenants stay in the row store so platform_audit_events that
+    # reference them remain readable, but operational queries (list, login
+    # routing, dashboard counts) filter them out via WHERE is_archived = false.
+    # Truly dropping the per-tenant Postgres database stays a manual operator
+    # step - doing it from an HTTP handler is unsafe (active connections,
+    # accidental clicks, no rollback path).
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     def __repr__(self) -> str:
         return f"<ControlTenant(id={self.id}, slug={self.slug}, status={self.status})>"

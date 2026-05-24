@@ -20,6 +20,7 @@ from .ingestion_timesheet import (
     IngestionAuditLog,
 )
 from .refresh_token import RefreshToken
+from .password_invite_token import PasswordInviteToken
 from .department import Department
 from .leave_type import LeaveType
 from .setting_definition import SettingDefinition
@@ -28,6 +29,8 @@ from .role import Role, RolePermission
 from .role_assignment import RoleAssignment
 from .dismissed_attention_signal import DismissedAttentionSignal
 from .user_email_alias import UserEmailAlias
+from .user_client_assignment import UserClientAssignment
+from .holiday import Holiday, HolidayType
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
@@ -35,4 +38,5 @@ __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
            "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
            "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment",
-           "DismissedAttentionSignal", "UserEmailAlias"]
+           "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
+           "Holiday", "HolidayType"]

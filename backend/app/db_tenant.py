@@ -196,6 +196,25 @@ async def dispose_all() -> None:
             logger.warning("tenant_registry: dispose failed: %s", exc)
 
 
+async def dispose_for_slug(slug: str) -> None:
+    """Evict and dispose the cached engine for ``slug``.
+
+    After flipping ``is_isolated`` on a tenant (or changing its
+    ``db_name``), the registry's previously-resolved engine points
+    at the wrong DB. Call this from the same request that flipped
+    the flag so the next per-tenant query rebuilds against the new
+    configuration. Without this the change only takes effect after
+    the next api restart — see the CLAUDE.md gotcha.
+    """
+    record = _registry.pop(slug, None)
+    if record is None:
+        return
+    try:
+        await record.engine.dispose()
+    except Exception as exc:
+        logger.warning("tenant_registry: dispose_for_slug(%s) failed: %s", slug, exc)
+
+
 def registered_slugs() -> list[str]:
     """Snapshot of currently-registered slugs. For diagnostics."""
     return list(_registry.keys())

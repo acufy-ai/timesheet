@@ -188,7 +188,7 @@ async def clear_smtp_config(
         if row:
             await db.delete(row)
     await db.commit()
-    return {"message": "SMTP configuration cleared — environment variables will be used."}
+    return {"message": "SMTP configuration cleared. Environment variables will be used."}
 
 
 # ── Public helper for email service ───────────────────────────────────────

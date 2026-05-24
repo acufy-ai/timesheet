@@ -188,7 +188,45 @@ async def test_email_ingestion_no_mailboxes_is_healthy(db_session, tenant):
 
 
 @pytest.mark.asyncio
-async def test_email_ingestion_active_but_never_fetched_is_attention(db_session, tenant):
+async def test_email_ingestion_active_but_never_fetched_with_autofetch_enabled_is_attention(db_session, tenant):
+    """A configured mailbox that has never fetched WHILE auto-fetch is
+    enabled IS a real issue — the cron should have ticked by now."""
+    from app.models.tenant_settings import TenantSettings
+
+    admin = await _make_user(db_session, email="a@t.io", role=UserRole.ADMIN, tenant_id=tenant.id)
+    db_session.add(Mailbox(
+        tenant_id=tenant.id,
+        label="Ingestion",
+        protocol=MailboxProtocol.imap,
+        auth_type=MailboxAuthType.basic,
+        host="imap.example.com",
+        port=993,
+        username="ingest@t.io",
+        password_enc="enc",
+        is_active=True,
+        last_fetched_at=None,
+    ))
+    # Enable auto-fetch with a wide-open window so the test isn't time-of-day brittle.
+    for key, value in [
+        ("fetch_emails_enabled", '"true"'),
+        ("fetch_emails_days", '"mon,tue,wed,thu,fri,sat,sun"'),
+        ("fetch_emails_start_time", '"00:00"'),
+        ("fetch_emails_end_time", '"23:59"'),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
+    await db_session.commit()
+    with _make_app(db_session) as client:
+        resp = client.get("/admin/system-health", headers=_auth_headers(admin))
+    item = next(i for i in resp.json() if i["key"] == "email_ingestion")
+    assert item["status"] == "attention"
+    assert "never" in item["subtitle"].lower() or "no mailbox" in item["subtitle"].lower()
+
+
+@pytest.mark.asyncio
+async def test_email_ingestion_active_but_never_fetched_with_autofetch_off_is_healthy(db_session, tenant):
+    """A mailbox that has never fetched and where auto-fetch is OFF is not
+    a degraded state — it's just sitting waiting for a manual fetch or
+    for an admin to flip the toggle."""
     admin = await _make_user(db_session, email="a@t.io", role=UserRole.ADMIN, tenant_id=tenant.id)
     db_session.add(Mailbox(
         tenant_id=tenant.id,
@@ -206,12 +244,17 @@ async def test_email_ingestion_active_but_never_fetched_is_attention(db_session,
     with _make_app(db_session) as client:
         resp = client.get("/admin/system-health", headers=_auth_headers(admin))
     item = next(i for i in resp.json() if i["key"] == "email_ingestion")
-    assert item["status"] == "attention"
-    assert "never" in item["subtitle"].lower() or "no mailbox" in item["subtitle"].lower()
+    assert item["status"] == "healthy"
+    assert "auto-fetch disabled" in item["subtitle"].lower()
 
 
 @pytest.mark.asyncio
 async def test_email_ingestion_recent_fetch_is_healthy(db_session, tenant):
+    """Recent fetch with auto-fetch enabled: healthy with a 'Last fetch …'
+    subtitle. Configure auto-fetch explicitly so the test exercises the
+    in-window path rather than the 'Auto-fetch disabled' fallback."""
+    from app.models.tenant_settings import TenantSettings
+
     admin = await _make_user(db_session, email="a@t.io", role=UserRole.ADMIN, tenant_id=tenant.id)
     db_session.add(Mailbox(
         tenant_id=tenant.id,
@@ -225,6 +268,13 @@ async def test_email_ingestion_recent_fetch_is_healthy(db_session, tenant):
         is_active=True,
         last_fetched_at=datetime.now(timezone.utc) - timedelta(minutes=5),
     ))
+    for key, value in [
+        ("fetch_emails_enabled", '"true"'),
+        ("fetch_emails_days", '"mon,tue,wed,thu,fri,sat,sun"'),
+        ("fetch_emails_start_time", '"00:00"'),
+        ("fetch_emails_end_time", '"23:59"'),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
     await db_session.commit()
     with _make_app(db_session) as client:
         resp = client.get("/admin/system-health", headers=_auth_headers(admin))
@@ -235,9 +285,11 @@ async def test_email_ingestion_recent_fetch_is_healthy(db_session, tenant):
 
 @pytest.mark.asyncio
 async def test_email_ingestion_stale_fetch_is_attention(db_session, tenant):
-    """Past 2x the configured fetch interval, surface as attention with
-    the expected interval in the subtitle so the admin knows what
-    cadence is broken."""
+    """Past 2x the configured fetch interval, with auto-fetch enabled and
+    inside the window: surface as attention with the expected interval in
+    the subtitle so the admin knows what cadence is broken."""
+    from app.models.tenant_settings import TenantSettings
+
     admin = await _make_user(db_session, email="a@t.io", role=UserRole.ADMIN, tenant_id=tenant.id)
     db_session.add(Mailbox(
         tenant_id=tenant.id,
@@ -252,12 +304,99 @@ async def test_email_ingestion_stale_fetch_is_attention(db_session, tenant):
         # 4 hours ago is far past 2x default 15-minute interval.
         last_fetched_at=datetime.now(timezone.utc) - timedelta(hours=4),
     ))
+    for key, value in [
+        ("fetch_emails_enabled", '"true"'),
+        ("fetch_emails_days", '"mon,tue,wed,thu,fri,sat,sun"'),
+        ("fetch_emails_start_time", '"00:00"'),
+        ("fetch_emails_end_time", '"23:59"'),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
     await db_session.commit()
     with _make_app(db_session) as client:
         resp = client.get("/admin/system-health", headers=_auth_headers(admin))
     item = next(i for i in resp.json() if i["key"] == "email_ingestion")
     assert item["status"] == "attention"
     assert "expected every" in item["subtitle"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings-decoding regression: tenant_settings rows are written as JSON
+# (set_setting does ``json.dumps(value)``), so a string "08:00" round-trips
+# as the 6-character literal ``"08:00"`` with quotes included. The fetch-
+# window readers must JSON-decode, otherwise the cron's time parser fails
+# silently and auto-fetch never runs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fetch_window_decodes_json_encoded_settings(db_session, tenant):
+    """Regression for the silent-skip bug: when fetch_emails_start_time is
+    stored as the JSON literal ``"08:00"`` (quotes included), the widget
+    must still classify a recently-fetched mailbox as healthy. Before the
+    fix, the time parser threw ValueError and the widget either lied
+    ("expected every Nm") or treated the window as malformed."""
+    from app.models.tenant_settings import TenantSettings
+
+    admin = await _make_user(db_session, email="a@t.io", role=UserRole.ADMIN, tenant_id=tenant.id)
+    db_session.add(Mailbox(
+        tenant_id=tenant.id,
+        label="Ingestion",
+        protocol=MailboxProtocol.imap,
+        auth_type=MailboxAuthType.basic,
+        host="imap.example.com",
+        port=993,
+        username="ingest@t.io",
+        password_enc="enc",
+        is_active=True,
+        last_fetched_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+    ))
+    # JSON-encoded values as set_setting writes them.
+    for key, value in [
+        ("fetch_emails_enabled", '"true"'),
+        ("fetch_emails_interval_minutes", "5"),
+        ("fetch_emails_days", '"mon,tue,wed,thu,fri,sat,sun"'),
+        ("fetch_emails_start_time", '"00:00"'),
+        ("fetch_emails_end_time", '"23:59"'),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
+    await db_session.commit()
+
+    with _make_app(db_session) as client:
+        resp = client.get("/admin/system-health", headers=_auth_headers(admin))
+    item = next(i for i in resp.json() if i["key"] == "email_ingestion")
+    assert item["status"] == "healthy", (
+        f"Healthy mailbox misclassified due to JSON-encoded settings: {item}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_fetch_now_handles_quoted_time_strings():
+    """Direct unit check on the cron predicate: JSON-quoted time strings
+    must not silently disable auto-fetch."""
+    from app.workers.email_fetch import _should_fetch_now
+
+    now = datetime(2026, 5, 19, 12, 0, tzinfo=timezone.utc)  # Tue noon
+    settings_dict = {
+        "fetch_emails_interval_minutes": "5",
+        "fetch_emails_days": '"mon,tue,wed,thu,fri"',  # quoted
+        "fetch_emails_start_time": '"08:00"',          # quoted
+        "fetch_emails_end_time": '"22:00"',            # quoted
+    }
+    assert _should_fetch_now(settings_dict, now) is True
+
+
+@pytest.mark.asyncio
+async def test_should_fetch_now_returns_false_outside_window():
+    from app.workers.email_fetch import _should_fetch_now
+
+    now_before = datetime(2026, 5, 19, 6, 0, tzinfo=timezone.utc)  # Tue 6am
+    settings_dict = {
+        "fetch_emails_interval_minutes": "5",
+        "fetch_emails_days": "mon,tue,wed,thu,fri",
+        "fetch_emails_start_time": "08:00",
+        "fetch_emails_end_time": "22:00",
+    }
+    assert _should_fetch_now(settings_dict, now_before) is False
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime, date
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from datetime import datetime, date, time
 from decimal import Decimal
 from typing import Any, Optional, List
 from enum import Enum
@@ -116,6 +116,16 @@ class UserResponse(UserBase):
     # Roles the user can act as; portal-picker shows when len(roles) > 1.
     roles: List[UserRole] = Field(default_factory=list)
     phones: List[str] = Field(default_factory=list)
+    # Per-user UI preferences (inbox_view_mode, etc.). Free-form dict so
+    # the frontend can add keys without backend churn. Nullable on the
+    # wire because the PA adapter and pre-migration users can carry None;
+    # the validator coerces null -> {} so consumers always see a dict.
+    preferences: dict = Field(default_factory=dict)
+
+    @field_validator("preferences", mode="before")
+    @classmethod
+    def _coerce_preferences(cls, value: object) -> object:
+        return value if value is not None else {}
     created_at: datetime
     updated_at: datetime
 
@@ -125,8 +135,11 @@ class UserResponse(UserBase):
 class UserCreateResponse(BaseModel):
     """Returned when an admin creates a new user."""
     user: UserResponse
-    # Auto-generated password; admin hands this off when no verification email is sent.
-    temporary_password: str
+    # Auto-generated password; admin hands this off when no verification
+    # email is sent. Null when Auth0 owns the user's password (the new
+    # default once Auth0 is configured): the user picks one themselves
+    # via the invitation link, so the admin never sees it.
+    temporary_password: Optional[str] = None
     verification_email_sent: bool = False
 
 
@@ -165,6 +178,34 @@ class UserProfileResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserPreferences(BaseModel):
+    """Per-user UI preferences. All fields optional; absent = default.
+
+    Known keys are declared here for documentation and IDE help, but
+    ``extra: "allow"`` keeps the schema forward-compatible — adding a
+    new UI preference shouldn't require a schema migration.
+    """
+    # "cards" or "table". Persisted so the inbox view choice follows the
+    # user across browsers and devices.
+    inbox_view_mode: Optional[str] = None
+    # ISO-2 country code (or None for "All locations"). Drives the
+    # calendar's holiday filter — see HolidayCountryFilter.
+    holiday_calendar_country: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Partial update for /users/me/preferences. Only sent keys are
+    merged into ``users.preferences``. ``extra: "allow"`` lets new UI
+    preferences flow through without a schema bump; the API handler
+    still value-validates the known keys."""
+    inbox_view_mode: Optional[str] = None
+    holiday_calendar_country: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
@@ -184,6 +225,7 @@ class MessageResponse(BaseModel):
 
 class ClientBase(BaseModel):
     name: str
+    client_type: str = "external"
     quickbooks_customer_id: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
@@ -196,6 +238,7 @@ class ClientCreate(ClientBase):
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
+    client_type: Optional[str] = None
     quickbooks_customer_id: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
@@ -206,6 +249,15 @@ class ClientResponse(ClientBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class UserClientAssignmentResponse(BaseModel):
+    id: int
+    client_id: int
+    client_name: str
+    client_type: str
 
     model_config = {"from_attributes": True}
 
@@ -300,6 +352,11 @@ class TimeEntryBase(BaseModel):
     project_id: int
     task_id: Optional[int] = None
     entry_date: date
+    # Optional explicit time block (24h ``HH:MM:SS`` over the wire).
+    # Both nullable: an entry can be hours-only OR a precise block.
+    # ``hours`` is still the source of truth for billing.
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
     hours: Decimal = Field(..., gt=0, le=24)
     description: str
     # Private free-text notes for the entry owner. Never surfaced in approval
@@ -316,6 +373,8 @@ class TimeEntryUpdate(BaseModel):
     project_id: Optional[int] = None
     task_id: Optional[int] = None
     entry_date: Optional[date] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
     hours: Optional[Decimal] = Field(None, gt=0, le=24)
     description: Optional[str] = None
     notes: Optional[str] = None
@@ -336,6 +395,12 @@ class TimeEntryResponse(TimeEntryBase):
     approved_at: Optional[datetime] = None
     rejection_reason: Optional[str] = None
     quickbooks_time_activity_id: Optional[str] = None
+    # Link back to the originating inbox-approved IngestionTimesheet
+    # when this entry was materialised from a PDF submission. Lets
+    # the frontend show the Client name instead of an internal
+    # project label on rollup surfaces. Null for entries created
+    # directly via the web form.
+    ingestion_timesheet_id: Optional[str] = None
     last_edit_reason: Optional[str] = None
     last_history_summary: Optional[str] = None
     created_at: datetime
@@ -422,6 +487,62 @@ class LeaveTypeResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Holidays ────────────────────────────────────────────────
+# Org-wide non-working days. PUBLIC (statutory) and COMPANY
+# (org-defined) both excuse a working day for the late signal.
+
+
+class HolidayTypeEnum(str, Enum):
+    PUBLIC = "PUBLIC"
+    COMPANY = "COMPANY"
+
+
+class HolidayCreate(BaseModel):
+    date: date
+    name: str = Field(min_length=1, max_length=120)
+    holiday_type: HolidayTypeEnum = HolidayTypeEnum.COMPANY
+    country: Optional[str] = Field(None, min_length=2, max_length=2)
+
+
+class HolidayBulkCreate(BaseModel):
+    """Used by the public-holiday import flow — ``python-holidays``
+    returns multiple rows for a given country/year, and we want to
+    create them in a single transaction."""
+    holidays: list[HolidayCreate]
+
+
+class HolidayUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    holiday_type: Optional[HolidayTypeEnum] = None
+
+
+class HolidayResponse(BaseModel):
+    id: int
+    tenant_id: int
+    date: date
+    name: str
+    holiday_type: HolidayTypeEnum
+    country: Optional[str]
+    created_by: Optional[int]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class HolidaySuggestion(BaseModel):
+    """A single public-holiday returned by the import endpoint.
+    Not persisted yet — the admin picks which ones to add."""
+    date: date
+    name: str
+    country: str
+
+
+class HolidaySuggestionsResponse(BaseModel):
+    country: str
+    year: int
+    holidays: list[HolidaySuggestion]
 
 
 class TimeOffRequestResponse(TimeOffRequestBase):
@@ -659,6 +780,12 @@ class ResendVerificationRequest(BaseModel):
 # ============================================================================
 
 class LoginRequest(BaseModel):
+    """Login request body.
+
+    Always ``(email, password)``. The backend tries Auth0 first when
+    configured and falls back to the legacy bcrypt path if the user
+    isn't in Auth0 yet, all transparent to the frontend.
+    """
     email: EmailStr
     password: str
 
@@ -685,6 +812,33 @@ class PasswordChangeResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class SetPasswordRequest(BaseModel):
+    """Body for POST /auth/invitation/set-password."""
+    token: str = Field(..., min_length=10)
+    new_password: str = Field(..., min_length=8)
+
+
+class SetPasswordResponse(BaseModel):
+    """Response after a successful local password-set / reset."""
+    success: bool = True
+    email: EmailStr
+    purpose: str  # 'invite' or 'reset'
+
+
+class InvitationStatusResponse(BaseModel):
+    """Response for GET /auth/invitation/verify?token=... so the
+    frontend can show the user's email and purpose without making
+    them submit a password against a token that's already invalid."""
+    valid: bool
+    email: Optional[EmailStr] = None
+    purpose: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
 
 
 class RoleSwitchRequest(BaseModel):
@@ -720,6 +874,12 @@ class TenantStatus(str, Enum):
 class TenantCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
+    # When true, the API provisions a per-tenant database during the
+    # create call, sets ``is_isolated=true`` on the control row, and
+    # the api routes this tenant's reads/writes to the new DB. Only
+    # safe at onboarding (no data to migrate). For existing tenants,
+    # use the migrate-then-flip procedure.
+    is_isolated: bool = Field(default=False)
 
 
 class TenantUpdate(BaseModel):
@@ -734,6 +894,44 @@ class TenantUpdate(BaseModel):
     timezone: Optional[str] = Field(None, max_length=64)
 
 
+class TenantLifecycleAction(str, Enum):
+    """Lifecycle actions allowed via POST /tenants/{id}/lifecycle.
+
+    Distinct from the free-form ``status`` field on PATCH so destructive
+    actions get their own endpoint with the typed-confirmation gate
+    enforced server-side, not just in the UI.
+    """
+
+    mark_inactive = "mark_inactive"
+    suspend = "suspend"
+    resume = "resume"
+    delete = "delete"
+
+
+class TenantLifecycleRequest(BaseModel):
+    """Body for POST /tenants/{id}/lifecycle.
+
+    The operator types the exact tenant name in the UI; the frontend
+    forwards it as ``confirmation_token``. The backend re-validates
+    against the live tenant row before performing the action so a stale
+    UI can't bypass the gate.
+
+    ``resume`` is the only action that doesn't require typing - it's
+    reversing a previous suspension and the safety bar is already lower.
+    All other actions reject when the token doesn't match exactly.
+    """
+
+    action: TenantLifecycleAction
+    confirmation_token: Optional[str] = Field(
+        None,
+        max_length=255,
+        description=(
+            "The exact tenant name typed by the operator. Required for "
+            "mark_inactive / suspend / delete; ignored for resume."
+        ),
+    )
+
+
 class TenantResponse(BaseModel):
     id: int
     name: str
@@ -742,10 +940,30 @@ class TenantResponse(BaseModel):
     ingestion_enabled: bool = False
     max_mailboxes: Optional[int] = None
     timezone: Optional[str] = None
+    # Branding. We expose a boolean and the mime type but never the raw
+    # storage key — that's an internal path with no business leaving
+    # the server. The frontend fetches /admin/tenant/logo to read the
+    # bytes when has_logo is true. Both fields are populated by the
+    # route handler before serialization.
+    has_logo: bool = False
+    logo_mime_type: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TenantFeaturesResponse(BaseModel):
+    """Feature flags Acufy controls per tenant (platform-admin owned)."""
+    tenant_id: int
+    custom_outbound_email: bool
+    custom_email_template: bool
+
+
+class TenantFeaturesUpdate(BaseModel):
+    """Partial update for feature flags. Any field omitted is left as-is."""
+    custom_outbound_email: Optional[bool] = None
+    custom_email_template: Optional[bool] = None
 
 
 class DepartmentCreate(BaseModel):

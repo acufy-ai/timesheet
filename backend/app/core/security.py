@@ -3,10 +3,15 @@ import secrets
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import httpx
 from jose import JWTError, jwt
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class Auth0VerificationError(Exception):
+    """Raised when an Auth0 access token cannot be resolved to a user."""
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -116,3 +121,112 @@ def decode_token(token: str) -> dict:
         logger.error(
             f"JWT decode error: {e}")
         return None
+
+
+async def verify_auth0_token(auth0_access_token: str) -> dict:
+    """Resolve an Auth0 access token to its user identity.
+
+    Calls Auth0's ``/userinfo`` endpoint with the bearer token. Auth0
+    validates the token's signature, expiry, and audience server-side
+    and returns the OIDC user profile (``sub``, ``email``,
+    ``email_verified``, ...). This avoids us having to maintain a JWKS
+    cache in-process and works whether the access token is a JWT or
+    opaque.
+
+    Returns the userinfo dict; raises :class:`Auth0VerificationError`
+    on any failure so callers can map to a 401.
+    """
+    if not settings.auth0_enabled:
+        raise Auth0VerificationError("Auth0 is not configured on the server")
+
+    url = f"https://{settings.auth0_domain}/userinfo"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {auth0_access_token}"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Auth0 /userinfo request failed: %s", exc)
+        raise Auth0VerificationError("Auth0 unreachable") from exc
+
+    if resp.status_code != 200:
+        logger.info("Auth0 /userinfo rejected token: %s", resp.status_code)
+        raise Auth0VerificationError("Invalid Auth0 token")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise Auth0VerificationError("Auth0 returned non-JSON response") from exc
+
+    if not data.get("sub") or not data.get("email"):
+        raise Auth0VerificationError("Auth0 userinfo missing sub or email")
+    return data
+
+
+class Auth0PasswordError(Exception):
+    """Raised when Auth0 rejects an email/password pair.
+
+    Carries the Auth0 ``error`` code so the caller can distinguish
+    "wrong password" from "user not in Auth0 yet" and fall back
+    to legacy bcrypt only for the latter.
+    """
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+async def auth0_password_grant(email: str, password: str) -> str:
+    """Exchange (email, password) for an Auth0 access token.
+
+    Done server-side because Regular Web App clients are confidential
+    and Auth0 requires the client secret for the password-realm grant.
+    Keeping this on the backend also means the frontend can keep its
+    existing simple ``POST /auth/login`` shape.
+
+    Returns the access_token. Raises :class:`Auth0PasswordError` on any
+    Auth0-side rejection; the error's ``code`` is the Auth0 ``error``
+    field (``invalid_grant``, ``access_denied``, ...) so the login
+    handler can decide whether to fall back to bcrypt.
+    """
+    if not settings.auth0_enabled:
+        raise Auth0PasswordError("Auth0 is not configured on the server")
+
+    url = f"https://{settings.auth0_domain}/oauth/token"
+    body = {
+        "grant_type": "http://auth0.com/oauth/grant-type/password-realm",
+        "realm": settings.auth0_connection,
+        "username": email,
+        "password": password,
+        "client_id": settings.auth0_client_id,
+        "client_secret": settings.auth0_client_secret,
+        "scope": "openid profile email",
+    }
+    if settings.auth0_audience:
+        body["audience"] = settings.auth0_audience
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, data=body)
+    except httpx.HTTPError as exc:
+        logger.warning("Auth0 /oauth/token request failed: %s", exc)
+        raise Auth0PasswordError("Auth0 unreachable") from exc
+
+    if resp.status_code == 200:
+        data = resp.json()
+        token = data.get("access_token")
+        if not token:
+            raise Auth0PasswordError("Auth0 returned no access_token")
+        return token
+
+    code: str | None = None
+    description: str | None = None
+    try:
+        err = resp.json()
+        code = err.get("error")
+        description = err.get("error_description")
+    except ValueError:
+        pass
+    logger.info("Auth0 password grant rejected: %s %s", code, description)
+    raise Auth0PasswordError(description or "Auth0 rejected credentials", code=code)

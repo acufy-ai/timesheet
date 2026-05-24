@@ -1,19 +1,19 @@
 import logging
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, status, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, status, Query, UploadFile
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse, AdminPasswordResetRequest
+from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse, AdminPasswordResetRequest, UserPreferences, UserPreferencesUpdate
 from app.crud.user import get_user_by_id, create_user, update_user, delete_user, list_users
 from app.core.permissions import get_user_permissions, shadow_check
 from app.core.deps import get_current_user, get_tenant_db, require_role, require_same_tenant
 from app.models.user import User
 from app.models.assignments import EmployeeManagerAssignment
-from app.core.security import verify_password, get_password_hash
+from app.core.security import verify_password, get_password_hash, auth0_password_grant, Auth0PasswordError
 from app.models.user import UserRole
 from app.crud.tenant import get_tenant
 from app.services.ingestion_sync import _send_outbound_webhook
@@ -117,6 +117,7 @@ async def list_assignable_users(
 
 @router.get("", response_model=list[UserResponse])
 async def list_all_users(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
@@ -138,15 +139,39 @@ async def list_all_users(
     )
 
     if current_user.role == UserRole.PLATFORM_ADMIN:
+        # PA tokens carry tenant_id=None, so we must filter to the
+        # tenant the request is scoped to. get_tenant_db already
+        # routed the session via X-Tenant-Slug; look up the matching
+        # tenant id in the control plane and filter by it. This is
+        # defense-in-depth: for an isolated tenant the per-tenant DB
+        # only contains that tenant's users anyway, but for a
+        # non-isolated tenant the session is bound to the shared
+        # legacy DB and an unfiltered query would leak every tenant's
+        # users.
+        target_tenant_id: int | None = None
+        header_slug = request.headers.get("X-Tenant-Slug")
+        if header_slug:
+            from app.db_control import AsyncControlSessionLocal
+            from app.models.control import ControlTenant
+            async with AsyncControlSessionLocal() as control_db:
+                target_tenant_id = await control_db.scalar(
+                    select(ControlTenant.id).where(ControlTenant.slug == header_slug)
+                )
+        query = select(User).options(
+            selectinload(User.manager_assignment),
+            selectinload(User.project_access),
+        )
+        if target_tenant_id is not None:
+            query = query.where(User.tenant_id == target_tenant_id)
+        else:
+            # Fail closed: an unresolved slug must return no rows
+            # rather than leaking the entire legacy DB. The session
+            # may still be bound to the shared DB (e.g. dep fallback)
+            # so an unfiltered query would otherwise expose every
+            # tenant's users to the platform admin.
+            query = query.where(User.id == -1)
         result = await db.execute(
-            select(User)
-            .options(
-                selectinload(User.manager_assignment),
-                selectinload(User.project_access),
-            )
-            .order_by(User.full_name.asc())
-            .offset(skip)
-            .limit(limit)
+            query.order_by(User.full_name.asc()).offset(skip).limit(limit)
         )
         orm_users = list(result.scalars().all())
     elif current_user.role == UserRole.ADMIN:
@@ -176,6 +201,58 @@ async def get_my_permissions(
 ) -> dict:
     perms = await get_user_permissions(db, current_user)
     return {"permissions": sorted(perms)}
+
+
+# Allowed values for known preference keys. Unknown keys are accepted as-is
+# so the frontend can introduce new ones without a backend change, but known
+# keys are validated to keep the column from accumulating typos.
+_INBOX_VIEW_MODES = {"cards", "table"}
+
+
+@router.get("/me/preferences", response_model=UserPreferences)
+async def get_my_preferences(
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return the caller's persisted UI preferences."""
+    return dict(current_user.preferences or {})
+
+
+@router.patch("/me/preferences", response_model=UserPreferences)
+async def update_my_preferences(
+    payload: UserPreferencesUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Partial-update the caller's UI preferences.
+
+    Only keys explicitly provided are merged. Unknown keys are rejected at
+    the schema layer; known keys are value-validated here so the column
+    stays clean. Returns the full merged preferences object so the caller
+    can mirror it into local cache without a second round-trip.
+    """
+    incoming = payload.model_dump(exclude_unset=True)
+
+    if "inbox_view_mode" in incoming:
+        mode = incoming["inbox_view_mode"]
+        if mode is not None and mode not in _INBOX_VIEW_MODES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"inbox_view_mode must be one of {sorted(_INBOX_VIEW_MODES)}",
+            )
+
+    # Merge over the existing dict instead of replacing it so unrelated
+    # preferences keys survive partial PATCHes.
+    merged = dict(current_user.preferences or {})
+    for key, value in incoming.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    current_user.preferences = merged
+    # SQLAlchemy doesn't flag JSONB mutations by default; re-assigning the
+    # whole dict above already triggers an UPDATE, so commit and return.
+    await db.commit()
+    return merged
 
 
 @router.get("/me/profile", response_model=UserProfileResponse)
@@ -293,22 +370,64 @@ async def change_my_password(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> MessageResponse:
-    """Allow a user to change password by providing current password first."""
-    if not verify_password(payload.current_password, current_user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
+    """Allow a user to change password by providing current password first.
 
-    if payload.current_password == payload.new_password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different from current password",
-        )
+    Mirrors the branching in ``POST /auth/change-password``: Auth0
+    users go through the Management API, bcrypt users update the
+    local hash. The frontend hits ``/auth/change-password`` for the
+    main self-service form; this endpoint exists for the post-
+    verification first-password set flow but must also handle Auth0
+    users so direct API callers aren't broken.
+    """
+    is_auth0_user = bool(current_user.auth0_sub)
 
-    _validate_new_password(payload.new_password)
+    if is_auth0_user:
+        try:
+            await auth0_password_grant(current_user.email, payload.current_password)
+        except Auth0PasswordError as exc:
+            if exc.code == "invalid_grant":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current password is incorrect",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not verify current password (Auth0 unreachable). Try again in a moment.",
+            ) from exc
+        if payload.current_password == payload.new_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be different from current password",
+            )
+        from app.services.auth0_mgmt import Auth0MgmtError, set_user_password
+        try:
+            await set_user_password(
+                sub=current_user.auth0_sub,
+                password=payload.new_password,
+            )
+        except Auth0MgmtError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        # Replace local hash with a throwaway so a future Auth0-
+        # disabled fallback can never accept the user's old bcrypt.
+        import secrets
+        current_user.hashed_password = get_password_hash(secrets.token_urlsafe(48))
+    else:
+        if not verify_password(payload.current_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
+        if payload.current_password == payload.new_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be different from current password",
+            )
+        _validate_new_password(payload.new_password)
+        current_user.hashed_password = get_password_hash(payload.new_password)
 
-    current_user.hashed_password = get_password_hash(payload.new_password)
     current_user.has_changed_password = True
     db.add(current_user)
     await db.commit()
@@ -414,6 +533,126 @@ async def update_tenant_settings(
     return result
 
 
+@router.post("/smtp-test", status_code=200)
+async def test_smtp_connection(
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Open a live SMTP connection using the tenant's stored smtp_* settings.
+
+    Does not send a message. Returns {"ok": true} or {"ok": false, "detail": "..."}.
+    Requires the custom_outbound_email feature flag.
+    """
+    import smtplib
+
+    from app.services.tenant_features import has_feature
+    from app.services.tenant_email_service import build_tenant_smtp_config
+
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant assigned.",
+        )
+
+    if not await has_feature(current_user.tenant_id, "custom_outbound_email"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Custom Outbound Email feature is not enabled for this tenant.",
+        )
+
+    cfg = await build_tenant_smtp_config(db, current_user.tenant_id)
+    if cfg is None:
+        return {"ok": False, "detail": "SMTP host is not configured. Enter a host in the Email / SMTP settings first."}
+
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=10) as server:
+            if cfg["use_tls"]:
+                server.starttls()
+            if cfg["username"]:
+                server.login(cfg["username"], cfg["password"])
+        return {"ok": True}
+    except smtplib.SMTPAuthenticationError as exc:
+        return {"ok": False, "detail": f"Authentication failed: {exc.smtp_error.decode(errors='replace') if isinstance(exc.smtp_error, bytes) else str(exc)}"}
+    except smtplib.SMTPConnectError as exc:
+        return {"ok": False, "detail": f"Could not connect to {cfg['host']}:{cfg['port']}: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
+class EmailTemplatePreviewRequest(PydanticBaseModel):
+    purpose: str  # "invite" | "reset"
+    subject: str = ""
+    greeting: str = ""
+    body: str = ""
+    button_label: str = ""
+    signoff: str = ""
+
+
+@router.post("/email-template-preview", status_code=200)
+async def email_template_preview(
+    body: EmailTemplatePreviewRequest,
+    current_user: User = Depends(require_role("ADMIN")),
+) -> dict:
+    """Render a preview of the invitation or reset email using the supplied
+    field overrides and dummy recipient data.
+
+    Returns {"subject": str, "html": str, "text": str}.
+    No feature-flag check -- admins can preview on any tier.
+    """
+    from app.services.email_verification import (
+        _build_modern_invite_html,
+        _build_modern_invite_text,
+    )
+
+    purpose = body.purpose if body.purpose in ("invite", "reset") else "invite"
+    first_name = "Alex"
+    org = "Acme Corp"
+    action_url = "https://app.acufy.ai/set-password?token=preview"
+
+    if purpose == "reset":
+        default_subject      = "Reset your Acufy Timesheet password"
+        default_greeting     = f"Hi {first_name},"
+        default_body         = "We received a request to reset your password on Acufy Timesheet. Click the button below to choose a new one."
+        default_button_label = "Reset my password"
+        default_signoff      = "Acufy AI Security"
+        headline             = "Reset your password"
+    else:
+        default_subject      = "You're invited to Acufy Timesheet"
+        default_greeting     = f"Hi {first_name},"
+        default_body         = f"{org} has set up your account on Acufy Timesheet. Set your password to get started."
+        default_button_label = "Set my password"
+        default_signoff      = f"Sent on behalf of {org}"
+        headline             = "Welcome to Acufy Timesheet"
+
+    subject      = body.subject.strip()      or default_subject
+    greeting     = body.greeting.strip()     or default_greeting
+    body_text    = body.body.strip()         or default_body
+    button_label = body.button_label.strip() or default_button_label
+    signoff      = body.signoff.strip()      or default_signoff
+
+    # Greeting always starts with "Hi {first_name}," -- append custom text after
+    if body.greeting.strip():
+        greeting = f"Hi {first_name}, {body.greeting.strip()}"
+
+    intro = f"{greeting} {body_text}"
+
+    html_out = _build_modern_invite_html(
+        headline=headline,
+        intro=intro,
+        button_label=button_label,
+        invite_url=action_url,
+        footer_inviter=signoff,
+    )
+    text_out = _build_modern_invite_text(
+        headline=headline,
+        intro=intro,
+        invite_url=action_url,
+        footer_inviter=signoff,
+    )
+
+    return {"subject": subject, "html": html_out, "text": text_out}
+
+
 class BulkDeleteUsersRequest(PydanticBaseModel):
     user_ids: list[int]
 
@@ -446,7 +685,7 @@ async def reset_user_password(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> MessageResponse:
-    """Admin resets a user's password. User will be prompted to change it on next login."""
+    """Admin resets a user's password. Syncs to Auth0 when the user has an auth0_sub."""
     user = await get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -456,6 +695,19 @@ async def reset_user_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use the change password page to update your own password")
 
     _validate_new_password(payload.new_password)
+
+    # Sync to Auth0 first (before local write) so a policy rejection surfaces
+    # as a clean 400 without any partial state being committed.
+    if user.auth0_sub:
+        from app.services import auth0_mgmt
+        try:
+            await auth0_mgmt.set_user_password(
+                sub=user.auth0_sub,
+                password=payload.new_password,
+                mark_email_verified=True,
+            )
+        except auth0_mgmt.Auth0MgmtError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     user.hashed_password = get_password_hash(payload.new_password)
     user.has_changed_password = False
@@ -527,6 +779,151 @@ async def resend_verification_email_endpoint(
     return MessageResponse(message=f"Verification email resent to {user.email}.")
 
 
+@router.post("/{user_id}/resend-invite", response_model=MessageResponse)
+async def resend_invite_email_endpoint(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> MessageResponse:
+    """Issue a fresh /set-password invite link and email it to the user.
+
+    Works for users who already have an auth0_sub (provisioned) but haven't
+    set their password yet, or for any active user whose original invite
+    link expired. The previous token is left in the DB as consumed-equivalent
+    (it will just fail the jti lookup on use), so only the new link works.
+    """
+    from app.services.password_invite import issue_invite_token, build_set_password_url
+    from app.services.email_verification import send_local_invitation_email
+    from app.api.platform_settings import get_effective_smtp_config
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.tenant_id != current_user.tenant_id and current_user.role != UserRole.PLATFORM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: user account is inactive",
+        )
+    if user.is_external:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: external users do not log in.",
+        )
+    if (user.email or "").lower().endswith("@local.invalid"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: user has no real email address. Add one first.",
+        )
+    if not user.auth0_sub:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: user is not provisioned in Auth0. Use Resend Verification instead.",
+        )
+
+    token = await issue_invite_token(db, user, purpose="invite")
+    await db.commit()
+
+    invite_url = build_set_password_url(token, purpose="invite")
+    smtp_config = await get_effective_smtp_config(db)
+    tenant_name: str | None = None
+    if user.tenant_id is not None:
+        tenant = await get_tenant(db, user.tenant_id)
+        tenant_name = tenant.name if tenant else None
+
+    await send_local_invitation_email(user, invite_url, smtp_config, tenant_name, user.tenant_id)
+
+    return MessageResponse(message=f"Invite email resent to {user.email}.")
+
+
+@router.post("/{user_id}/send-invite", response_model=MessageResponse)
+async def send_invite_endpoint(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> MessageResponse:
+    """Unified Send invite. Picks the right flow based on the user's state:
+
+    * If the user has an ``auth0_sub`` (provisioned in Auth0), send a fresh
+      /set-password invite link. The user clicks the link, sets their own
+      password on the SPA, and the password syncs to Auth0.
+    * Otherwise, fall back to the legacy verification flow: rotate the
+      user's temp password, mark them unverified, and email both the temp
+      password and a /verify-account link.
+
+    Replaces the dual "Resend verification" / "Resend invite link" buttons
+    that exposed the Auth0-cutover seam to operators. Both old endpoints
+    remain to keep any in-flight clients working; new UI should call here.
+    """
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.tenant_id != current_user.tenant_id and current_user.role != UserRole.PLATFORM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: user account is inactive",
+        )
+    if user.is_external:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: external users do not log in.",
+        )
+    if (user.email or "").lower().endswith("@local.invalid"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send invite: user has no real email address. Add one first.",
+        )
+
+    tenant_name: str | None = None
+    if user.tenant_id is not None:
+        from app.crud.tenant import get_tenant
+        tenant = await get_tenant(db, user.tenant_id)
+        tenant_name = tenant.name if tenant else None
+
+    if user.auth0_sub:
+        # Auth0 path: issue a /set-password invite token and email the link.
+        from app.services.password_invite import issue_invite_token, build_set_password_url
+        from app.services.email_verification import send_local_invitation_email
+        from app.api.platform_settings import get_effective_smtp_config
+
+        token = await issue_invite_token(db, user, purpose="invite")
+        await db.commit()
+        invite_url = build_set_password_url(token, purpose="invite")
+        smtp_config = await get_effective_smtp_config(db)
+        await send_local_invitation_email(user, invite_url, smtp_config, tenant_name, user.tenant_id)
+        return MessageResponse(message=f"Invite email sent to {user.email}.")
+
+    # Legacy path: rotate temp password + verification token, email both.
+    if user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already verified and not provisioned in Auth0. Use Reset Password instead.",
+        )
+
+    from app.crud.user import _generate_default_password
+    from app.services.email_verification import set_verification_token, send_verification_email
+
+    new_temp_password = _generate_default_password()
+    user.hashed_password = get_password_hash(new_temp_password)
+    user.has_changed_password = False
+    token = set_verification_token(user)
+    db.add(user)
+    await db.commit()
+
+    await send_verification_email(
+        user,
+        token,
+        temporary_password=new_temp_password,
+        tenant_name=tenant_name,
+        tenant_id=user.tenant_id,
+        resend=True,
+    )
+    return MessageResponse(message=f"Verification email sent to {user.email}.")
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
@@ -594,20 +991,31 @@ async def create_new_user(
     user_create.password = None  # always auto-generated
 
     try:
-        from app.services.email_verification import set_verification_token, send_verification_email
+        from app.services.email_verification import (
+            set_verification_token,
+            send_verification_email,
+            send_local_invitation_email,
+        )
         from app.api.platform_settings import get_effective_smtp_config
-        new_user, temp_password = await create_user(db, user_create)
+        new_user, temp_password, auth0_invite_url = await create_user(db, user_create)
 
-        # Verification email only goes to internal+active users with a real email.
+        # Invitation email only goes to internal+active users with a real email.
         provided_real_email = bool(user_create.email)
-        send_verification = (
+        send_invitation = (
             new_user.is_active
             and not new_user.is_external
             and provided_real_email
         )
 
+        # When Auth0 provisioning succeeded the create_user CRUD also
+        # issued a local /set-password invite URL (returned as
+        # auth0_invite_url for historical reasons — it's actually our
+        # own token URL now, pointing at /set-password?token=...).
+        # Falls back to the legacy verification email + temp password
+        # flow when Auth0 is disabled or provisioning failed.
         token: str | None = None
-        if send_verification:
+        use_local_invite = bool(auth0_invite_url) and send_invitation
+        if send_invitation and not use_local_invite:
             token = set_verification_token(new_user)
             db.add(new_user)
         await db.commit()
@@ -620,12 +1028,18 @@ async def create_new_user(
         if new_user.tenant_id is not None:
             tenant = await get_tenant(db, new_user.tenant_id)
             tenant_name = tenant.name if tenant else None
-        via_tenant_oauth = False
-        if new_user.tenant_id is not None:
-            from app.services.tenant_email_service import _get_active_oauth_mailbox
-            via_tenant_oauth = await _get_active_oauth_mailbox(db, new_user.tenant_id) is not None
 
-        if send_verification and token is not None:
+        if use_local_invite:
+            background_tasks.add_task(
+                send_local_invitation_email,
+                new_user, auth0_invite_url, smtp_config, tenant_name,
+                new_user.tenant_id,
+            )
+        elif send_invitation and token is not None:
+            via_tenant_oauth = False
+            if new_user.tenant_id is not None:
+                from app.services.tenant_email_service import _get_active_oauth_mailbox
+                via_tenant_oauth = await _get_active_oauth_mailbox(db, new_user.tenant_id) is not None
             background_tasks.add_task(
                 send_verification_email,
                 new_user, token, temp_password, smtp_config, tenant_name,
@@ -637,11 +1051,21 @@ async def create_new_user(
                 else ("inactive user" if not new_user.is_active else "no email on file")
             )
             logger.info(
-                "verification_email_skipped: user=%s reason=%s",
+                "invitation_email_skipped: user=%s reason=%s",
                 new_user.email, reason,
             )
 
         activity_events: list[dict] = []
+        # Platform admins don't exist in the per-tenant users table, so
+        # `actor_user_id` (an FK into users) can't carry their id. Pass
+        # actor_user=None and use actor_name_override for the audit
+        # context. Otherwise the activity_log INSERT raises IntegrityError
+        # right after a successful user create, the surrounding except
+        # clause maps it to a misleading "already exists" 400, and the
+        # caller sees an error even though the user was created.
+        actor_is_pa = current_user.role == UserRole.PLATFORM_ADMIN
+        actor_user_arg = None if actor_is_pa else current_user
+        actor_name_arg = current_user.full_name if actor_is_pa else None
         if new_user.tenant_id is not None:
             if current_user.role == UserRole.PLATFORM_ADMIN and new_user.role == UserRole.ADMIN:
                 tenant_name_for_log = tenant_name or f"tenant {new_user.tenant_id}"
@@ -650,7 +1074,8 @@ async def create_new_user(
                         activity_type="TENANT_ADMIN_CREATED",
                         visibility_scope=PLATFORM_ADMIN_ACTIVITY_SCOPE,
                         tenant_id=new_user.tenant_id,
-                        actor_user=current_user,
+                        actor_user=actor_user_arg,
+                        actor_name_override=actor_name_arg,
                         entity_type="tenant_admin",
                         entity_id=new_user.id,
                         summary=f"{current_user.full_name} added tenant admin {new_user.full_name} for {tenant_name}.",
@@ -665,7 +1090,8 @@ async def create_new_user(
                         activity_type="USER_CREATED",
                         visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
                         tenant_id=new_user.tenant_id,
-                        actor_user=current_user,
+                        actor_user=actor_user_arg,
+                        actor_name_override=actor_name_arg,
                         entity_type="user",
                         entity_id=new_user.id,
                         summary=f"{current_user.full_name} created user {new_user.full_name}.",
@@ -678,8 +1104,11 @@ async def create_new_user(
         await record_activity_events(db, activity_events)
         return {
             "user": new_user,
-            "temporary_password": temp_password,
-            "verification_email_sent": send_verification,
+            # Auth0 owns the password when provisioning succeeded — the
+            # temp bcrypt one we generated is never shown to the user,
+            # so don't leak it back to the admin UI either.
+            "temporary_password": None if use_local_invite else temp_password,
+            "verification_email_sent": send_invitation,
         }
     except ValueError as exc:
         raise HTTPException(
@@ -984,6 +1413,62 @@ def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
 
 
+async def _apply_alias_emails(
+    db: AsyncSession, user: User, candidate_emails: list[str]
+) -> list[str]:
+    """Add the given alias emails to ``user`` where it's safe to do so.
+
+    Returns a list of human-readable warnings for aliases that were
+    skipped because they collide with another user. The caller can
+    fold these into the per-row ``warnings`` array so the admin
+    importing the CSV sees what happened. Aliases that are already
+    on this user (re-import) are a no-op and produce no warning.
+
+    Used by the CSV import flow's create AND overwrite branches so
+    extra_email columns work consistently in both shapes.
+
+    Caller is responsible for the surrounding ``await db.commit()``
+    so multiple aliases can be added in one transaction with the
+    other row writes.
+    """
+    from app.crud.user import get_user_by_email as _crud_get_user_by_email
+    from app.models.user_email_alias import UserEmailAlias
+
+    warnings: list[str] = []
+    if not candidate_emails:
+        return warnings
+
+    # Snapshot the user's existing aliases once to avoid an O(N^2)
+    # query for re-imports of the same row.
+    existing_aliases_q = await db.execute(
+        select(UserEmailAlias.email).where(UserEmailAlias.user_id == user.id)
+    )
+    already_on_user = {row[0].lower() for row in existing_aliases_q.all()}
+
+    for raw in candidate_emails:
+        alias = _normalize_email(raw)
+        if not alias:
+            continue
+        if alias == _normalize_email(user.email or ""):
+            # The alias is the same as the user's primary email.
+            # Silent no-op rather than a warning — this is usually
+            # the CSV defaulting one extra-email column to the
+            # primary, which the admin didn't mean.
+            continue
+        if alias in already_on_user:
+            continue
+        existing_owner = await _crud_get_user_by_email(db, alias)
+        if existing_owner is not None and existing_owner.id != user.id:
+            warnings.append(
+                f"Skipped alias {alias!r}: belongs to another user in this tenant"
+            )
+            continue
+        db.add(UserEmailAlias(user_id=user.id, email=alias))
+        already_on_user.add(alias)
+
+    return warnings
+
+
 @router.get("/{user_id}/email-aliases", response_model=list[EmailAliasRead])
 async def list_email_aliases(
     user_id: int,
@@ -1105,6 +1590,64 @@ async def delete_email_alias(
     await db.commit()
 
 
+@router.get("/{user_id}/clients", response_model=list)
+async def list_user_client_assignments(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> list:
+    from app.crud.user_client_assignment import get_assignments_for_user
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    require_same_tenant(target.tenant_id, current_user)
+    return await get_assignments_for_user(db, user_id, current_user.tenant_id)
+
+
+@router.post("/{user_id}/clients/{client_id}", status_code=status.HTTP_201_CREATED)
+async def add_user_client_assignment(
+    user_id: int,
+    client_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> dict:
+    from app.crud.user_client_assignment import add_assignment, get_assignments_for_user
+    from app.models.client import Client
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    require_same_tenant(target.tenant_id, current_user)
+    client = await db.get(Client, client_id)
+    if not client or client.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    result = await add_assignment(db, user_id, client_id, current_user.tenant_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Assignment already exists")
+    await db.commit()
+    assignments = await get_assignments_for_user(db, user_id, current_user.tenant_id)
+    return {"assignments": assignments}
+
+
+@router.delete("/{user_id}/clients/{client_id}", status_code=status.HTTP_200_OK)
+async def remove_user_client_assignment(
+    user_id: int,
+    client_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> dict:
+    from app.crud.user_client_assignment import remove_assignment, get_assignments_for_user
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    require_same_tenant(target.tenant_id, current_user)
+    deleted = await remove_assignment(db, user_id, client_id, current_user.tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+    await db.commit()
+    assignments = await get_assignments_for_user(db, user_id, current_user.tenant_id)
+    return {"assignments": assignments}
+
+
 @router.post("/import/preview", response_model=dict)
 async def import_users_preview(
     file: UploadFile = File(...),
@@ -1218,8 +1761,48 @@ async def import_users_commit(
     from app.crud.user import create_user as crud_create_user, get_user_by_email
     from app.models.user_email_alias import UserEmailAlias
     from app.models.user import UserRole as _UserRole
+    from app.models.client import Client as _Client, ClientType as _ClientType
 
     tenant_id = current_user.tenant_id
+
+    # Per-import cache + audit list of clients we auto-create when an
+    # imported row names a client that doesn't exist in the target
+    # tenant. We default new clients to ``external`` (the common case
+    # for contractor employers); admins can re-type them after import.
+    # Keyed by lower-cased name so two rows naming the same client in
+    # different cases coalesce into one new row.
+    auto_created_clients: dict[str, int] = {}
+    auto_created_client_names: list[str] = []
+
+    async def _ensure_client_id(name: str) -> int | None:
+        if not name:
+            return None
+        existing = await resolve_client_id(db, name, tenant_id)
+        if existing is not None:
+            return existing
+        cache_key = name.strip().lower()
+        if cache_key in auto_created_clients:
+            return auto_created_clients[cache_key]
+        client = _Client(
+            tenant_id=tenant_id,
+            name=name.strip(),
+            client_type=_ClientType.external,
+        )
+        db.add(client)
+        try:
+            await db.flush()
+        except Exception:
+            # Race / unique-constraint collision: another concurrent
+            # request created the client between our resolve and insert.
+            # Roll back the partial flush and re-resolve.
+            await db.rollback()
+            existing = await resolve_client_id(db, name, tenant_id)
+            if existing is not None:
+                auto_created_clients[cache_key] = existing
+            return existing
+        auto_created_clients[cache_key] = client.id
+        auto_created_client_names.append(client.name)
+        return client.id
     is_external_default = body.user_type != "internal"
 
     existing_users_result = await db.execute(
@@ -1267,7 +1850,11 @@ async def import_users_commit(
             skipped.append({"row": row_num, "reason": "Full name is required"})
             continue
 
-        row_client = await resolve_client_id(db, validated["client"], tenant_id) if (tenant_id and validated["client"]) else None
+        # Auto-create the client if the row names one that doesn't
+        # exist in this tenant yet. Keeps fresh-tenant rollouts a
+        # single-step process — import the user roster and the client
+        # directory comes along for the ride.
+        row_client = await _ensure_client_id(validated["client"]) if (tenant_id and validated["client"]) else None
         row_project = await resolve_project_id(db, validated["project"], tenant_id) if (tenant_id and validated["project"]) else None
         row_manager = await resolve_manager_id(db, validated["manager"], tenant_id) if (tenant_id and validated["manager"]) else None
 
@@ -1304,6 +1891,20 @@ async def import_users_commit(
                 await db.rollback()
                 skipped.append({"row": row_num, "reason": f"Update failed: {exc}"})
                 continue
+            # Apply any extra emails from the row to the updated user.
+            # Pre-fix, the overwrite branch silently dropped aliases —
+            # so re-importing a roster to add new alias columns never
+            # worked. _apply_alias_emails warns instead of failing on
+            # collisions so the import doesn't abort mid-batch.
+            alias_warnings = await _apply_alias_emails(
+                db, existing_user, validated["extra_emails"]
+            )
+            if alias_warnings:
+                validated["warnings"] = (validated["warnings"] or []) + alias_warnings
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
             updated.append({"row": row_num, "user_id": existing_user_id, "full_name": full_name, "warnings": validated["warnings"]})
             continue
 
@@ -1323,15 +1924,36 @@ async def import_users_commit(
                 phones=validated["phones"],
                 tenant_id=tenant_id,
             )
-            user, _ = await crud_create_user(db, user_create)
+            # CSV imports skip Auth0 provisioning — the per-row
+            # round-trip would multiply the import time by 10x, and the
+            # bulk-import script is the proper path for retro-fitting
+            # Auth0 records to existing local users.
+            user, _, _ = await crud_create_user(db, user_create, provision_auth0=False)
         except Exception as exc:
-            skipped.append({"row": row_num, "reason": str(exc)})
+            # Boil down the database / SQLAlchemy exception to a single
+            # short sentence the admin can act on. The full traceback
+            # still gets logged server-side so we don't lose debug info.
+            import logging as _logging
+            from sqlalchemy.exc import IntegrityError as _IntegrityError
+            _logging.getLogger(__name__).warning(
+                "Import row %s skipped: %s", row_num, exc, exc_info=True,
+            )
+            exc_str = str(exc)
+            if isinstance(exc, _IntegrityError):
+                if "uq_users_tenant_email" in exc_str or "users_email" in exc_str:
+                    reason = "Email already exists in this tenant."
+                elif "uq_users_tenant_username" in exc_str or "users_username" in exc_str:
+                    reason = "Username already in use."
+                else:
+                    reason = "Database constraint violation."
+            else:
+                reason = "Could not create user. Check the row's values and try again."
+            skipped.append({"row": row_num, "reason": reason})
             continue
 
-        for alias_email in validated["extra_emails"]:
-            existing_owner = await get_user_by_email(db, alias_email)
-            if existing_owner is None:
-                db.add(UserEmailAlias(user_id=user.id, email=alias_email))
+        alias_warnings = await _apply_alias_emails(db, user, validated["extra_emails"])
+        if alias_warnings:
+            validated["warnings"] = (validated["warnings"] or []) + alias_warnings
         try:
             await db.commit()
         except Exception:
@@ -1347,11 +1969,23 @@ async def import_users_commit(
             "warnings": validated["warnings"],
         })
 
+    # Make sure newly-created clients are committed even if the last
+    # row of the loop didn't trigger a commit (e.g. it ended in
+    # ``continue``). ``rollback()`` only fires on per-row exceptions; the
+    # standard happy-path commit lives inside the loop, so a trailing
+    # auto-created client could otherwise be flushed but uncommitted.
+    if auto_created_client_names:
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
     return {
         "created": len(created),
         "updated": len(updated),
         "skipped": len(skipped),
         "details": {"created": created, "updated": updated, "skipped": skipped},
+        "new_clients": auto_created_client_names,
     }
 
 

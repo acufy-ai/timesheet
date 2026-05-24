@@ -110,20 +110,39 @@ def _build_vision_prompt(reference_date: str | None = None) -> str:
         "uncertain_fields. Do not infer names, clients, or projects from "
         "context, headers, footers, URLs, or training-data priors — copy them "
         "verbatim from the document or return null. "
-        "For employee_name specifically: only extract a name that is clearly "
-        "labeled as the timesheet's submitter, owner, employee, or worker "
-        "(common labels include 'Owner', 'Employee', 'Name', 'Submitted by', "
-        "'Resource', 'Consultant'). If the document only contains other names "
-        "(approvers, supervisors, signatories, recipients, mailing addresses, "
-        "URL fragments, system metadata), return null for employee_name and "
-        "list 'employee_name' in uncertain_fields. Never guess. "
+        "For employee_name specifically: extract a name that is clearly the "
+        "timesheet's submitter, owner, employee, worker, or the person logged "
+        "into the portal. Acceptable label patterns include: 'Owner', "
+        "'Employee', 'Employee name', 'Name', 'Submitted by', 'Resource', "
+        "'Resource name', 'Consultant', 'Consultant name', 'Associate', "
+        "'Associate name', 'User', 'Logged in as', and the portal-style "
+        "greeting 'Welcome <Name>' that appears at the top of enterprise "
+        "timesheet UIs (Ultimatix, Workday, SAP, Salesforce, internal HR "
+        "portals). When a name is followed by an employee ID in parentheses "
+        "such as 'Lokesh Kumar Madabathula (2970221)' or 'Jane Doe [1234567]', "
+        "the name portion is the employee_name. If the document only contains "
+        "other names (approvers, signatories, recipients, mailing addresses, "
+        "URL fragments, system metadata) and none of the patterns above match, "
+        "return null for employee_name and list 'employee_name' in "
+        "uncertain_fields. Never guess. "
+        "For client_name: extract from labels like 'Client', 'Customer', "
+        "'Account', 'Project Name', 'Project', 'Engagement', 'Project Client', "
+        "'Bill To'. When a project name embeds the client (for example "
+        "'GSK - CMDT Market' or 'Toyota - Factory Model'), the segment before "
+        "the dash/hyphen is typically the client. "
+        "For supervisor_name: extract from labels like 'Supervisor', "
+        "'Supervisor name', 'Manager', 'Manager name', 'Approver', "
+        "'Reports to', 'Reporting manager', 'Lead', 'Project Lead'. Apply the "
+        "same ID-in-parentheses rule as employee_name. Return null when no "
+        "such label is present. "
         "Set extraction_confidence to reflect actual visual certainty: use "
         "values below 0.5 when the document is partially blank, low-quality, "
         "or missing key fields. Do not return 1.0 unless every requested field "
         "is unambiguously present in the image. "
         "Return only valid JSON with a top-level field timesheets, where timesheets "
         "is an array of objects with fields: employee_name, client_name, "
-        "period_start (YYYY-MM-DD), period_end (YYYY-MM-DD), total_hours (number), "
+        "supervisor_name, period_start (YYYY-MM-DD), period_end (YYYY-MM-DD), "
+        "total_hours (number), "
         "line_items (array of {work_date, hours, description, project_code}), "
         "extraction_confidence (0-1), uncertain_fields (array of field names)."
     )
@@ -554,7 +573,7 @@ async def _extract_doc(content: bytes) -> ExtractionResult:
         return ExtractionResult(
             text="",
             method="failed",
-            error="antiword binary is not installed — legacy .doc files cannot be extracted.",
+            error="antiword binary is not installed. Legacy .doc files cannot be extracted.",
         )
     except Exception as exc:
         logger.warning(".doc extraction failed: %s", exc)

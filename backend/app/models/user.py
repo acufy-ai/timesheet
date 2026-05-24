@@ -1,4 +1,4 @@
-from sqlalchemy import String, Boolean, Integer, Enum as SQLEnum, ForeignKey, Text, DateTime
+from sqlalchemy import String, Boolean, Integer, Enum as SQLEnum, ForeignKey, Text, DateTime, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
@@ -21,14 +21,25 @@ class User(Base, TimestampMixin):
 
     __tablename__ = "users"
 
+    # F-007: email and username uniqueness is scoped per-tenant so that
+    # two different tenants can each have an "alice@example.com" without
+    # blocking cross-tenant onboarding. Migration 054 drops the legacy
+    # single-column unique indexes and adds composite ones. Non-unique
+    # indexes on the bare columns are retained for email-lookup speed
+    # during login.
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
+        UniqueConstraint("tenant_id", "username", name="uq_users_tenant_username"),
+        Index("ix_users_email", "email"),
+        Index("ix_users_username", "username"),
+    )
+
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
-    email: Mapped[str] = mapped_column(
-        String(255), unique=True, nullable=False, index=True)
-    username: Mapped[str] = mapped_column(
-        String(255), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     department: Mapped[Optional[str]] = mapped_column(
@@ -47,6 +58,12 @@ class User(Base, TimestampMixin):
     # Phone numbers: index 0 is primary, remaining are extras (max 3 total).
     phones: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
+    )
+    # Per-user UI preferences (view modes, table densities, etc.).
+    # Keys are free-form so the frontend can add new ones without backend
+    # migrations. Reserved keys so far: "inbox_view_mode" ("cards" | "table").
+    preferences: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
@@ -87,6 +104,14 @@ class User(Base, TimestampMixin):
 
     last_login_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Auth0 identity. Populated on first successful Auth0 login (or
+    # during the bulk-import migration). Stays NULL for any user who
+    # hasn't been migrated yet — those users fall through to the
+    # legacy bcrypt path until cutover completes.
+    auth0_sub: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, unique=True, index=True
     )
 
     # Ingestion platform cross-reference
@@ -132,6 +157,11 @@ class User(Base, TimestampMixin):
     )
     email_aliases: Mapped[List["UserEmailAlias"]] = relationship(
         "UserEmailAlias",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    client_assignments: Mapped[List["UserClientAssignment"]] = relationship(
+        "UserClientAssignment",
         back_populates="user",
         cascade="all, delete-orphan",
     )

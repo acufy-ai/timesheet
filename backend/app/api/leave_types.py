@@ -103,7 +103,7 @@ async def delete_leave_type(
     if in_use:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete — {in_use} time-off request(s) use this type. Deactivate it instead.",
+            detail=f"Cannot delete. {in_use} time-off request(s) use this type. Deactivate it instead.",
         )
     await db.delete(lt)
     await db.commit()

@@ -14,13 +14,16 @@ from app.api import (
     approvals,
     attention_signals,
     auth,
+    _invitation_endpoints,
     clients,
     dashboard,
     departments,
+    holidays,
     ingestion,
     leave_types,
     mailboxes,
     notifications,
+    platform_dashboard,
     platform_settings,
     projects,
     sync,
@@ -83,6 +86,11 @@ app.add_middleware(
         "Content-Type",
         "X-Service-Token",
         "X-Tenant-ID",
+        # Platform-admin cross-tenant writes (e.g. creating an ADMIN in
+        # a target tenant from the platform UI) carry the destination
+        # tenant slug here so ``get_tenant_db`` can route to the right
+        # per-tenant database.
+        "X-Tenant-Slug",
     ],
 )
 
@@ -137,9 +145,11 @@ async def shadow_pending_approvals_permission_check(request: Request, call_next)
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(_invitation_endpoints.router)
 app.include_router(users.router)
 app.include_router(clients.router)
 app.include_router(departments.router)
+app.include_router(holidays.router)
 app.include_router(leave_types.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
@@ -151,6 +161,7 @@ app.include_router(dashboard.router)
 app.include_router(notifications.router)
 app.include_router(tenants.router)
 app.include_router(platform_settings.router)
+app.include_router(platform_dashboard.router)
 app.include_router(sync.router)
 app.include_router(mailboxes.router)
 app.include_router(mailboxes.oauth_router)

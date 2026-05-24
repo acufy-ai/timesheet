@@ -1,7 +1,14 @@
-from sqlalchemy import String, ForeignKey, UniqueConstraint
+import enum
+
+from sqlalchemy import Enum as SAEnum, String, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
 from .base import Base, TimestampMixin
+
+
+class ClientType(str, enum.Enum):
+    internal = "internal"
+    external = "external"
 
 
 class Client(Base, TimestampMixin):
@@ -15,6 +22,9 @@ class Client(Base, TimestampMixin):
         ForeignKey("tenants.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_type: Mapped[ClientType] = mapped_column(
+        SAEnum(ClientType, name="clienttype"), nullable=False, default=ClientType.external, server_default="external"
+    )
     quickbooks_customer_id: Mapped[Optional[str]
                                    ] = mapped_column(String(255), nullable=True)
     ingestion_client_id: Mapped[Optional[str]] = mapped_column(
@@ -34,6 +44,9 @@ class Client(Base, TimestampMixin):
         "Project", back_populates="client", cascade="all, delete-orphan")
     email_domains: Mapped[List["ClientEmailDomain"]] = relationship(
         "ClientEmailDomain", back_populates="client", cascade="all, delete-orphan"
+    )
+    user_assignments: Mapped[List["UserClientAssignment"]] = relationship(
+        "UserClientAssignment", back_populates="client", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

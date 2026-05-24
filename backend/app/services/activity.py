@@ -31,16 +31,22 @@ def build_activity_event(
     summary: str,
     route: str,
     actor_user: User | None = None,
+    actor_name_override: str | None = None,
     tenant_id: int | None = None,
     entity_id: int | None = None,
     route_params: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     severity: str = "info",
 ) -> dict[str, Any]:
+    # actor_user_id is a FK into the tenant-local users table. Platform
+    # admins live in acufy_control.platform_admins, not in tenant users,
+    # so when the actor is a PA the caller passes actor_user=None and
+    # actor_name_override="..." to keep audit context without violating
+    # the FK.
     return {
         "tenant_id": tenant_id,
         "actor_user_id": actor_user.id if actor_user else None,
-        "actor_name": actor_user.full_name if actor_user else None,
+        "actor_name": actor_name_override or (actor_user.full_name if actor_user else None),
         "activity_type": activity_type,
         "visibility_scope": visibility_scope,
         "entity_type": entity_type,

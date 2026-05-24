@@ -21,17 +21,17 @@ async def notify_timesheet_approved(
     hours: float,
     db: Optional[AsyncSession] = None,
 ) -> None:
-    subject = f"Timesheet approved — {week_start} to {week_end}"
+    subject = f"Timesheet approved: {week_start} to {week_end}"
     body_text = (
         f"Hi {employee_name},\n\n"
         f"Your timesheet for {week_start} to {week_end} ({hours} hours) has been approved by {approver_name}.\n\n"
-        f"— Acufy AI"
+        f"-- Acufy AI"
     )
     body_html = (
         f"<p>Hi {employee_name},</p>"
         f"<p>Your timesheet for <strong>{week_start} to {week_end}</strong> ({hours} hours) "
         f"has been approved by {approver_name}.</p>"
-        f"<p>— Acufy AI</p>"
+        f"<p>-- Acufy AI</p>"
     )
     try:
         await send_email(employee_email, subject, body_text, body_html, db=db)
@@ -48,13 +48,13 @@ async def notify_timesheet_rejected(
     reason: str,
     db: Optional[AsyncSession] = None,
 ) -> None:
-    subject = f"Timesheet rejected — {week_start} to {week_end}"
+    subject = f"Timesheet rejected: {week_start} to {week_end}"
     body_text = (
         f"Hi {employee_name},\n\n"
         f"Your timesheet for {week_start} to {week_end} has been rejected by {rejector_name}.\n\n"
         f"Reason: {reason}\n\n"
         f"Please review and resubmit.\n\n"
-        f"— Acufy AI"
+        f"-- Acufy AI"
     )
     body_html = (
         f"<p>Hi {employee_name},</p>"
@@ -62,7 +62,7 @@ async def notify_timesheet_rejected(
         f"has been rejected by {rejector_name}.</p>"
         f"<p><strong>Reason:</strong> {reason}</p>"
         f"<p>Please review and resubmit.</p>"
-        f"<p>— Acufy AI</p>"
+        f"<p>-- Acufy AI</p>"
     )
     try:
         await send_email(employee_email, subject, body_text, body_html, db=db)
@@ -79,17 +79,17 @@ async def notify_time_off_approved(
     end_date: str,
     db: Optional[AsyncSession] = None,
 ) -> None:
-    subject = f"Time off approved — {leave_type}"
+    subject = f"Time off approved: {leave_type}"
     body_text = (
         f"Hi {employee_name},\n\n"
         f"Your {leave_type} request for {start_date} to {end_date} has been approved by {approver_name}.\n\n"
-        f"— Acufy AI"
+        f"-- Acufy AI"
     )
     body_html = (
         f"<p>Hi {employee_name},</p>"
         f"<p>Your <strong>{leave_type}</strong> request for {start_date} to {end_date} "
         f"has been approved by {approver_name}.</p>"
-        f"<p>— Acufy AI</p>"
+        f"<p>-- Acufy AI</p>"
     )
     try:
         await send_email(employee_email, subject, body_text, body_html, db=db)
@@ -107,19 +107,19 @@ async def notify_time_off_rejected(
     reason: str,
     db: Optional[AsyncSession] = None,
 ) -> None:
-    subject = f"Time off rejected — {leave_type}"
+    subject = f"Time off rejected: {leave_type}"
     body_text = (
         f"Hi {employee_name},\n\n"
         f"Your {leave_type} request for {start_date} to {end_date} has been rejected by {rejector_name}.\n\n"
         f"Reason: {reason}\n\n"
-        f"— Acufy AI"
+        f"-- Acufy AI"
     )
     body_html = (
         f"<p>Hi {employee_name},</p>"
         f"<p>Your <strong>{leave_type}</strong> request for {start_date} to {end_date} "
         f"has been rejected by {rejector_name}.</p>"
         f"<p><strong>Reason:</strong> {reason}</p>"
-        f"<p>— Acufy AI</p>"
+        f"<p>-- Acufy AI</p>"
     )
     try:
         await send_email(employee_email, subject, body_text, body_html, db=db)

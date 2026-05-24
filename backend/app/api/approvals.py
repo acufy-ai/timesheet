@@ -293,6 +293,11 @@ async def get_approval_history_grouped(
             "rejection_reason": entry.rejection_reason,
             "project_name": entry.project.name if entry.project else None,
             "task_name": entry.task.name if entry.task else None,
+            # Optional explicit time block. Sent as ``HH:MM:SS`` strings so
+            # the frontend's formatter doesn't have to parse Python time
+            # objects. None when the employee logged hours only.
+            "start_time": entry.start_time.isoformat() if entry.start_time else None,
+            "end_time": entry.end_time.isoformat() if entry.end_time else None,
         })
 
     # Determine group status
@@ -350,6 +355,24 @@ async def approve_entry_batch(
             metadata={"entry_ids": approve_request.entry_ids, "total_hours": total_hours, "employee_id": employee_id},
         )])
 
+        # Email: one summary email per batch (always a single employee
+        # + single week thanks to _validate_weekly_batch). The single-
+        # entry handler already sends per-entry emails; batches were
+        # silent before the D-061 redesign and that's the gap we close.
+        if entries and entries[0].user and entries[0].user.email:
+            employee = entries[0].user
+            min_date = min(e.entry_date for e in approved_entries)
+            max_date = max(e.entry_date for e in approved_entries)
+            await notify_timesheet_approved(
+                employee_email=employee.email,
+                employee_name=employee.full_name,
+                approver_name=current_user.full_name,
+                week_start=str(min_date),
+                week_end=str(max_date),
+                hours=total_hours,
+                db=db,
+            )
+
         return approved_entries
     except ValueError as e:
         raise HTTPException(
@@ -388,6 +411,23 @@ async def reject_entry_batch(
             route="/approvals",
             metadata={"entry_ids": reject_request.entry_ids, "total_hours": total_hours, "employee_id": employee_id, "reason": reject_request.rejection_reason},
         )])
+
+        # Email: one summary email per batch. Same shape as approve;
+        # carries the reason so the employee can rework immediately
+        # without going back to the queue to fish it out.
+        if entries and entries[0].user and entries[0].user.email:
+            employee = entries[0].user
+            min_date = min(e.entry_date for e in rejected_entries)
+            max_date = max(e.entry_date for e in rejected_entries)
+            await notify_timesheet_rejected(
+                employee_email=employee.email,
+                employee_name=employee.full_name,
+                rejector_name=current_user.full_name,
+                week_start=str(min_date),
+                week_end=str(max_date),
+                reason=reject_request.rejection_reason,
+                db=db,
+            )
 
         return rejected_entries
     except ValueError as e:

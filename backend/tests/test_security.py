@@ -175,31 +175,35 @@ def test_client_resolution_prefers_employee_default():
     assert cid == 10
 
 
-def test_client_resolution_uses_forwarded_from_domain_over_extracted_name():
-    # Forwarded-from is the strongest sender signal — should beat the LLM name.
+def test_client_resolution_prefers_extracted_name_over_forwarded_from_domain():
+    # New (post-2026-05) precedence: the timesheet document itself is the
+    # most direct signal after an explicit default. If the LLM extracted
+    # a client name that fuzzy-matches an existing Client row, that wins
+    # over inferring from the forwarded-from sender domain.
     cid = _resolve_client_id(
         employee_default_client_id=None,
         forwarded_from_email="r.rajendran3@dxc.com",
         body_emails=[],
         sender_email="acuentuser@gmail.com",
-        extracted_client_name="wmACoE:Aegon",  # LLM-noisy project metadata
+        extracted_client_name="Aegon",  # matches client 20
         clients=_CLIENTS_FIXTURE,
     )
-    assert cid == 10  # DXC, not Aegon
+    assert cid == 20  # Aegon (LLM), not DXC (forwarded-from)
 
 
-def test_client_resolution_uses_body_email_when_no_forward_chain():
-    # Replicates the user's test: outer sender is acuentuser@gmail.com,
-    # no forward chain, but the PDF body contains r.rajendran3@dxc.com.
+def test_client_resolution_falls_through_when_extracted_name_does_not_match_any_client():
+    # If the LLM name doesn't resolve to a Client row, the resolver falls
+    # through to the domain chain rather than failing outright. Here the
+    # body email's dxc.com domain takes it.
     cid = _resolve_client_id(
         employee_default_client_id=None,
         forwarded_from_email=None,
         body_emails=["r.rajendran3@dxc.com"],
         sender_email="acuentuser@gmail.com",
-        extracted_client_name="wmACoE:Aegon",
+        extracted_client_name="Some Vendor We Don't Have Yet",
         clients=_CLIENTS_FIXTURE,
     )
-    assert cid == 10  # DXC via body email domain, not Aegon via LLM
+    assert cid == 10  # DXC via body email domain (LLM extraction had no match)
 
 
 def test_client_resolution_falls_back_to_outer_sender_domain():
@@ -214,14 +218,16 @@ def test_client_resolution_falls_back_to_outer_sender_domain():
     assert cid == 10
 
 
-def test_client_resolution_falls_back_to_extracted_name_when_no_domain_matches():
-    # No domain hits — the LLM's client_name is the only signal left.
+def test_client_resolution_uses_extracted_name_when_it_matches_a_client():
+    # Priority 2: the LLM-extracted name fuzzy-matches an existing
+    # Client row, so it wins even without an employee default. The
+    # domain steps are short-circuited because step 2 already resolved.
     cid = _resolve_client_id(
         employee_default_client_id=None,
         forwarded_from_email=None,
         body_emails=["unknown@somewhere.example"],
         sender_email="user@another.example",
-        extracted_client_name="Aegon",  # exact-match fallback
+        extracted_client_name="Aegon",
         clients=_CLIENTS_FIXTURE,
     )
     assert cid == 20
@@ -250,6 +256,54 @@ def test_client_resolution_skips_empty_body_emails():
         clients=_CLIENTS_FIXTURE,
     )
     assert cid == 10
+
+
+def test_client_resolution_extracted_name_prefers_user_assigned_clients_first():
+    # When the LLM name could plausibly match either an assigned client
+    # or a wider-list client, the resolver narrows to assignments first.
+    # Here the user is assigned to client 20 (Aegon); the wider list also
+    # contains 'Aegon' (same id), but the narrowing path runs first.
+    cid = _resolve_client_id(
+        employee_default_client_id=None,
+        employee_assigned_client_ids=[20],
+        forwarded_from_email=None,
+        body_emails=[],
+        sender_email=None,
+        extracted_client_name="Aegon",
+        clients=_CLIENTS_FIXTURE,
+    )
+    assert cid == 20
+
+
+def test_client_resolution_sole_assigned_client_auto_picks_when_nothing_else_matches():
+    # If the user has exactly one assigned client and no other signal
+    # disambiguates, the resolver auto-assigns that single client. This
+    # is the final fallback before returning None.
+    cid = _resolve_client_id(
+        employee_default_client_id=None,
+        employee_assigned_client_ids=[30],
+        forwarded_from_email=None,
+        body_emails=[],
+        sender_email="someone@nowhere.example",
+        extracted_client_name=None,
+        clients=_CLIENTS_FIXTURE,
+    )
+    assert cid == 30
+
+
+def test_client_resolution_extracted_name_falls_through_to_forwarded_from_when_no_match():
+    # LLM extracted something unknown to our Client table. Resolver
+    # should NOT stop — it falls through to the domain chain and the
+    # forwarded-from sender wins.
+    cid = _resolve_client_id(
+        employee_default_client_id=None,
+        forwarded_from_email="r.rajendran3@dxc.com",
+        body_emails=[],
+        sender_email="x@unrelated.example",
+        extracted_client_name="Brand New Vendor",
+        clients=_CLIENTS_FIXTURE,
+    )
+    assert cid == 10  # DXC via forwarded-from
 
 
 # ── OAuth state binding to user/session (audit fix C3) ────────────────────

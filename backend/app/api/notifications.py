@@ -275,46 +275,51 @@ async def _build_notification_summary(
     week_start = tenant_today - timedelta(days=tenant_today.weekday())
     previous_work_day = _previous_working_day(tenant_today)
 
-    previous_day_entry_count = await db.scalar(
-        select(func.count(TimeEntry.id)).where(
-            (TimeEntry.user_id == current_user.id)
-            & (TimeEntry.tenant_id == current_user.tenant_id)
-            & (TimeEntry.entry_date == previous_work_day)
+    # Per-user submission reminders ("missing yesterday", "weekly
+    # reminder") only apply to internal users. Externals are contractor
+    # records that don't log time daily/weekly, so these notifications
+    # are noise on their bell icon.
+    if not current_user.is_external:
+        previous_day_entry_count = await db.scalar(
+            select(func.count(TimeEntry.id)).where(
+                (TimeEntry.user_id == current_user.id)
+                & (TimeEntry.tenant_id == current_user.tenant_id)
+                & (TimeEntry.entry_date == previous_work_day)
+            )
         )
-    )
-    if current_time >= time(hour=8) and int(previous_day_entry_count or 0) == 0:
-        reminder_anchor = datetime.combine(tenant_today, time(hour=8))
-        _add_notification(
-            items,
-            notification_id="missing-previous-day-entry",
-            title="Missing yesterday's time entry",
-            message=f"No time entry was logged for {previous_work_day.strftime('%b %d')}. Please add it today.",
-            route="/my-time?notif=missing-previous-day-entry",
-            count=1,
-            severity="warning",
-            created_at=reminder_anchor,
-        )
+        if current_time >= time(hour=8) and int(previous_day_entry_count or 0) == 0:
+            reminder_anchor = datetime.combine(tenant_today, time(hour=8))
+            _add_notification(
+                items,
+                notification_id="missing-previous-day-entry",
+                title="Missing yesterday's time entry",
+                message=f"No time entry was logged for {previous_work_day.strftime('%b %d')}. Please add it today.",
+                route="/my-time?notif=missing-previous-day-entry",
+                count=1,
+                severity="warning",
+                created_at=reminder_anchor,
+            )
 
-    current_week_entry_count = await db.scalar(
-        select(func.count(TimeEntry.id)).where(
-            (TimeEntry.user_id == current_user.id)
-            & (TimeEntry.tenant_id == current_user.tenant_id)
-            & (TimeEntry.entry_date >= week_start)
-            & (TimeEntry.status.in_([TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]))
+        current_week_entry_count = await db.scalar(
+            select(func.count(TimeEntry.id)).where(
+                (TimeEntry.user_id == current_user.id)
+                & (TimeEntry.tenant_id == current_user.tenant_id)
+                & (TimeEntry.entry_date >= week_start)
+                & (TimeEntry.status.in_([TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]))
+            )
         )
-    )
-    if int(current_week_entry_count or 0) == 0:
-        week_anchor = datetime.combine(week_start, time.min)
-        _add_notification(
-            items,
-            notification_id="weekly-timesheet-reminder",
-            title="Weekly timesheet reminder",
-            message="You have not logged any timesheet entries for this week yet.",
-            route="/my-time?notif=weekly-timesheet-reminder",
-            count=1,
-            severity="info",
-            created_at=week_anchor,
-        )
+        if int(current_week_entry_count or 0) == 0:
+            week_anchor = datetime.combine(week_start, time.min)
+            _add_notification(
+                items,
+                notification_id="weekly-timesheet-reminder",
+                title="Weekly timesheet reminder",
+                message="You have not logged any timesheet entries for this week yet.",
+                route="/my-time?notif=weekly-timesheet-reminder",
+                count=1,
+                severity="info",
+                created_at=week_anchor,
+            )
 
     scoped_roles = (UserRole.MANAGER,)
     # Admin role is intentionally absent: approval tiles belong on
@@ -415,12 +420,18 @@ async def _build_notification_summary(
         )
 
     if current_user.role == UserRole.ADMIN:
+        # All three admin-facing rules below exclude is_external=true
+        # users. Externals are contractor records held against an email
+        # address; they don't have managers, project access, or weekly
+        # logging obligations, so counting them as "needs a manager"
+        # surfaces hundreds of bogus action items right after an import.
         users_created_count, users_created_latest = (
             await db.execute(
                 select(func.count(User.id), func.max(User.created_at)).where(
                     (User.id != current_user.id)
                     & (User.created_at >= now - timedelta(days=7))
                     & (User.tenant_id == current_user.tenant_id)
+                    & (User.is_external.is_(False))
                 )
             )
         ).one()
@@ -442,6 +453,7 @@ async def _build_notification_summary(
                 .where(
                     (User.role == UserRole.EMPLOYEE)
                     & (User.is_active.is_(True))
+                    & (User.is_external.is_(False))
                     & (User.tenant_id == current_user.tenant_id)
                     & (EmployeeManagerAssignment.employee_id.is_(None))
                 )
@@ -465,6 +477,7 @@ async def _build_notification_summary(
                 .where(
                     (User.role == UserRole.EMPLOYEE)
                     & (User.is_active.is_(True))
+                    & (User.is_external.is_(False))
                     & (User.tenant_id == current_user.tenant_id)
                     & (UserProjectAccess.user_id.is_(None))
                 )

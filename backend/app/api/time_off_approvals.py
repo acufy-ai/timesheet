@@ -171,15 +171,18 @@ async def approve_time_off_item(
             metadata={"employee_id": item.user_id},
         )])
 
-        # Email notification to employee
+        # Email notification to employee. TimeOffRequest is single-day
+        # (one ``request_date``); pass it as both start and end so the
+        # email body reads naturally. ``start_date``/``end_date`` are
+        # the email-helper's argument names — not model fields.
         if item.user and item.user.email:
             await notify_time_off_approved(
                 employee_email=item.user.email,
                 employee_name=item.user.full_name,
                 approver_name=current_user.full_name,
                 leave_type=str(item.leave_type.value if hasattr(item.leave_type, 'value') else item.leave_type),
-                start_date=str(item.start_date),
-                end_date=str(item.end_date),
+                start_date=str(item.request_date),
+                end_date=str(item.request_date),
                 db=db,
             )
 
@@ -237,8 +240,8 @@ async def reject_time_off_item(
                 employee_name=item.user.full_name,
                 rejector_name=current_user.full_name,
                 leave_type=str(item.leave_type.value if hasattr(item.leave_type, 'value') else item.leave_type),
-                start_date=str(item.start_date),
-                end_date=str(item.end_date),
+                start_date=str(item.request_date),
+                end_date=str(item.request_date),
                 reason=reject_request.rejection_reason,
                 db=db,
             )

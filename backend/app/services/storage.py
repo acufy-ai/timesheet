@@ -70,6 +70,42 @@ async def save_file(content: bytes, filename: str) -> str:
     return await _save_local(content, key)
 
 
+# Logo uploads use their own prefix and an allowlist that's image-only.
+# The prefix includes the tenant slug so even a path-traversal attempt
+# on the (server-controlled) extension lands inside that tenant's
+# directory. Callers in app.api.admin.upload_tenant_logo are responsible
+# for sourcing the slug from the authenticated tenant context, never
+# from a client-supplied field.
+_ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _safe_logo_extension(filename: str) -> str | None:
+    ext = Path(filename).suffix.lower()
+    return ext if ext in _ALLOWED_LOGO_EXTENSIONS else None
+
+
+async def save_tenant_logo(
+    content: bytes, filename: str, tenant_slug: str
+) -> str:
+    """Save a tenant logo under ``tenant-logos/<slug>/<uuid>.<ext>``.
+
+    Returns the storage key. Raises ValueError for unsupported file types
+    or empty slugs. The slug must be the authenticated tenant's slug,
+    not a client-supplied value.
+    """
+    if not tenant_slug or "/" in tenant_slug or ".." in tenant_slug:
+        raise ValueError("Invalid tenant slug")
+    ext = _safe_logo_extension(filename)
+    if ext is None:
+        raise ValueError(
+            "Unsupported logo file type. Allowed: PNG, JPG, WEBP, GIF."
+        )
+    key = f"tenant-logos/{tenant_slug}/{uuid.uuid4().hex}{ext}"
+    if settings.storage_provider.lower() == "s3":
+        return await _save_s3(content, key)
+    return await _save_local(content, key)
+
+
 async def read_file(storage_key: str) -> bytes:
     """Read file bytes from the configured storage backend."""
     if settings.storage_provider.lower() == "s3":

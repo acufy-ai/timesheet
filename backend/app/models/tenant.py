@@ -39,6 +39,17 @@ class Tenant(Base, TimestampMixin):
         String(64), nullable=True, default=None
     )
 
+    # Brand logo. Stored as a storage-backend key (path under STORAGE_PATH
+    # for local, S3 object key when S3 is the active provider). Reading
+    # the actual bytes goes through app.services.storage.read_file. NULL
+    # means "no logo uploaded; fall back to the tenant name in the UI."
+    logo_storage_key: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
+    logo_mime_type: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+
     # Back-populated from each tenant-scoped model
     users: Mapped[list["User"]] = relationship("User", back_populates="tenant")
     clients: Mapped[list["Client"]] = relationship("Client", back_populates="tenant")

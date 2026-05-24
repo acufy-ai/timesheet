@@ -542,6 +542,91 @@ async def submit_time_entries(
     return entries
 
 
+async def recall_time_entries(
+    db: AsyncSession,
+    user_id: int,
+    entry_ids: list[int],
+) -> list[TimeEntry]:
+    """Recall (un-submit) time entries that haven't been actioned yet.
+
+    Flips SUBMITTED entries back to DRAFT so the user can edit and
+    resubmit. Refuses if any entry has already been APPROVED or
+    REJECTED (managers act on the queue in real time, so a recall
+    that races an approval must lose cleanly).
+
+    Writes a TimeEntryEditHistory row per entry with
+    ``edit_reason="Recalled by user"`` so the lifecycle is auditable.
+
+    Raises:
+        ValueError if no SUBMITTED entries match (already-approved
+        race, cross-user attempt, or empty list).
+    """
+    if not entry_ids:
+        raise ValueError("No entries provided to recall")
+
+    query = select(TimeEntry).where(
+        (TimeEntry.user_id == user_id) &
+        (TimeEntry.id.in_(entry_ids))
+    )
+    query = query.options(
+        selectinload(TimeEntry.user).selectinload(User.manager_assignment),
+        selectinload(TimeEntry.user).selectinload(User.project_access),
+        selectinload(TimeEntry.project),
+        selectinload(TimeEntry.task),
+        selectinload(TimeEntry.approved_by_user),
+    )
+    result = await db.execute(query)
+    owned = result.scalars().all()
+
+    if not owned:
+        raise ValueError("No entries found to recall")
+
+    # Any already-actioned entry blocks the whole batch. Recall is a
+    # week-level affordance — surface the conflict instead of silently
+    # recalling part of the week.
+    actioned = [e for e in owned if e.status in (
+        TimeEntryStatus.APPROVED, TimeEntryStatus.REJECTED)]
+    if actioned:
+        raise ValueError(
+            "Cannot recall: one or more entries have already been "
+            "approved or rejected. Refresh and try again."
+        )
+
+    pending = [e for e in owned if e.status == TimeEntryStatus.SUBMITTED]
+    if not pending:
+        raise ValueError("No submitted entries to recall")
+
+    now = datetime.now(timezone.utc)
+    for entry in pending:
+        db.add(
+            TimeEntryEditHistory(
+                time_entry_id=entry.id,
+                edited_by=user_id,
+                edited_at=now,
+                edit_reason="Recalled by user",
+                history_summary=f"Recalled submission from {entry.submitted_at.isoformat()}"
+                if entry.submitted_at else "Recalled submission",
+                previous_project_id=entry.project_id,
+                previous_entry_date=entry.entry_date,
+                previous_hours=entry.hours,
+                previous_description=entry.description,
+            )
+        )
+        entry.status = TimeEntryStatus.DRAFT
+        entry.submitted_at = None
+        entry.updated_by = user_id
+        entry.last_edit_reason = "Recalled by user"
+        entry.last_history_summary = "Submission recalled"
+        db.add(entry)
+
+    await db.commit()
+
+    for entry in pending:
+        await db.refresh(entry)
+
+    return pending
+
+
 async def get_weekly_submission_status(db: AsyncSession, user_id: int) -> tuple[bool, str | None, date]:
     """can_submit is true when the user has any DRAFT entries inside the tenant's editable window."""
     today = date.today()

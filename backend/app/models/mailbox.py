@@ -78,6 +78,10 @@ class Mailbox(Base, TimestampMixin):
     last_fetched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_fetch_error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    last_fetch_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     tenant: Mapped["Tenant"] = relationship("Tenant")
     linked_client: Mapped["Client | None"] = relationship("Client")

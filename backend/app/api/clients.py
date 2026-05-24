@@ -290,6 +290,30 @@ async def create_client_from_domain(
             .where(IngestionTimesheet.id.in_(matched_ids))
             .values(client_id=new_client.id)
         )
+        # Mirror the cascade onto the user_client_assignments table for
+        # every timesheet whose employee is already resolved. The User
+        # Management surface treats clients as a multi-value list, so we
+        # only ADD assignments here (duplicates are swallowed).
+        from app.crud.user_client_assignment import add_assignment as _add_user_client_assignment
+        emp_q = await db.execute(
+            select(IngestionTimesheet.employee_id)
+            .where(IngestionTimesheet.id.in_(matched_ids))
+            .where(IngestionTimesheet.employee_id.isnot(None))
+        )
+        seen_user_ids: set[int] = set()
+        for (emp_id,) in emp_q.all():
+            if emp_id is None or emp_id in seen_user_ids:
+                continue
+            seen_user_ids.add(emp_id)
+            try:
+                await _add_user_client_assignment(
+                    db,
+                    user_id=emp_id,
+                    client_id=new_client.id,
+                    tenant_id=tenant_id,
+                )
+            except Exception:  # noqa: BLE001 - cascade is best-effort
+                pass
 
     await record_activity_events(
         db,

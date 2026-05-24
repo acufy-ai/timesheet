@@ -66,9 +66,13 @@ def _validate_slug(slug: str) -> None:
 
 
 def _tenant_db_name(slug: str) -> str:
-    """Postgres database name follows the slug. Hyphens stay legal in
-    Postgres database identifiers; no transformation needed."""
-    return f"acufy_tenant_{slug}"
+    """Delegate to the shared service helper so the manual script
+    and the inline API path use the exact same naming convention.
+    See ``app.services.tenant_provisioning.tenant_db_name`` for the
+    env-aware derivation rule (acufy_tenant_<env>_<slug> on ldev,
+    acufy_tenant_<slug> on prod)."""
+    from app.services.tenant_provisioning import tenant_db_name
+    return tenant_db_name(slug)
 
 
 def _tenant_db_url(db_name: str) -> str:

@@ -268,7 +268,13 @@ def _mask_mailbox(mailbox: Mailbox) -> dict:
         "port": mailbox.port,
         "use_ssl": mailbox.use_ssl,
         "username": mailbox.username,
-        "has_password": bool(mailbox.password_enc),
+        # ``has_password`` is a misnomer kept for schema/frontend
+        # compatibility — it really means "credentials are stored". For
+        # basic-auth mailboxes that's ``password_enc``; for OAuth
+        # mailboxes the credential lives in ``oauth_refresh_token_enc``
+        # (the short-lived access token doesn't count: a missing refresh
+        # token means we can't fetch on the next cycle).
+        "has_password": bool(mailbox.password_enc) or bool(mailbox.oauth_refresh_token_enc),
         "oauth_provider": _enum_value(mailbox.oauth_provider) if mailbox.oauth_provider else None,
         "oauth_email": mailbox.oauth_email,
         "smtp_host": mailbox.smtp_host,
@@ -277,6 +283,8 @@ def _mask_mailbox(mailbox: Mailbox) -> dict:
         "linked_client_id": mailbox.linked_client_id,
         "is_active": mailbox.is_active,
         "last_fetched_at": mailbox.last_fetched_at,
+        "last_fetch_error": mailbox.last_fetch_error,
+        "last_fetch_failed_at": mailbox.last_fetch_failed_at,
         "created_at": mailbox.created_at,
         "updated_at": mailbox.updated_at,
     }
@@ -595,7 +603,12 @@ async def test_mailbox_connection(
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
-    return await _test_connection(mailbox, session)
+    result = await _test_connection(mailbox, session)
+    if result.get("success"):
+        mailbox.last_fetch_error = None
+        mailbox.last_fetch_failed_at = None
+        await session.commit()
+    return result
 
 
 @router.get("/oauth/connect/{provider}", response_model=OAuthConnectResponse)

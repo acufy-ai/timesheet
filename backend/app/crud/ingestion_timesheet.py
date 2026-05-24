@@ -40,11 +40,23 @@ async def list_ingestion_timesheets(
     status: str | None = None,
     client_id: int | None = None,
     employee_id: int | None = None,
+    employee_ids: list[int] | None = None,
+    reviewer_id: int | None = None,
     email_id: int | None = None,
     search: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[IngestionTimesheet]:
+    """List ingestion timesheets with optional filters.
+
+    ``employee_ids`` and ``reviewer_id`` are the D-061 additions that
+    power the manager-scoped Approved Timesheets view. ``employee_ids``
+    constrains the rows to a manager's direct reports;
+    ``reviewer_id`` scopes inbox-approved PDFs to the ones a specific
+    manager personally actioned. Both are additive — passing them
+    together yields the union semantics the redesign needs (rows where
+    the employee is mine OR I reviewed the PDF myself).
+    """
     query = (
         select(IngestionTimesheet)
         .join(IngestionTimesheet.email)
@@ -53,6 +65,7 @@ async def list_ingestion_timesheets(
             selectinload(IngestionTimesheet.employee),
             selectinload(IngestionTimesheet.client),
             selectinload(IngestionTimesheet.email),
+            selectinload(IngestionTimesheet.reviewer),
         )
         .order_by(IngestionTimesheet.created_at.desc())
         .limit(limit)
@@ -64,6 +77,25 @@ async def list_ingestion_timesheets(
         query = query.where(IngestionTimesheet.client_id == client_id)
     if employee_id:
         query = query.where(IngestionTimesheet.employee_id == employee_id)
+    if employee_ids is not None or reviewer_id is not None:
+        # Union: either the timesheet belongs to one of my direct
+        # reports OR I'm the reviewer. We OR them inside a single
+        # ``where`` so that managers see both flavours in one query
+        # even when there's overlap.
+        from sqlalchemy import or_, and_  # local import keeps top clean
+        clauses = []
+        if employee_ids is not None:
+            # Empty list → match nothing (avoids accidentally matching
+            # rows where employee_id IS NULL via SQL three-valued logic).
+            if not employee_ids:
+                # Force-empty result for this branch
+                clauses.append(IngestionTimesheet.id == -1)
+            else:
+                clauses.append(IngestionTimesheet.employee_id.in_(employee_ids))
+        if reviewer_id is not None:
+            clauses.append(IngestionTimesheet.reviewer_id == reviewer_id)
+        if clauses:
+            query = query.where(or_(*clauses))
     if email_id:
         query = query.where(IngestionTimesheet.email_id == email_id)
     if search:

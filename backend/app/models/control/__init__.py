@@ -27,6 +27,12 @@ from app.models.control.platform_admin import PlatformAdmin  # noqa: F401, E402
 from app.models.control.tenant import ControlTenant  # noqa: F401, E402
 from app.models.control.platform_settings import ControlPlatformSettings  # noqa: F401, E402
 from app.models.control.tenant_provisioning_job import TenantProvisioningJob  # noqa: F401, E402
+from app.models.control.tenant_features import ControlTenantFeatures  # noqa: F401, E402
+from app.models.control.platform_audit import (  # noqa: F401, E402
+    PlatformAuditEvent,
+    PlatformAuditCategory,
+    PlatformAuditSeverity,
+)
 
 __all__ = [
     "ControlBase",
@@ -35,4 +41,8 @@ __all__ = [
     "PlatformAdmin",
     "ControlPlatformSettings",
     "TenantProvisioningJob",
+    "ControlTenantFeatures",
+    "PlatformAuditEvent",
+    "PlatformAuditCategory",
+    "PlatformAuditSeverity",
 ]

@@ -1,8 +1,8 @@
-from sqlalchemy import Boolean, String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Integer
+from sqlalchemy import Boolean, String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Integer, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
 from typing import Optional, TYPE_CHECKING
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from .base import Base, TimestampMixin
 
@@ -36,6 +36,13 @@ class TimeEntry(Base, TimestampMixin):
     task_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("tasks.id"), nullable=True, index=True)
     entry_date: Mapped[date] = mapped_column(nullable=False, index=True)
+    # Optional explicit time block. Both are nullable: an entry can be
+    # hours-only (e.g. "4h on project X today") or it can be a precise
+    # block (8:00 AM - 10:00 AM). The frontend computes hours from the
+    # block when the user enters one; the hours column remains the
+    # source of truth for billing / approval / reports.
+    start_time: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    end_time: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     hours: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False)  # 0.00 to 999.99
     description: Mapped[str] = mapped_column(Text, nullable=False)

@@ -69,14 +69,13 @@ async def _enable_external_reminders(
     session: AsyncSession, tenant_id: int
 ) -> None:
     """Configure external reminders so the deadline lands on 2026-04-30 17:00
-    UTC. ``day_of_month = -1`` means the last day of the month; the test
-    freezes now to 2026-04-28 14:00, squarely inside the 3-hour window of the
-    equivalent earlier-window check (see reminder_worker's window arithmetic
-    — a 2-day window around the deadline covers this).
+    UTC. ``day_of_month = 30`` puts the deadline on April 30; the test
+    freezes now to 2026-04-28 17:05, squarely inside the 15-minute 2-day
+    window of the deadline (see reminder_worker's window arithmetic).
     """
     for key, value in [
         ("reminder_external_enabled", "true"),
-        ("reminder_external_deadline_day_of_month", "-1"),
+        ("reminder_external_deadline_day_of_month", "30"),
         ("reminder_external_deadline_time", "17:00"),
     ]:
         session.add(TenantSettings(tenant_id=tenant_id, key=key, value=value))
@@ -208,6 +207,79 @@ async def test_external_reminder_window_uses_tenant_timezone(
     sender = AsyncMock()
     pre_local_window_utc = datetime(2026, 4, 28, 17, 5, tzinfo=timezone.utc)
     with _freeze_worker_now(pre_local_window_utc), patch.object(
+        reminder_worker, "send_email", sender
+    ):
+        await _process_tenant_reminders(tenant, db_session)
+
+    sender.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_external_reminder_caps_day_of_month_to_last_day(
+    db_session: AsyncSession,
+):
+    """``day_of_month = 31`` in a 28-day February must auto-cap to the
+    last day (Feb 28). Without the cap the deadline would fall on a
+    nonexistent date and the reminder would never fire — a silent skipped
+    month. The 2-day window opens 2026-02-26 17:00 UTC, so freezing to
+    2026-02-26 17:05 sits inside it.
+    """
+    tenant = await _make_tenant(db_session)
+    for key, value in [
+        ("reminder_external_enabled", "true"),
+        ("reminder_external_deadline_day_of_month", "31"),
+        ("reminder_external_deadline_time", "17:00"),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
+    external = await _make_external(
+        db_session, tenant, "feb-cap@contractor.example",
+        is_active=True, email_verified=True,
+    )
+    await db_session.commit()
+
+    feb_two_day_window = datetime(2026, 2, 26, 17, 5, tzinfo=timezone.utc)
+    sender = AsyncMock()
+    with _freeze_worker_now(feb_two_day_window), patch.object(
+        reminder_worker, "send_email", sender
+    ):
+        await _process_tenant_reminders(tenant, db_session)
+
+    sender.assert_awaited()
+    addressees = [call.kwargs.get("to_address") for call in sender.await_args_list]
+    assert external.email in addressees
+
+
+@pytest.mark.asyncio
+async def test_external_reminder_no_longer_treats_negatives_as_end_of_month(
+    db_session: AsyncSession,
+):
+    """Legacy ``-1`` (used to mean "last day of month") is no longer a
+    supported value. With the negative-number branch removed it falls into
+    the ``max(1, min(...))`` cap, lands on day 1, and the deadline window
+    closes before the legacy-end-of-month moment. This test pins the new
+    contract so a future change can't accidentally restore the old
+    behavior without updating the documented semantics.
+    """
+    tenant = await _make_tenant(db_session)
+    for key, value in [
+        ("reminder_external_enabled", "true"),
+        ("reminder_external_deadline_day_of_month", "-1"),  # legacy value
+        ("reminder_external_deadline_time", "17:00"),
+    ]:
+        db_session.add(TenantSettings(tenant_id=tenant.id, key=key, value=value))
+    await _make_external(
+        db_session, tenant, "legacy-negative@contractor.example",
+        is_active=True, email_verified=True,
+    )
+    await db_session.commit()
+
+    # 2026-04-28 17:05 UTC is the prior end-of-month window. Under the
+    # OLD behavior (-1 = last day of April = Apr 30) the deadline would
+    # be Apr 30 17:00 and this moment would sit inside its 2-day window.
+    # Under the NEW behavior (-1 capped to day 1) the deadline already
+    # passed on Apr 1, so no email should fire.
+    sender = AsyncMock()
+    with _freeze_worker_now(TWO_DAY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sender
     ):
         await _process_tenant_reminders(tenant, db_session)

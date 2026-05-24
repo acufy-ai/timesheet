@@ -48,7 +48,7 @@ class ClientEmailDomain(Base):
             raise ValueError("domain cannot be blank")
         if "@" in normalized:
             raise ValueError(
-                "domain must not contain '@' — pass the bare domain (e.g. 'dxc.com')"
+                "domain must not contain '@'. Pass the bare domain (e.g. 'dxc.com')."
             )
         return normalized
 

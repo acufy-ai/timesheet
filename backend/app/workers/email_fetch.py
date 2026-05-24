@@ -258,11 +258,34 @@ async def _prefetch_mailbox_messages(
         try:
             async with _open_session() as fetch_session:
                 messages = await fetch_messages(mailbox, fetch_session)
+            # Clear any prior error on success — best-effort. If this
+            # maintenance write fails (e.g. tenant DB is missing the
+            # last_fetch_error column from a partially-applied migration)
+            # we still keep the messages we just fetched.
+            try:
+                async with _open_session() as err_session:
+                    fresh = await err_session.get(Mailbox, mailbox.id)
+                    if fresh is not None:
+                        fresh.last_fetch_error = None
+                        fresh.last_fetch_failed_at = None
+                        await err_session.commit()
+            except Exception as clear_exc:
+                logger.debug("Could not clear mailbox fetch error: %s", clear_exc)
             mailbox_messages.append((mailbox, messages))
         except Exception as exc:
             logger.error("Failed to fetch messages from mailbox %s: %s", mailbox.id, exc)
             summary["mailboxes_failed"] += 1
             summary["errors"].append(f"Mailbox {mailbox.id} ({mailbox.label}): {exc}")
+            # Persist error so the UI can surface it without log-diving
+            try:
+                async with _open_session() as err_session:
+                    fresh = await err_session.get(Mailbox, mailbox.id)
+                    if fresh is not None:
+                        fresh.last_fetch_error = str(exc)[:1024]
+                        fresh.last_fetch_failed_at = datetime.now(timezone.utc)
+                        await err_session.commit()
+            except Exception as persist_exc:
+                logger.debug("Could not persist mailbox fetch error: %s", persist_exc)
             mailbox_messages.append((mailbox, []))
 
     return mailbox_messages
@@ -736,13 +759,18 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
         )
         control_tenants = list(result.scalars().all())
 
-    # Evaluate each tenant's fetch window in its own timezone.
+    # Evaluate each tenant's fetch window in its own timezone. The
+    # source of truth is the per-tenant ``tenant_default_timezone``
+    # setting (that's what the Settings UI writes and what the system
+    # health probe reads). ``control_tenant.timezone`` is a coarser
+    # fallback for tenants that haven't picked one yet — evaluating in
+    # UTC silently when the user configured the window in a local
+    # timezone made the cron skip every tick while the health card
+    # complained.
     from app.core.timezone_utils import now_for_tenant
 
     for control_tenant in control_tenants:
         try:
-            now = now_for_tenant(control_tenant.timezone)
-
             async with tenant_session(control_tenant.slug) as session:
                 tenant_settings = await _load_tenant_settings(
                     control_tenant.id, session
@@ -750,6 +778,12 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
 
             if tenant_settings.get("fetch_emails_enabled") != "true":
                 continue
+
+            tenant_tz = (
+                tenant_settings.get("tenant_default_timezone")
+                or control_tenant.timezone
+            )
+            now = now_for_tenant(tenant_tz)
 
             if not _should_fetch_now(tenant_settings, now):
                 continue
@@ -793,8 +827,18 @@ def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:
         app_settings.email_fetch_end_time,
     )
 
+    # Strip stray quotes/whitespace defensively — JSON-encoded rows that
+    # bypassed _load_tenant_settings's decoder would otherwise sneak in
+    # values like '"08:00"' (literal quotes included).
+    def _clean(s: str) -> str:
+        return (s or "").strip().strip('"').strip("'")
+
+    days_str = _clean(days_str)
+    start_time_str = _clean(start_time_str)
+    end_time_str = _clean(end_time_str)
+
     day_names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    allowed_days = [d.strip().lower() for d in days_str.split(",")]
+    allowed_days = [d.strip().lower() for d in days_str.split(",") if d.strip()]
     current_day = day_names[now.weekday()]
     if current_day not in allowed_days:
         return False
@@ -804,6 +848,12 @@ def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:
         start_h, start_m = map(int, start_time_str.split(":"))
         end_h, end_m = map(int, end_time_str.split(":"))
     except (ValueError, AttributeError):
+        logger.warning(
+            "Auto-fetch skipped: malformed time-window settings "
+            "(start_time=%r end_time=%r). Check fetch_emails_start_time / "
+            "fetch_emails_end_time in tenant_settings.",
+            start_time_str, end_time_str,
+        )
         return False
     start_total = start_h * 60 + start_m
     end_total = end_h * 60 + end_m

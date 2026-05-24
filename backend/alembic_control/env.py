@@ -26,8 +26,9 @@ config = context.config
 
 # Override the placeholder URL with the control-plane URL from app
 # settings. This is what makes `alembic -c alembic_control.ini` always
-# target the control DB regardless of the file's default.
-config.set_main_option("sqlalchemy.url", settings.control_database_url)
+# target the control DB regardless of the file's default. `%` is doubled
+# so configparser doesn't try to interpolate percent-encoded password chars.
+config.set_main_option("sqlalchemy.url", settings.control_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

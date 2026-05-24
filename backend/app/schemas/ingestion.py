@@ -66,6 +66,8 @@ class MailboxRead(BaseModel):
     linked_client_id: int | None
     is_active: bool
     last_fetched_at: datetime | None
+    last_fetch_error: str | None = None
+    last_fetch_failed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -191,6 +193,11 @@ class IngestionTimesheetSummary(BaseModel):
     received_at: datetime | None = None
     submitted_at: datetime | None
     reviewed_at: datetime | None
+    # Reviewer attribution. Populated once a reviewer approves/rejects the
+    # timesheet. The PDF/CSV exports surface this in the footer so the
+    # report carries provenance for the recipient.
+    reviewer_id: int | None = None
+    reviewer_name: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -206,6 +213,7 @@ class SkippedEmailRead(BaseModel):
     has_attachments: bool
     timesheet_attachment_count: int = 0
     classification_intent: str | None = None
+    classification_confidence: float | None = None
     skip_reason: str | None = None
     skip_detail: str | None = None
     reprocessable_attachments: list[dict[str, Any]] = Field(default_factory=list)
