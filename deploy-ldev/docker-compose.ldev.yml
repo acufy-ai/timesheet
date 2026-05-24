@@ -1,0 +1,112 @@
+# Production compose for the Lightsail "ldev" deployment.
+#
+# Image refs only; no build sections. Images are produced by
+# build-and-ship.ps1 on the developer laptop, tarred, scp'd to the
+# host, then `docker load`ed.
+#
+# Host layout on the Lightsail box:
+#   /home/ec2-user/timesheet-ldev/
+#     docker-compose.yml           (copy of this file, renamed)
+#     .env                         (copy of .env.ldev with real secrets)
+#     images/                      (tarballs land here)
+#     data/                        (host-mounted volumes)
+#
+# Externals (NOT in this compose):
+#   - Postgres at ldb.acufy.ai (timesheet_ldev + acufy_control_ldev DBs)
+#   - Nginx at /etc/nginx/conf.d/user.webilent.tm.ldev.acufy.ai.conf
+#     proxies:
+#       /          -> 127.0.0.1:13050 (frontend2 = new UI, default)
+#       /legacy/   -> 127.0.0.1:13051 (frontend  = classic UI, behind switcher)
+#       /api/      -> 127.0.0.1:18030 (backend)
+# Both frontends share an origin so sessionStorage tokens persist when the
+# in-app switcher hops between them. The legacy frontend is built with
+# VITE_BASE_PATH=/legacy/ so its router and asset paths nest under that prefix.
+
+name: acufy-timesheet-ldev
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    networks:
+      - timesheet-ldev-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    image: acufy-timesheet-ldev-backend:latest
+    restart: always
+    # --proxy-headers + --forwarded-allow-ips makes Uvicorn honor the
+    # X-Forwarded-Proto: https header nginx sends. Without this, FastAPI
+    # builds its own 307/308 redirects (e.g. trailing-slash) with
+    # http:// in the Location header, the browser tries to follow that
+    # to plain HTTP, and the redirect gets re-redirected by nginx as a
+    # GET losing the body / Authorization header.
+    command: >
+      sh -c "alembic upgrade head &&
+             alembic -c /app/alembic_control.ini upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"
+    ports:
+      - "127.0.0.1:18030:8000"
+    env_file:
+      - ./.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - timesheet-ldev-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data/uploads:/app/uploads
+
+  worker:
+    image: acufy-timesheet-ldev-backend:latest
+    restart: always
+    command: python run_worker.py
+    env_file:
+      - ./.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - timesheet-ldev-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data/uploads:/app/uploads
+
+  frontend:
+    # New UI (frontend2). Served at /, the default.
+    image: acufy-timesheet-ldev-frontend:latest
+    restart: always
+    ports:
+      - "127.0.0.1:13050:80"
+    networks:
+      - timesheet-ldev-net
+    depends_on:
+      - backend
+
+  frontend-legacy:
+    # Classic UI (frontend). Served at /legacy/, reachable via the
+    # in-app FrontendSwitcher button. Built with VITE_BASE_PATH=/legacy/
+    # so the SPA router and asset URLs nest under that prefix.
+    image: acufy-timesheet-ldev-frontend-legacy:latest
+    restart: always
+    ports:
+      - "127.0.0.1:13051:80"
+    networks:
+      - timesheet-ldev-net
+    depends_on:
+      - backend
+
+networks:
+  timesheet-ldev-net:
+    driver: bridge

@@ -41,8 +41,12 @@ services:
     restart: unless-stopped
     env_file: ./backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/timesheet_db
-      CONTROL_DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/acufy_control
+      # When DATABASE_URL / CONTROL_DATABASE_URL are set in backend/.env
+      # (e.g. pointing at the Lightsail Postgres), they win. Otherwise we
+      # fall back to the local ``db`` container that this compose file
+      # also runs.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/timesheet_db}
+      CONTROL_DATABASE_URL: ${CONTROL_DATABASE_URL:-postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/acufy_control}
       REDIS_URL: redis://redis:6379
       TZ: ${TZ:-America/Chicago}
     ports:
@@ -66,8 +70,8 @@ services:
     restart: unless-stopped
     env_file: ./backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/timesheet_db
-      CONTROL_DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/acufy_control
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/timesheet_db}
+      CONTROL_DATABASE_URL: ${CONTROL_DATABASE_URL:-postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-__DB_PASSWORD__}@db:5432/acufy_control}
       REDIS_URL: redis://redis:6379
       TZ: ${TZ:-America/Chicago}
     volumes:
@@ -79,16 +83,50 @@ services:
         condition: service_healthy
     command: python run_worker.py
 
-  # ── Frontend ───────────────────────────────────────────────
+  # ── Frontend (new UI, frontend2) ──────────────────────────
+  # Served at the root of the deployment path (e.g. /apps/timesheet/
+  # on prod, / on local dev). The in-app FrontendSwitcher hops to the
+  # legacy service below via VITE_FRONTEND_OTHER_PATH.
   frontend:
+    build:
+      context: ./frontend2
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:${BACKEND_PORT:-8000}}
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+        VITE_AUTH0_DOMAIN: ${VITE_AUTH0_DOMAIN:-}
+        VITE_AUTH0_CLIENT_ID: ${VITE_AUTH0_CLIENT_ID:-}
+        VITE_AUTH0_AUDIENCE: ${VITE_AUTH0_AUDIENCE:-}
+        VITE_AUTH0_CONNECTION: ${VITE_AUTH0_CONNECTION:-Username-Password-Authentication}
+        VITE_FRONTEND_OTHER_URL: ${VITE_FRONTEND_OTHER_URL:-}
+        VITE_FRONTEND_OTHER_PATH: ${VITE_FRONTEND_OTHER_PATH_LEGACY:-/legacy/}
+        VITE_FRONTEND_OTHER_LABEL: ${VITE_FRONTEND_OTHER_LABEL_LEGACY:-Classic UI}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - api
+
+  # ── Frontend (classic UI, frontend) ───────────────────────
+  # The previous UI, served behind the in-app switcher at
+  # /legacy/ relative to the deployment path. Built with
+  # VITE_BASE_PATH ending in /legacy/ so the SPA router and asset URLs
+  # nest under that prefix.
+  frontend-legacy:
     build:
       context: ./frontend
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:${BACKEND_PORT:-8000}}
-        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+        VITE_BASE_PATH: ${VITE_BASE_PATH_LEGACY:-/legacy/}
+        VITE_AUTH0_DOMAIN: ${VITE_AUTH0_DOMAIN:-}
+        VITE_AUTH0_CLIENT_ID: ${VITE_AUTH0_CLIENT_ID:-}
+        VITE_AUTH0_AUDIENCE: ${VITE_AUTH0_AUDIENCE:-}
+        VITE_AUTH0_CONNECTION: ${VITE_AUTH0_CONNECTION:-Username-Password-Authentication}
+        VITE_FRONTEND_OTHER_URL: ${VITE_FRONTEND_OTHER_URL:-}
+        VITE_FRONTEND_OTHER_PATH: ${VITE_FRONTEND_OTHER_PATH_NEW:-/}
+        VITE_FRONTEND_OTHER_LABEL: ${VITE_FRONTEND_OTHER_LABEL_NEW:-New UI}
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "${FRONTEND_LEGACY_PORT:-3001}:80"
     depends_on:
       - api
 
