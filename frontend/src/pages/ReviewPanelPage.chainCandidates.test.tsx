@@ -28,13 +28,18 @@ const mocks = vi.hoisted(() => ({
   noop: vi.fn(),
 }));
 
-vi.mock('@/hooks', () => {
+// Use importOriginal so any hook this test doesn't explicitly stub
+// falls back to the real export rather than throwing. This is
+// resilient to ReviewPanelPage growing new ``use*`` references.
+vi.mock('@/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks')>();
   const mutation = (override?: { mutateAsync?: typeof vi.fn; isPending?: boolean }) => ({
     mutateAsync: override?.mutateAsync ?? vi.fn().mockResolvedValue(undefined),
     mutate: vi.fn(),
     isPending: override?.isPending ?? false,
   });
   return {
+    ...actual,
     useAddIngestionLineItem: () => mutation(),
     useApproveIngestionTimesheet: () => mutation(),
     useAssignChainCandidate: () => mutation({ mutateAsync: mocks.assignMutate }),
@@ -56,6 +61,7 @@ vi.mock('@/hooks', () => {
     useUpdateIngestionLineItem: () => mutation(),
     useUpdateIngestionTimesheetData: () => mutation(),
     useUsers: mocks.useUsers,
+    useAssignableUsers: mocks.useUsers,
   };
 });
 

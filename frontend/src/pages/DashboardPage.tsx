@@ -21,6 +21,8 @@ import {
 import { useDashboardPrefs } from '@/hooks/useDashboardPrefs';
 import { WIDGET_REGISTRY, type WidgetKey } from '@/hooks/useWidgetPreferences';
 import { WidgetWrapper } from '@/components/dashboard/WidgetWrapper';
+import { isPendingInvite } from '@/utils/userFilters';
+import { countPendingGroups } from '@/utils/inboxGrouping';
 import {
   DndContext,
   closestCenter,
@@ -364,7 +366,7 @@ const ManagerTeamRosterCard: React.FC<{
         className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
       >
         <div className="flex flex-col">
-          <span className="text-base font-semibold">This week — team status</span>
+          <span className="text-base font-semibold">This week: team status</span>
           <span className="text-xs text-muted-foreground">{weekRange}</span>
         </div>
         <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
@@ -506,7 +508,17 @@ export const DashboardPage: React.FC = () => {
     { status_filter: 'pending', limit: 200 },
     canReview && ingestionEnabled && !isAdminView,
   );
-  const pendingReviewCount = pendingTimesheets.length;
+  // Match the inbox's grouped count: a multi-week email forwarded by
+  // an admin (e.g. "March 2026 Timesheets" containing 14 weekly
+  // submissions) collapses to ONE row in the inbox queue. The
+  // dashboard tile must use the same unit, otherwise users see
+  // "38 await review" then open the inbox and see "10 grouped
+  // submissions" — same data, different unit. The shared helper
+  // lives in utils/inboxGrouping so both paths stay in sync.
+  const pendingReviewCount = React.useMemo(
+    () => countPendingGroups(pendingTimesheets),
+    [pendingTimesheets],
+  );
   const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 12 }, showAdminStatsView);
   // Live infra health for the admin dashboard. Polls every 30s while
   // the admin stats view is mounted; idle otherwise.
@@ -564,13 +576,12 @@ export const DashboardPage: React.FC = () => {
   const adminsCount = allUsers.filter((member) => member.role === 'ADMIN').length;
   const totalNotifications = notificationsSummary?.total_count ?? 0;
 
-  // Pending invitations: active accounts whose email is unverified.
-  // Same definition as the Action Queue's stale-invitation rule, just
-  // without the >7d cutoff (this tile is a glance count; the Action
-  // Queue surfaces only the ones old enough to act on).
-  const pendingInvitesCount = allUsers.filter(
-    (u) => u.is_active && !u.email_verified,
-  ).length;
+  // Pending invitations: active internal accounts whose email is
+  // unverified. Shares isPendingInvite with the Action Queue's
+  // stale-invitation rule and user-management's UNVERIFIED filter, so
+  // the tile count, the queue's >7d list, and the click-through page
+  // all agree on who counts.
+  const pendingInvitesCount = allUsers.filter(isPendingInvite).length;
 
   const adminStatsTiles: {
     key: AdminStatsTileKey;

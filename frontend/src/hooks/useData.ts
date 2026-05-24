@@ -17,10 +17,13 @@ import {
   ingestionAPI,
   tenantSettingsAPI,
   departmentsAPI,
+  holidaysAPI,
   leaveTypesAPI,
   adminAPI,
   attentionSignalsAPI,
+  platformDashboardAPI,
 } from '@/api/endpoints';
+import type { PlatformAuditListParams } from '@/types';
 
 type TimeEntriesListParams = Parameters<typeof timeentriesAPI.list>[0];
 type ApprovalsPendingParams = Parameters<typeof approvalsAPI.pending>[0];
@@ -95,6 +98,25 @@ export const useSubmitTimeEntries = () => {
     mutationFn: (entry_ids: number[]) => timeentriesAPI.submit(entry_ids).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['timeentries'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+};
+
+/**
+ * Recall a set of SUBMITTED entries back to DRAFT. Invalidates the
+ * timeentries list (so the editor re-renders with DRAFT statuses)
+ * and the weekly-submit-status query (so the banner clears). 409s
+ * from the backend bubble up so the caller can surface a "manager
+ * already acted" toast.
+ */
+export const useRecallTimeEntries = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entry_ids: number[]) => timeentriesAPI.recall(entry_ids).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
+      queryClient.invalidateQueries({ queryKey: ['timeentries', 'weekly-submit-status'] });
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
@@ -346,13 +368,37 @@ export const useDashboardSummary = () => {
   });
 };
 
+// Decode "realm" claim from the JWT in sessionStorage. PA tokens carry
+// realm="platform"; tenant tokens carry realm="tenant" (default). This
+// helper avoids a circular import dep on AuthContext from the data hooks.
+const _isPlatformRealmFromToken = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const token = sessionStorage.getItem('accessToken');
+  if (!token) return false;
+  try {
+    const payload = token.split('.')[1];
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const decoded = JSON.parse(json) as { realm?: string };
+    return decoded.realm === 'platform';
+  } catch {
+    return false;
+  }
+};
+
 export const useNotifications = () => {
+  // /notifications/summary is tenant-scoped and 400s for platform-admin
+  // tokens (no X-Tenant-Slug). The TopNavBar mounts this hook on every
+  // page load including PA pages, so without this gate the console
+  // fills with 400s on every navigation. PAs have no notification
+  // surface today; turn the poll off for them entirely.
+  const isPlatform = _isPlatformRealmFromToken();
   return useQuery({
     queryKey: ['notifications', 'summary'],
     queryFn: () => notificationsAPI.summary().then((res) => res.data),
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
     staleTime: 30000,  // Serve cached data for 30s before background refetch
+    enabled: !isPlatform,
   });
 };
 
@@ -433,7 +479,13 @@ export const useManagerTeamOverview = (enabled: boolean = true) => {
     queryKey: ['dashboard', 'manager-team-overview'],
     queryFn: () => dashboardAPI.managerTeamOverview().then((res) => res.data),
     enabled,
-    staleTime: 30_000,
+    // Short stale window so the manager dashboard reflects recent
+    // org-chart edits (add/remove direct reports) without waiting for
+    // the previous 30s cache. Mutations also explicitly invalidate
+    // ['dashboard', ...], so this is a safety net for navigation flows
+    // that bypass the mutation hooks (e.g. coming back from /platform).
+    staleTime: 5_000,
+    refetchOnWindowFocus: true,
   });
 };
 
@@ -485,6 +537,37 @@ export const useDeleteUserEmailAlias = () => {
       usersAPI.deleteEmailAlias(userId, aliasId),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['users', vars.userId, 'email-aliases'] });
+    },
+  });
+};
+
+export const useUserClientAssignments = (userId: number | null, enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['users', userId, 'clients'],
+    queryFn: () => clientsAPI.listUserAssignments(userId as number).then((res) => res.data),
+    enabled: enabled && userId != null,
+    staleTime: 30_000,
+  });
+};
+
+export const useAddUserClientAssignment = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, clientId }: { userId: number; clientId: number }) =>
+      clientsAPI.addUserAssignment(userId, clientId).then((res) => res.data),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['users', vars.userId, 'clients'] });
+    },
+  });
+};
+
+export const useRemoveUserClientAssignment = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, clientId }: { userId: number; clientId: number }) =>
+      clientsAPI.removeUserAssignment(userId, clientId).then((res) => res.data),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['users', vars.userId, 'clients'] });
     },
   });
 };
@@ -635,10 +718,12 @@ export const useRejectTimeOffRequest = () => {
 };
 
 // Users queries (Admin only)
-export const useUsers = (enabled: boolean = true) => {
+export const useUsers = (enabled: boolean = true, tenantSlug?: string) => {
   return useQuery({
-    queryKey: ['users'],
-    queryFn: () => usersAPI.list().then((res) => res.data),
+    // Include slug in the key so PA users viewing different tenants
+    // get distinct cache buckets instead of stepping on each other.
+    queryKey: ['users', tenantSlug ?? null],
+    queryFn: () => usersAPI.list(tenantSlug).then((res) => res.data),
     enabled,
   });
 };
@@ -669,6 +754,29 @@ export const useMyPermissions = () => {
   });
 };
 
+// Per-user UI preferences. We keep a single query key so any component
+// can read or invalidate it.
+export const useMyPreferences = () => {
+  return useQuery({
+    queryKey: ['users', 'me', 'preferences'],
+    queryFn: () => usersAPI.getMyPreferences().then((res) => res.data),
+    staleTime: 60_000,
+  });
+};
+
+export const useUpdateMyPreferences = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      usersAPI.updateMyPreferences(data).then((res) => res.data),
+    onSuccess: (preferences) => {
+      // Optimistically write the server's merged dict into cache so
+      // subsequent reads don't need a round-trip.
+      queryClient.setQueryData(['users', 'me', 'preferences'], preferences);
+    },
+  });
+};
+
 export const useUpdateMyProfile = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -695,10 +803,24 @@ export const useChangePassword = () => {
   });
 };
 
+// Accept an optional tenantSlug so platform-admin callers can target a
+// specific tenant's DB (the backend reads X-Tenant-Slug for PA tokens).
+type CreateUserArgs = {
+  data: Parameters<typeof usersAPI.create>[0];
+  tenantSlug?: string;
+};
 export const useCreateUser = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof usersAPI.create>[0]) => usersAPI.create(data).then((res) => res.data),
+    mutationFn: (args: CreateUserArgs | Parameters<typeof usersAPI.create>[0]) => {
+      // Backward-compatible: most callers still pass just the user payload.
+      const isWrapped = args && typeof args === 'object' && 'data' in args && Object.keys(args).every((k) => k === 'data' || k === 'tenantSlug');
+      if (isWrapped) {
+        const { data, tenantSlug } = args as CreateUserArgs;
+        return usersAPI.create(data, tenantSlug).then((res) => res.data);
+      }
+      return usersAPI.create(args as Parameters<typeof usersAPI.create>[0]).then((res) => res.data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -725,6 +847,7 @@ export const useDeleteUser = () => {
     mutationFn: (id: number) => usersAPI.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
@@ -743,12 +866,28 @@ export const useResendVerification = () => {
   });
 };
 
+export const useResendInvite = () => {
+  return useMutation({
+    mutationFn: (id: number) => usersAPI.resendInvite(id).then(res => res.data),
+  });
+};
+
+// Unified Send invite. Dispatches Auth0 vs legacy verification per user
+// on the server. New UI should prefer this over the two legacy hooks
+// above.
+export const useSendInvite = () => {
+  return useMutation({
+    mutationFn: (id: number) => usersAPI.sendInvite(id).then(res => res.data),
+  });
+};
+
 export const useBulkDeleteUsers = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (userIds: number[]) => usersAPI.bulkDelete(userIds).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
@@ -767,6 +906,73 @@ export const useTenant = (tenantId?: number | null, enabled: boolean = true) => 
     queryKey: ['tenants', tenantId],
     queryFn: () => tenantsAPI.get(tenantId as number).then((res) => res.data),
     enabled: enabled && Boolean(tenantId),
+  });
+};
+
+/**
+ * Resolves a tenant by slug. Used by the Path-B tenant detail route
+ * (/platform/tenants/:slug). Pulls the full tenants list (cheap;
+ * platform admins typically have a handful of tenants) and locates
+ * by slug client-side, so we don't need a new backend lookup.
+ */
+export const useTenantBySlug = (slug?: string | null, enabled: boolean = true) => {
+  const { data: tenants = [], isLoading, error } = useTenants(enabled && Boolean(slug));
+  const tenant = slug ? tenants.find((t) => t.slug === slug) ?? null : null;
+  return { data: tenant, isLoading, error, tenants };
+};
+
+/**
+ * Trigger an Advanced-tab lifecycle action (mark_inactive / suspend /
+ * resume / delete) with the typed-name confirmation. Invalidates the
+ * tenants list on success so the detail page reflects the new status
+ * and any archived tenant disappears from the list view.
+ */
+export const useTenantLifecycle = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      tenantId,
+      action,
+      confirmationToken,
+    }: {
+      tenantId: number;
+      action: 'mark_inactive' | 'suspend' | 'resume' | 'delete';
+      confirmationToken?: string;
+    }) =>
+      tenantsAPI
+        .lifecycle(tenantId, action, confirmationToken)
+        .then((res) => res.data),
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['tenants'] });
+      queryClient.invalidateQueries({ queryKey: ['tenants', vars.tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['platform', 'audit'] });
+      queryClient.invalidateQueries({ queryKey: ['platform', 'dashboard'] });
+    },
+  });
+};
+
+/**
+ * PATCH a tenant's plain fields (name, status, ingestion_enabled, etc.).
+ * Distinct from the lifecycle endpoint — that one is for the
+ * mark_inactive / suspend / resume / delete actions that gate on a
+ * typed confirmation. This is for routine edits the platform admin
+ * makes from the Overview tab.
+ */
+export const useUpdateTenant = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      tenantId,
+      data,
+    }: {
+      tenantId: number;
+      data: Parameters<typeof tenantsAPI.update>[1];
+    }) => tenantsAPI.update(tenantId, data).then((res) => res.data),
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['tenants'] });
+      queryClient.invalidateQueries({ queryKey: ['tenants', vars.tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['platform', 'audit'] });
+    },
   });
 };
 
@@ -908,11 +1114,51 @@ export const useReapplyIngestionMappings = () => {
   });
 };
 
-export const useSkippedEmails = (limit: number = 10, enabled: boolean = true) => {
+export const useSkippedEmails = (
+  limit: number = 10,
+  enabled: boolean = true,
+  includeClassifierSkips: boolean = false,
+) => {
   return useQuery({
-    queryKey: ['ingestion', 'skipped-emails', limit],
-    queryFn: () => ingestionAPI.getSkippedEmails({ limit }).then((res) => res.data),
+    queryKey: ['ingestion', 'skipped-emails', limit, includeClassifierSkips],
+    queryFn: () =>
+      ingestionAPI
+        .getSkippedEmails({ limit, include_classifier_skips: includeClassifierSkips })
+        .then((res) => res.data),
     enabled,
+  });
+};
+
+/**
+ * Reviewer override: promote a classifier-skipped email into the
+ * regular review queue. Creates an IngestionTimesheet in pending state
+ * so the reviewer can fill in employee/client and approve normally.
+ */
+export const usePromoteSkippedEmail = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (emailId: number) =>
+      ingestionAPI.promoteSkippedEmail(emailId).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+      qc.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+    },
+  });
+};
+
+/**
+ * Reviewer override: confirm that a skipped email really isn't a
+ * timesheet. Sets a flag so the row stops appearing in the skipped
+ * drawer, but the email row stays in the DB for audit.
+ */
+export const useConfirmSkippedEmail = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (emailId: number) =>
+      ingestionAPI.confirmSkippedEmail(emailId).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+    },
   });
 };
 
@@ -1243,6 +1489,85 @@ export const useDeleteLeaveType = () => {
   });
 };
 
+// ─── Holidays ──────────────────────────────────────────────────────────────
+// Org-wide non-working days. Admins create/delete; everyone in the
+// tenant reads. Calendar surfaces and dashboard late detection both
+// consume the same list.
+
+export const useHolidays = (params?: { start_date?: string; end_date?: string; country?: string }) => {
+  return useQuery({
+    queryKey: ['holidays', params?.start_date ?? null, params?.end_date ?? null, params?.country ?? null],
+    queryFn: () => holidaysAPI.list(params).then((r) => r.data),
+  });
+};
+
+/** Distinct country codes present in this tenant's holidays.
+ *  Used to populate the calendar's location filter dropdown. */
+export const useHolidayCountries = () => {
+  return useQuery({
+    queryKey: ['holiday-countries'],
+    queryFn: () => holidaysAPI.countries().then((r) => r.data),
+  });
+};
+
+export const useCreateHoliday = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { date: string; name: string; holiday_type: import('@/types').HolidayType; country?: string }) =>
+      holidaysAPI.create(data).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
+      queryClient.invalidateQueries({ queryKey: ['holiday-countries'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', 'manager-team-overview'] });
+    },
+  });
+};
+
+export const useBulkCreateHolidays = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (holidays: Array<{ date: string; name: string; holiday_type: import('@/types').HolidayType; country?: string }>) =>
+      holidaysAPI.bulkCreate(holidays).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
+      queryClient.invalidateQueries({ queryKey: ['holiday-countries'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', 'manager-team-overview'] });
+    },
+  });
+};
+
+export const useUpdateHoliday = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; holiday_type?: import('@/types').HolidayType } }) =>
+      holidaysAPI.update(id, data).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
+      queryClient.invalidateQueries({ queryKey: ['holiday-countries'] });
+    },
+  });
+};
+
+export const useDeleteHoliday = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => holidaysAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
+      queryClient.invalidateQueries({ queryKey: ['holiday-countries'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', 'manager-team-overview'] });
+    },
+  });
+};
+
+export const useHolidaySuggestions = (country: string, year: number, enabled: boolean) => {
+  return useQuery({
+    queryKey: ['holiday-suggestions', country, year],
+    queryFn: () => holidaysAPI.suggestions(country, year).then((r) => r.data),
+    enabled: enabled && !!country && !!year,
+  });
+};
+
 import type { ImportCommitRequest, ExportUsersParams, ExportClientsParams, ExportTimesheetsParams } from '@/api/endpoints';
 
 export const useImportUsersPreview = () =>
@@ -1321,3 +1646,98 @@ export const useExportTimesheets = () =>
       _downloadBlob(resp.data, filename);
     },
   });
+
+// ── Platform-admin Dashboard / Calendar / Audit hooks ─────────────────────
+//
+// All require a PLATFORM_ADMIN token. The PA-specific pages call these.
+// 30s staleTime on the dashboard widgets, 60s on the calendar/audit which
+// change less frequently.
+export const usePlatformDashboardSummary = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['platform', 'dashboard', 'summary'],
+    queryFn: () => platformDashboardAPI.summary().then((res) => res.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    enabled,
+  });
+};
+
+export const usePlatformDashboardHealth = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['platform', 'dashboard', 'health'],
+    queryFn: () => platformDashboardAPI.health().then((res) => res.data),
+    staleTime: 20_000,
+    // Health refreshes faster than the summary because operators expect
+    // it to feel live; matches the "Live · refreshes every 30s" hint in
+    // the dashboard mockup.
+    refetchInterval: 30_000,
+    enabled,
+  });
+};
+
+export const usePlatformCalendarEvents = (
+  rangeStart: string,
+  rangeEnd: string,
+  enabled: boolean = true,
+) => {
+  return useQuery({
+    queryKey: ['platform', 'calendar', rangeStart, rangeEnd],
+    queryFn: () =>
+      platformDashboardAPI
+        .calendarEvents(rangeStart, rangeEnd)
+        .then((res) => res.data),
+    staleTime: 60_000,
+    enabled: enabled && Boolean(rangeStart && rangeEnd),
+  });
+};
+
+export const usePlatformAudit = (
+  params: PlatformAuditListParams = {},
+  enabled: boolean = true,
+) => {
+  return useQuery({
+    // Stringify the params into the key so different filter combos cache
+    // separately. The backend ANDs each set filter.
+    queryKey: ['platform', 'audit', params],
+    queryFn: () => platformDashboardAPI.auditList(params).then((res) => res.data),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+    enabled,
+  });
+};
+
+export const usePlatformAuditEvent = (
+  eventId: number | null,
+  enabled: boolean = true,
+) => {
+  return useQuery({
+    queryKey: ['platform', 'audit', 'event', eventId],
+    queryFn: () =>
+      platformDashboardAPI.auditEvent(eventId as number).then((res) => res.data),
+    enabled: enabled && eventId !== null && Number.isFinite(eventId),
+  });
+};
+
+export const usePlatformTenantsUsersCount = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['platform', 'tenants', 'users-count'],
+    queryFn: () =>
+      platformDashboardAPI.tenantsUsersCount().then((res) => res.data),
+    staleTime: 60_000,
+    enabled,
+  });
+};
+
+/**
+ * Per-tenant compact-list stats: user count, admin count,
+ * last_activity_at. Single fan-out across active tenant DBs.
+ */
+export const usePlatformTenantStats = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['platform', 'tenants', 'stats'],
+    queryFn: () =>
+      platformDashboardAPI.tenantStats().then((res) => res.data),
+    staleTime: 60_000,
+    enabled,
+  });
+};

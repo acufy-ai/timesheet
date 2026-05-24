@@ -1,11 +1,13 @@
 // Component exports
 export { Loading, Error, EmptyState } from './Layout';
+export { ExpandableDescription } from './ExpandableDescription';
 export { Header } from './Header';
 export { TimeEntryForm, TimeEntryRow } from './TimeEntry';
 export { OrganizationalChart } from './OrganizationalChart';
 export { TenantSettingsForm } from './TenantSettingsForm';
 export { ChangePasswordModal } from './ChangePasswordModal';
 export { DateRangePickerCalendar } from './DateRangePickerCalendar';
+export { DatePickerSingle } from './DatePickerSingle';
 export { SearchInput } from './SearchInput';
 export { AdminActionQueue } from './AdminActionQueue';
 export { ImportUsersModal } from './ImportUsersModal';
@@ -19,5 +21,6 @@ export { QuickLogButton } from './QuickLogButton';
 export { Badge } from './ui/Badge';
 export { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/Card';
 export { LoadingSkeleton } from './ui/LoadingSkeleton';
+export { SparkBar } from './ui/SparkBar';
 export { Modal } from './ui/Modal';
 export { AppLayout } from './layout/AppLayout';

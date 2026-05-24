@@ -101,7 +101,7 @@ export const AuditTrailPage: React.FC = () => {
                       {format(parseISO(item.created_at), 'MMM d, yyyy h:mm a')}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-foreground whitespace-nowrap">
-                      {item.actor_name || '—'}
+                      {item.actor_name || 'N/A'}
                     </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                       {item.activity_type.replace(/_/g, ' ')}

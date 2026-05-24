@@ -198,6 +198,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
+      // The backend transparently handles Auth0 vs legacy bcrypt — the
+      // frontend just sends (email, password) like it always has.
       const response = await authAPI.login({ email: email.trim().toLowerCase(), password });
       const { access_token, refresh_token: refreshToken, user: nextUser, previous_last_login_at } = response.data;
       setUser(nextUser);
@@ -348,6 +350,29 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   refreshUserRef.current = refreshUser;
 
   useEffect(() => {
+    // Cross-frontend handoff: the sibling app (frontend2 or vice versa)
+    // can deliver tokens via URL fragment so a logged-in user doesn't get
+    // bounced to the login screen when they swap UIs. Fragments aren't
+    // sent to servers, so this stays out of access logs.
+    let handoffPath: string | null = null;
+    try {
+      const hashMatch = window.location.hash.match(/handoff=([^&]+)/);
+      if (hashMatch) {
+        const payload = JSON.parse(atob(decodeURIComponent(hashMatch[1])));
+        if (payload?.accessToken) sessionStorage.setItem(TOKEN_STORAGE_KEY, payload.accessToken);
+        if (payload?.refreshToken) sessionStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, payload.refreshToken);
+        if (payload?.themeVariant) localStorage.setItem('themeVariant', payload.themeVariant);
+        if (typeof payload?.path === 'string' && payload.path.startsWith('/')) handoffPath = payload.path;
+        // Strip the fragment immediately so it doesn't linger in the URL bar.
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    } catch {
+      // Malformed handoff fragment — ignore and fall through to normal restore.
+    }
+    if (handoffPath && handoffPath !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, '', handoffPath);
+    }
+
     const savedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     const savedRefreshToken = sessionStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
     // Clear any legacy user/tenant cache from earlier versions so it can't leak

@@ -1,8 +1,16 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+//
+// D-061 refactor: the legacy Pending tab body was replaced by
+// <PendingMasterDetail />. Some state hooks, helpers, and view
+// fragments that the old body relied on now linger unused; they're
+// parked for the follow-up extraction PR rather than ripped out in
+// the same diff so the History tab + Time Off tab keep their
+// existing wiring untouched.
 import React, { useCallback, useMemo, useState } from 'react';
 import { format, parseISO, startOfWeek } from 'date-fns';
 import { ArrowDown, ArrowUp, CheckCircle, ChevronDown, ChevronRight, Clock, XCircle } from 'lucide-react';
 
-import { EmptyState, Error, Loading, SearchInput } from '@/components';
+import { EmptyState, Error, ExpandableDescription, Loading, SearchInput } from '@/components';
 import {
   useApprovalHistoryGrouped,
   useApproveTimeEntryBatch,
@@ -13,10 +21,14 @@ import {
   usePendingTimeOffApprovals,
   useApproveTimeOffRequest,
   useRejectTimeOffRequest,
+  useTimeOffApprovalHistory,
   useWeekStartsOn,
 } from '@/hooks';
 import type { HistoryGroup } from '@/api/endpoints';
 import { TimeEntry, TimeOffRequest } from '@/types';
+import { formatTimeBlock } from '@/utils/timeFormat';
+import { PendingMasterDetail } from '@/components/approvals/PendingMasterDetail';
+import { ApprovedTimesheetsManagerView } from '@/components/approvals/ApprovedTimesheetsManagerView';
 
 type EmployeeOverview = {
   id: number;
@@ -83,8 +95,11 @@ export const ApprovalsPage: React.FC = () => {
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   const [historyDaysBack, setHistoryDaysBack] = useState(30);
   const [historyStatusFilter, setHistoryStatusFilter] = useState<'' | 'approved' | 'rejected' | 'mixed'>('');
+  // Time off has its own history filter (status doesn't include 'mixed':
+  // a single PTO request resolves to a single decision).
+  const [timeOffHistoryStatusFilter, setTimeOffHistoryStatusFilter] = useState<'' | 'APPROVED' | 'REJECTED'>('');
   const [expandedHistoryKeys, setExpandedHistoryKeys] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<'timesheets' | 'time-off'>('timesheets');
+  const [activeTab, setActiveTab] = useState<'timesheets' | 'time-off' | 'approved'>('timesheets');
   const [rejectingTimeOffId, setRejectingTimeOffId] = useState<number | null>(null);
   const [timeOffRejectReason, setTimeOffRejectReason] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
@@ -107,6 +122,23 @@ export const ApprovalsPage: React.FC = () => {
     [historyDaysBack, historyStatusFilter]
   );
   const { data: historyGroups = [], isLoading: historyLoading, error: historyError } = useApprovalHistoryGrouped(historyGroupedParams);
+  // Time off history. The backend endpoint returns APPROVED + REJECTED
+  // in the manager's scope; we filter by status / age client-side so
+  // the user can flip filters without re-fetching.
+  const { data: timeOffHistoryRaw = [], isLoading: timeOffHistoryLoading } = useTimeOffApprovalHistory({
+    sort_by: 'approved_at',
+    sort_order: 'desc',
+    limit: 200,
+  });
+  const timeOffHistory = useMemo(() => {
+    const cutoff = Date.now() - historyDaysBack * 24 * 60 * 60 * 1000;
+    return (timeOffHistoryRaw as TimeOffRequest[]).filter((r) => {
+      if (timeOffHistoryStatusFilter && r.status !== timeOffHistoryStatusFilter) return false;
+      const ts = r.approved_at ?? r.updated_at;
+      if (!ts) return true;
+      return new Date(ts).getTime() >= cutoff;
+    });
+  }, [timeOffHistoryRaw, timeOffHistoryStatusFilter, historyDaysBack]);
 
   const searchSuggestions = useMemo(() => {
     const set = new Set<string>();
@@ -128,6 +160,8 @@ export const ApprovalsPage: React.FC = () => {
   const [bulkRejectReason, setBulkRejectReason] = useState('');
   const [showBulkRejectForm, setShowBulkRejectForm] = useState(false);
   const rejectEntryMutation = useRejectTimeEntry();
+  // Pre-existing — kept for upcoming revert flow; revisit when that lands.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const revertRejectionMutation = useRevertTimeEntryRejection();
 
   const { data: pendingTimeOff = [], isLoading: timeOffLoading } = usePendingTimeOffApprovals();
@@ -306,342 +340,29 @@ export const ApprovalsPage: React.FC = () => {
               </span>
             )}
           </button>
-        </div>
-
-        {activeTab === 'timesheets' && (<>
-        {/* Employee Overview Selector */}
-        {!hasNoEntries && (
-          <div className="mb-6">
-            <p className="text-sm font-medium text-muted-foreground mb-3">Filter by employee</p>
-            <div className="flex flex-wrap gap-3">
-              {/* All Employees card */}
-              <button
-                onClick={() => setSelectedEmployeeId(null)}
-                className={`flex flex-col items-center px-4 py-3 rounded-xl border-2 transition-all min-w-[100px] ${
-                  selectedEmployeeId === null
-                    ? 'border-primary bg-primary text-primary-foreground shadow-md'
-                    : 'border-border bg-card hover:border-primary/50 hover:shadow-sm'
-                }`}
-              >
-                <span className="text-sm font-semibold">All</span>
-                <span className={`text-2xl font-bold leading-none mt-1 ${selectedEmployeeId === null ? 'text-primary-foreground' : 'text-foreground'}`}>
-                  {employeeOverview.reduce((sum, e) => sum + e.timesheetCount, 0)}
-                </span>
-                <span className={`text-[11px] mt-1 ${selectedEmployeeId === null ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-                  total pending
-                </span>
-              </button>
-
-              {/* Per-employee cards */}
-              {employeeOverview.map((emp) => {
-                const isSelected = selectedEmployeeId === emp.id;
-                const total = emp.timesheetCount;
-                return (
-                  <button
-                    key={emp.id}
-                    onClick={() => setSelectedEmployeeId(isSelected ? null : emp.id)}
-                    className={`relative flex flex-col px-4 py-3 rounded-xl border-2 transition-all min-w-[140px] text-left ${
-                      isSelected
-                        ? 'border-primary bg-primary text-primary-foreground shadow-md'
-                        : 'border-border bg-card hover:border-primary/50 hover:shadow-sm'
-                    }`}
-                  >
-                    {/* Total badge */}
-                    <span className={`absolute -top-2 -right-2 min-w-5 h-5 px-1.5 rounded-full text-[11px] font-bold flex items-center justify-center ${
-                      isSelected ? 'bg-white text-primary' : 'bg-red-500 text-white'
-                    }`}>
-                      {total > 99 ? '99+' : total}
-                    </span>
-
-                    {/* Employee name */}
-                    <span className="text-sm font-semibold leading-tight mb-2 pr-4">
-                      {emp.name}
-                    </span>
-
-                    {/* Breakdown badges */}
-                    <div className="flex gap-1.5 flex-wrap">
-                      {emp.timesheetCount > 0 && (
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                          isSelected ? 'bg-white/20 text-primary-foreground' : 'bg-blue-100 text-blue-800'
-                        }`}>
-                          <Clock className="w-3 h-3" />
-                          {emp.timesheetCount} timesheet
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="bg-card border rounded-lg p-4 mb-4 grid grid-cols-1 gap-3">
-          <SearchInput
-            value={search}
-            onChange={setSearch}
-            suggestions={searchSuggestions}
-            placeholder="Search employee/project/reason"
-            className="px-3 py-2 border rounded w-full"
-          />
-        </div>
-
-        <div className="mb-6 flex items-center justify-end gap-2">
-          <select
-            value={sortBy}
-            onChange={(event) => setSortBy(event.target.value as 'entry_date' | 'submitted_at' | 'hours' | 'employee')}
-            className="h-9 w-40 rounded border bg-card px-2 text-xs"
-          >
-            <option value="submitted_at">Submitted At</option>
-            <option value="entry_date">Date</option>
-            <option value="hours">Hours</option>
-            <option value="employee">Employee</option>
-          </select>
           <button
-            onClick={() => setSortOrder((value) => (value === 'asc' ? 'desc' : 'asc'))}
-            className="h-9 w-9 rounded border hover:bg-muted flex items-center justify-center"
-            aria-label={sortOrder === 'asc' ? 'Sort ascending' : 'Sort descending'}
-            title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+            onClick={() => setActiveTab('approved')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab === 'approved'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
           >
-            {sortOrder === 'asc' ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
+            Approved
           </button>
         </div>
 
-        {hasNoEntries && <EmptyState message="No pending approvals. All entries have been reviewed!" />}
+        {activeTab === 'timesheets' && <PendingMasterDetail />}
+        {activeTab === 'approved' && <ApprovedTimesheetsManagerView />}
 
-        {displayTimesheetWeeklyGroups.length > 0 && (
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">Timesheet Approvals</h2>
-              {displayTimesheetWeeklyGroups.length > 1 && (
-                <div className="flex items-center gap-2 text-sm">
-                  <button
-                    type="button"
-                    onClick={selectedGroupKeys.size === displayTimesheetWeeklyGroups.length ? clearGroupSelection : selectAllGroups}
-                    className="text-primary font-medium hover:text-primary/80"
-                  >
-                    {selectedGroupKeys.size === displayTimesheetWeeklyGroups.length ? 'Clear selection' : 'Select all'}
-                  </button>
-                </div>
-              )}
-            </div>
 
-            {/* Bulk action bar */}
-            {selectedGroupKeys.size > 0 && (
-              <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <span className="text-sm font-medium text-foreground">
-                    {selectedGroupKeys.size} week group{selectedGroupKeys.size !== 1 ? 's' : ''} selected · {selectedEntryIds.length} entries
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleBulkApprove}
-                      disabled={approveBatchMutation.isPending}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
-                    >
-                      <CheckCircle className="h-3.5 w-3.5" />
-                      {approveBatchMutation.isPending ? 'Approving...' : `Approve all (${selectedEntryIds.length})`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowBulkRejectForm((v) => !v)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white hover:bg-destructive/90"
-                    >
-                      <XCircle className="h-3.5 w-3.5" />
-                      Reject all
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearGroupSelection}
-                      className="text-xs text-muted-foreground hover:text-foreground"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {showBulkRejectForm && (
-                  <div className="mt-3 space-y-2">
-                    <textarea
-                      value={bulkRejectReason}
-                      onChange={(e) => setBulkRejectReason(e.target.value)}
-                      placeholder="Rejection reason (applied to all selected entries)..."
-                      className="field-textarea"
-                      rows={2}
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={handleBulkReject}
-                        disabled={rejectBatchMutation.isPending || !bulkRejectReason.trim()}
-                        className="rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white hover:bg-destructive/90 disabled:opacity-50"
-                      >
-                        {rejectBatchMutation.isPending ? 'Rejecting...' : 'Confirm reject'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setShowBulkRejectForm(false); setBulkRejectReason(''); }}
-                        className="rounded-lg bg-muted px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/80"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              {displayTimesheetWeeklyGroups.map((group) => (
-                <section key={`timesheet-${group.employeeId}-${group.weekStart}`} className="border rounded-lg bg-card overflow-hidden">
-                  <div className="px-6 py-4 border-b bg-muted/30 flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedGroupKeys.has(getGroupKey(group))}
-                      onChange={() => toggleGroupSelection(getGroupKey(group))}
-                      className="h-4 w-4 rounded border-border accent-primary"
-                    />
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold">{group.employeeName}</h3>
-                      <p className="text-sm text-muted-foreground">
-                        Week of {format(parseISO(group.weekStart), 'MMM d, yyyy')} - {format(parseISO(group.weekEnd), 'MMM d, yyyy')} • {group.items.length} submitted entr{group.items.length === 1 ? 'y' : 'ies'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-4 space-y-4">
-                    {(() => {
-                      const key = `timesheet-week-${group.employeeId}-${group.weekStart}`;
-                      const entryIds = group.items.map((entry) => entry.id);
-                      return (
-                        <div className="border rounded-lg p-6 bg-card">
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                            <div>
-                              <p className="text-sm text-muted-foreground">Week</p>
-                              <p className="font-medium">{format(parseISO(group.weekStart), 'MMM d')} - {format(parseISO(group.weekEnd), 'MMM d, yyyy')}</p>
-                            </div>
-                            <div>
-                              <p className="text-sm text-muted-foreground">Employee</p>
-                              <p className="font-medium">{group.employeeName}</p>
-                            </div>
-                            <div>
-                              <p className="text-sm text-muted-foreground">Entries</p>
-                              <p className="font-medium">{group.items.length}</p>
-                            </div>
-                            <div>
-                              <p className="text-sm text-muted-foreground">Hours (total)</p>
-                              <p className="font-medium">{group.items.reduce((sum, item) => sum + Number(item.hours), 0).toFixed(2)}</p>
-                            </div>
-                          </div>
-
-                          <div className="mb-4 space-y-2">
-                            {group.items.map((entry) => (
-                              <div key={entry.id} className="text-sm border rounded px-3 py-2">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <p className="font-medium">{format(parseEntryDate(entry.entry_date), 'EEE, MMM d')} • {entry.hours}h • {entry.project?.name || 'Unknown project'}</p>
-                                    <p className="text-muted-foreground">{entry.description}</p>
-                                  </div>
-                                  <button
-                                    onClick={() => { setRejectingEntryId(entry.id); setEntryRejectReason(''); }}
-                                    className="shrink-0 px-2 py-1 text-xs border border-red-200 text-red-600 rounded hover:bg-red-50"
-                                  >
-                                    Reject Entry
-                                  </button>
-                                </div>
-                                {rejectingEntryId === entry.id && (
-                                  <div className="mt-2 flex gap-2">
-                                    <input
-                                      className="flex-1 px-2 py-1 border rounded text-xs"
-                                      value={entryRejectReason}
-                                      onChange={(e) => setEntryRejectReason(e.target.value)}
-                                      placeholder="Rejection reason (required)"
-                                      autoFocus
-                                    />
-                                    <button
-                                      onClick={async () => {
-                                        if (!entryRejectReason.trim()) return;
-                                        try {
-                                          await rejectEntryMutation.mutateAsync({ id: entry.id, reason: entryRejectReason });
-                                          setRejectingEntryId(null);
-                                          setEntryRejectReason('');
-                                          showStatus('Time entry rejected.', 'success');
-                                        } catch (err) {
-                                          console.error('Error rejecting entry:', err);
-                                          showStatus('Rejection failed. Please try again.', 'danger');
-                                        }
-                                      }}
-                                      disabled={!entryRejectReason.trim() || rejectEntryMutation.isPending}
-                                      className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
-                                    >
-                                      Confirm
-                                    </button>
-                                    <button
-                                      onClick={() => { setRejectingEntryId(null); setEntryRejectReason(''); }}
-                                      className="px-2 py-1 text-xs border rounded hover:bg-muted"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-
-                          {!showRejectForm[key] ? (
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleApproveTimesheetWeek(entryIds)}
-                                disabled={approveBatchMutation.isPending}
-                                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/80 disabled:opacity-50"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                                {approveBatchMutation.isPending ? 'Approving week...' : 'Approve Week'}
-                              </button>
-                              <button
-                                onClick={() => setShowRejectForm((current) => ({ ...current, [key]: true }))}
-                                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-                              >
-                                <XCircle className="w-4 h-4" />
-                                Reject Week
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              <textarea
-                                value={rejectionReasons[key] || ''}
-                                onChange={(event) => setRejectionReasons((current) => ({ ...current, [key]: event.target.value }))}
-                                placeholder="Rejection reason for this week..."
-                                className="w-full px-3 py-2 border rounded"
-                                rows={3}
-                              />
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleRejectTimesheetWeek(entryIds, key)}
-                                  disabled={rejectBatchMutation.isPending}
-                                  className="flex-1 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
-                                >
-                                  {rejectBatchMutation.isPending ? 'Rejecting week...' : 'Confirm Week Rejection'}
-                                </button>
-                                <button
-                                  onClick={() => setShowRejectForm((current) => ({ ...current, [key]: false }))}
-                                  className="flex-1 px-4 py-2 bg-muted text-muted-foreground rounded hover:bg-muted/90"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </section>
-              ))}
-            </div>
-          </div>
-        )}
-
+        {/* Approval History anchors the Timesheets sub-tab as the
+            "what I just acted on" trail. It used to render under every
+            sub-tab, but that duplicated the data on Approved (where the
+            main table already lists the same rows) and was noise on
+            Time Off. Single-tab placement keeps the audit affordance
+            without three copies of the same widget. */}
+        {activeTab === 'timesheets' && (
         <div className="mt-10">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-xl font-bold">Approval History</h2>
@@ -667,12 +388,12 @@ export const ApprovalsPage: React.FC = () => {
               <select
                 value={historyDaysBack}
                 onChange={(e) => setHistoryDaysBack(Number(e.target.value))}
-                className="h-8 rounded border bg-card px-2 text-xs"
+                className="h-8 rounded border border-border bg-card text-foreground px-2 text-xs"
               >
-                <option value={7}>Last 7 days</option>
-                <option value={30}>Last 30 days</option>
-                <option value={90}>Last 90 days</option>
-                <option value={365}>Last year</option>
+                <option value={7} className="bg-card text-foreground">Last 7 days</option>
+                <option value={30} className="bg-card text-foreground">Last 30 days</option>
+                <option value={90} className="bg-card text-foreground">Last 90 days</option>
+                <option value={365} className="bg-card text-foreground">Last year</option>
               </select>
             </div>
           </div>
@@ -682,16 +403,16 @@ export const ApprovalsPage: React.FC = () => {
           ) : historyDisplayGroups.length === 0 ? (
             <EmptyState message="No approval history for the selected filters." />
           ) : (
-            <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+            <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50 border-b text-left">
+                <thead className="bg-muted/30 border-b border-border text-left">
                   <tr>
-                    <th className="px-4 py-3 font-semibold text-slate-700 w-6"></th>
-                    <th className="px-4 py-3 font-semibold text-slate-700">Employee</th>
-                    <th className="px-4 py-3 font-semibold text-slate-700">Week</th>
-                    <th className="px-4 py-3 font-semibold text-slate-700">Hours</th>
-                    <th className="px-4 py-3 font-semibold text-slate-700">Entries</th>
-                    <th className="px-4 py-3 font-semibold text-slate-700">Status</th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground w-6"></th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground">Employee</th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground">Week</th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground">Hours</th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground">Entries</th>
+                    <th className="px-4 py-3 font-semibold text-muted-foreground">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -703,26 +424,28 @@ export const ApprovalsPage: React.FC = () => {
                       next.has(key) ? next.delete(key) : next.add(key);
                       return next;
                     });
+                    // Theme-aware status pill — same palette used on the
+                    // Approved tab so the two surfaces feel consistent.
                     const statusColors = group.status === 'approved'
-                      ? 'bg-emerald-100 text-emerald-700'
+                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
                       : group.status === 'rejected'
-                        ? 'bg-red-100 text-red-700'
-                        : 'bg-amber-100 text-amber-700';
+                        ? 'bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/30'
+                        : 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30';
                     return (
                       <React.Fragment key={key}>
                         <tr
-                          className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                          className="border-t border-border hover:bg-muted/40 cursor-pointer"
                           onClick={toggleExpand}
                         >
-                          <td className="px-4 py-3 text-slate-400 text-xs select-none">
+                          <td className="px-4 py-3 text-muted-foreground text-xs select-none">
                             {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                           </td>
-                          <td className="px-4 py-3 font-medium text-slate-900">{group.employee_name}</td>
-                          <td className="px-4 py-3 text-slate-600">
+                          <td className="px-4 py-3 font-medium text-foreground">{group.employee_name}</td>
+                          <td className="px-4 py-3 text-muted-foreground">
                             {format(parseISO(group.week_start), 'MMM d')} – {format(parseISO(group.week_end), 'MMM d, yyyy')}
                           </td>
-                          <td className="px-4 py-3 font-medium text-slate-900">{group.total_hours.toFixed(1)}h</td>
-                          <td className="px-4 py-3 text-slate-600">{group.entry_count}</td>
+                          <td className="px-4 py-3 font-medium text-foreground">{group.total_hours.toFixed(1)}h</td>
+                          <td className="px-4 py-3 text-muted-foreground">{group.entry_count}</td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusColors}`}>
                               {group.status.charAt(0).toUpperCase() + group.status.slice(1)}
@@ -735,22 +458,30 @@ export const ApprovalsPage: React.FC = () => {
                           </td>
                         </tr>
                         {isExpanded && group.entries.map((entry) => (
-                          <tr key={entry.id} className="bg-slate-50/70 border-t border-slate-100">
+                          <tr key={entry.id} className="bg-muted/20 border-t border-border">
                             <td className="px-4 py-2"></td>
-                            <td className="px-4 py-2 text-slate-400 text-xs">↳</td>
-                            <td className="px-4 py-2 text-xs text-slate-600">
-                              <span className="font-medium">{format(parseISO(entry.entry_date), 'EEE, MMM d')}</span>
-                              {entry.project_name && <span className="ml-2 text-slate-400">· {entry.project_name}</span>}
-                              {entry.description && <p className="text-slate-400 mt-0.5">{entry.description}</p>}
+                            <td className="px-4 py-2 text-muted-foreground text-xs">↳</td>
+                            <td className="px-4 py-2 text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">{format(parseISO(entry.entry_date), 'EEE, MMM d')}</span>
+                              {entry.project_name && <span className="ml-2">· {entry.project_name}</span>}
+                              {entry.description && <p className="mt-0.5">{entry.description}</p>}
                               {entry.rejection_reason && (
-                                <p className="text-red-600 mt-0.5">Reason: {entry.rejection_reason}</p>
+                                <p className="text-rose-500 dark:text-rose-400 mt-0.5">Reason: {entry.rejection_reason}</p>
                               )}
                             </td>
-                            <td className="px-4 py-2 text-xs font-medium text-slate-700">{entry.hours}h</td>
+                            <td className="px-4 py-2 text-xs font-medium text-foreground">
+                              {entry.hours}h
+                              {(() => {
+                                const block = formatTimeBlock(entry.start_time, entry.end_time);
+                                return block ? <span className="block text-[10px] text-muted-foreground font-normal mt-0.5">{block}</span> : null;
+                              })()}
+                            </td>
                             <td></td>
                             <td className="px-4 py-2">
-                              <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                                entry.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                              <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border ${
+                                entry.status === 'APPROVED'
+                                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                  : 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30'
                               }`}>
                                 {entry.status}
                               </span>
@@ -765,7 +496,7 @@ export const ApprovalsPage: React.FC = () => {
             </div>
           )}
         </div>
-        </>)}
+        )}
 
         {activeTab === 'time-off' && (
           <div>
@@ -779,12 +510,12 @@ export const ApprovalsPage: React.FC = () => {
                   <div key={req.id} className="border rounded-lg p-4 bg-white">
                     <div className="flex items-center justify-between mb-2">
                       <div>
-                        <span className="font-medium">{req.user?.full_name ?? '—'}</span>
+                        <span className="font-medium">{req.user?.full_name ?? 'N/A'}</span>
                         <span className="ml-2 text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">{req.leave_type}</span>
                       </div>
                       <span className="text-sm text-slate-500">{req.request_date}</span>
                     </div>
-                    <p className="text-sm text-slate-600 mb-1">{req.reason || '—'}</p>
+                    <p className="text-sm text-slate-600 mb-1">{req.reason || 'N/A'}</p>
                     <p className="text-sm font-medium mb-3">{Number(req.hours)}h</p>
                     {rejectingTimeOffId === req.id ? (
                       <div className="flex gap-2 items-center">
@@ -825,6 +556,97 @@ export const ApprovalsPage: React.FC = () => {
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Time Off Approval History. Mirrors the Timesheets-tab
+            history widget but scoped to time-off decisions only so
+            the manager can audit a recent PTO approve/reject without
+            jumping pages. */}
+        {activeTab === 'time-off' && (
+          <div className="mt-10">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-xl font-bold">Approval History</h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                {(['', 'APPROVED', 'REJECTED'] as const).map((f) => (
+                  <button
+                    key={f || 'all'}
+                    onClick={() => setTimeOffHistoryStatusFilter(f)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                      timeOffHistoryStatusFilter === f
+                        ? f === '' ? 'bg-slate-700 text-white border-slate-700'
+                          : f === 'APPROVED' ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-red-600 text-white border-red-600'
+                        : 'bg-card border-border hover:bg-muted'
+                    }`}
+                  >
+                    {f === '' ? 'All' : f.charAt(0) + f.slice(1).toLowerCase()}
+                  </button>
+                ))}
+                <select
+                  value={historyDaysBack}
+                  onChange={(e) => setHistoryDaysBack(Number(e.target.value))}
+                  className="h-8 rounded border border-border bg-card text-foreground px-2 text-xs"
+                >
+                  <option value={7} className="bg-card text-foreground">Last 7 days</option>
+                  <option value={30} className="bg-card text-foreground">Last 30 days</option>
+                  <option value={90} className="bg-card text-foreground">Last 90 days</option>
+                  <option value={365} className="bg-card text-foreground">Last year</option>
+                </select>
+              </div>
+            </div>
+
+            {timeOffHistoryLoading ? (
+              <Loading />
+            ) : timeOffHistory.length === 0 ? (
+              <EmptyState message="No time off history for the selected filters." />
+            ) : (
+              <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border">
+                    <tr>
+                      <th className="px-4 py-3">Employee</th>
+                      <th className="px-4 py-3">Type</th>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3 text-right">Hours</th>
+                      <th className="px-4 py-3">Reason</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Acted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timeOffHistory.map((r) => {
+                      const acted = r.approved_at ?? r.updated_at;
+                      const actedLabel = acted ? format(parseISO(acted), 'MMM d, yyyy') : 'N/A';
+                      const isApproved = r.status === 'APPROVED';
+                      return (
+                        <tr key={r.id} className="border-t border-border hover:bg-muted/30">
+                          <td className="px-4 py-3 font-medium">{r.user?.full_name ?? 'N/A'}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{r.leave_type}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{r.request_date}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{Number(r.hours)}h</td>
+                          <td className="px-4 py-3 text-muted-foreground max-w-md">
+                            {isApproved
+                              ? (r.reason || 'N/A')
+                              : (r.rejection_reason || r.reason || 'N/A')}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                              isApproved
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                : 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30'
+                            }`}>
+                              {r.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">{actedLabel}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

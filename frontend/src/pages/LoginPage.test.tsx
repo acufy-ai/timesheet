@@ -11,6 +11,19 @@ vi.mock('@/hooks', () => ({
   useAuth: () => ({ login: mockLogin }),
 }));
 
+// LoginPage reads the theme to pick the side-panel art. Stub the
+// hook with a real variant object so the side-panel inline style
+// resolves to defined values (variant.legacy.bgApp etc.).
+vi.mock('@/contexts/ThemeContext', async () => {
+  const { THEME_VARIANTS } = await vi.importActual<typeof import('@/contexts/themeVariants')>('@/contexts/themeVariants');
+  return {
+    useTheme: () => ({
+      variant: THEME_VARIANTS['white-bg'],
+      setVariant: vi.fn(),
+    }),
+  };
+});
+
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };

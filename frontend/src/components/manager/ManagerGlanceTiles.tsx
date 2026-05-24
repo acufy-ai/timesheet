@@ -48,7 +48,7 @@ export const ManagerGlanceTiles: React.FC<ManagerGlanceTilesProps> = ({
 
   // Show skeleton tiles when loading. Same shape as real ones; the user
   // doesn't see a layout shift when the data lands.
-  const placeholder: Tile = { label: '...', value: '—', sub: 'loading', tone: 'neutral' };
+  const placeholder: Tile = { label: '...', value: 'N/A', sub: 'loading', tone: 'neutral' };
 
   const tiles: Tile[] = overview ? [
     {
@@ -69,14 +69,6 @@ export const ManagerGlanceTiles: React.FC<ManagerGlanceTilesProps> = ({
             : (overview.pending_approvals_oldest_hours ?? 0) > 24 ? 'bad'
             : 'warn',
       onClick: () => navigate('/approvals'),
-    },
-    {
-      label: 'Avg approval age',
-      value: overview.pending_approvals_avg_hours == null ? '—' : `${overview.pending_approvals_avg_hours}h`,
-      sub: overview.pending_approvals_avg_hours == null ? 'no pending'
-            : (overview.pending_approvals_avg_hours > 24 ? 'past SLA' : 'within SLA'),
-      tone: overview.pending_approvals_avg_hours == null ? 'good'
-            : overview.pending_approvals_avg_hours > 24 ? 'bad' : 'good',
     },
     {
       label: 'PTO this week',
@@ -103,10 +95,10 @@ export const ManagerGlanceTiles: React.FC<ManagerGlanceTilesProps> = ({
           sub: (projectAlertCount ?? 0) === 0 ? 'all healthy' : 'needs attention',
           tone: (projectAlertCount ?? 0) === 0 ? 'good' : 'warn',
         },
-  ] : [placeholder, placeholder, placeholder, placeholder, placeholder];
+  ] : [placeholder, placeholder, placeholder, placeholder];
 
   return (
-    <div className="grid grid-cols-2 gap-3 mb-4 md:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 mb-4 md:grid-cols-4">
       {tiles.map((tile, i) => {
         const Inner = (
           <div className="rounded-lg border bg-card p-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-colors hover:bg-muted/40">

@@ -53,12 +53,6 @@ describe('ManagerGlanceTiles', () => {
     expect(screen.getByText(/oldest 14h ago/i)).toBeInTheDocument();
   });
 
-  it('renders avg approval age within SLA when below 24h', () => {
-    renderIt();
-    expect(screen.getByText('8h')).toBeInTheDocument();
-    expect(screen.getByText(/within sla/i)).toBeInTheDocument();
-  });
-
   it('shows the Inbox tile when ingestion is enabled', () => {
     renderIt({ ingestionEnabled: true, pendingIngestionCount: 5, ingestionOldestHours: 8 });
     expect(screen.getByText('Inbox')).toBeInTheDocument();
@@ -72,13 +66,13 @@ describe('ManagerGlanceTiles', () => {
     expect(screen.getByText('3')).toBeInTheDocument();
   });
 
-  it('renders 5 placeholder tiles while overview is loading', () => {
+  it('renders 4 placeholder tiles while overview is loading', () => {
     render(
       <MemoryRouter>
         <ManagerGlanceTiles overview={undefined} />
       </MemoryRouter>,
     );
-    const dashes = screen.getAllByText('—');
-    expect(dashes.length).toBe(5);
+    const dashes = screen.getAllByText('N/A');
+    expect(dashes.length).toBe(4);
   });
 });

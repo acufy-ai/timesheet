@@ -47,7 +47,7 @@ const formatHours = (h: string | number): string => {
 const formatRemaining = (remaining: string | number | null): string => {
   if (remaining == null) return 'No budget';
   const n = typeof remaining === 'string' ? parseFloat(remaining) : remaining;
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return 'N/A';
   if (n < 0) return `${formatHours(Math.abs(n))} over`;
   return `${formatHours(n)} left`;
 };
@@ -85,7 +85,7 @@ export const ProjectHealthTable: React.FC<ProjectHealthTableProps> = ({ rows, is
             return (
               <tr key={row.project_id} className="border-b border-border/60 last:border-0 hover:bg-muted/30">
                 <td className="px-2 py-3 font-semibold">{row.project_name}</td>
-                <td className="px-2 py-3 text-muted-foreground">{row.client_name || '—'}</td>
+                <td className="px-2 py-3 text-muted-foreground">{row.client_name || 'N/A'}</td>
                 <td className="px-2 py-3 font-mono text-xs">
                   <span className={`inline-block h-2 w-2 rounded-full mr-1.5 align-middle ${toneDot[time.tone]}`} />
                   {time.text}
@@ -94,7 +94,7 @@ export const ProjectHealthTable: React.FC<ProjectHealthTableProps> = ({ rows, is
                 <td className="px-2 py-3 min-w-[140px]">
                   <div className="flex items-baseline justify-between">
                     <span className={`text-xs font-bold ${overBudget ? 'text-red-600 dark:text-red-400' : ''}`}>
-                      {row.budget_pct == null ? '—' : `${row.budget_pct}%`}
+                      {row.budget_pct == null ? 'N/A' : `${row.budget_pct}%`}
                     </span>
                     <span className="text-[11px] text-muted-foreground">{formatRemaining(row.budget_hours_remaining)}</span>
                   </div>

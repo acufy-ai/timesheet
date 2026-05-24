@@ -60,7 +60,7 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
 
   if (overview.team_size === 0) {
     fragments.push(
-      <span key="empty"><strong>You have no direct reports right now.</strong> The page below still shows your project and approval signals.{' '}</span>,
+      <span key="empty"><strong>You have no direct reports yet.</strong>{' '}</span>,
     );
   } else if (onTrack === overview.team_size) {
     fragments.push(
@@ -91,8 +91,12 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
               {i < linkable.length - 1 ? ' and ' : ''}
             </React.Fragment>
           ))}
-          {' '}{critical.length === 1 ? 'needs' : 'need'} follow-up
-          {critical.length === 1 ? ', missed multiple deadlines recently' : '. Both have missed multiple deadlines recently'}.{' '}
+          {' '}{critical.length === 1 ? 'needs' : 'need'} follow-up.
+          {critical.length === 1
+            ? ' Has missed multiple deadlines recently.'
+            : critical.length === 2
+              ? ' Both have missed multiple deadlines recently.'
+              : ` ${critical.length} people have missed multiple deadlines recently.`}{' '}
         </span>,
       );
     }
@@ -123,11 +127,13 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
 
   if (overview.pending_approvals_count > 0) {
     const oldestH = overview.pending_approvals_oldest_hours;
-    const ageWord =
+    // Phrase the age so it reads as a description of the oldest entry,
+    // not the deadline. "(today)" alone was ambiguous.
+    const ageSuffix =
       oldestH == null ? '' :
-      oldestH < 12 ? 'today' :
-      oldestH < 36 ? 'yesterday' :
-      'older';
+      oldestH < 12 ? ' (oldest is from today)' :
+      oldestH < 36 ? ' (oldest is from yesterday)' :
+      ' (oldest is over a day old)';
     fragments.push(
       <span key="appr">
         <button
@@ -137,17 +143,16 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
         >
           {overview.pending_approvals_count} {overview.pending_approvals_count === 1 ? 'timesheet entry' : 'timesheet entries'}
         </button>
-        {' '}{overview.pending_approvals_count === 1 ? 'is' : 'are'} waiting on your approval
-        {ageWord ? <> ({ageWord})</> : null}
-        .{' '}
+        {' '}{overview.pending_approvals_count === 1 ? 'is' : 'are'} waiting for your approval{ageSuffix}.{' '}
       </span>,
     );
   }
 
   if (ingestionEnabled && pendingIngestionCount > 0) {
+    // Stand-alone sentence so this reads cleanly whether it follows the
+    // empty-state line, the all-good line, or another approvals fragment.
     fragments.push(
       <span key="inbox">
-        And{' '}
         <button
           type="button"
           onClick={() => navigate('/ingestion/inbox')}
@@ -155,8 +160,8 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
         >
           {pendingIngestionCount} {pendingIngestionCount === 1 ? 'timesheet' : 'timesheets'} in the email inbox
         </button>
-        {' '}{pendingIngestionCount === 1 ? 'is' : 'are'} waiting for you to review
-        {ingestionErrorsCount > 0 ? <>, including <strong>{ingestionErrorsCount} {ingestionErrorsCount === 1 ? 'extraction error' : 'extraction errors'}</strong></> : null}
+        {' '}{pendingIngestionCount === 1 ? 'is' : 'are'} waiting for your review
+        {ingestionErrorsCount > 0 ? <>, including <strong>{ingestionErrorsCount} {ingestionErrorsCount === 1 ? 'processing error' : 'processing errors'}</strong></> : null}
         .
       </span>,
     );
@@ -194,7 +199,7 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
     });
   }
   if (actions.length === 0) {
-    actions.push({ label: 'View team', onClick: () => {} });
+    actions.push({ label: 'View team', onClick: () => navigate('/user-management') });
   }
 
   return (

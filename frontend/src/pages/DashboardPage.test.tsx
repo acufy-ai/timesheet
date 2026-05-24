@@ -19,27 +19,33 @@ const mocks = vi.hoisted(() => ({
   useUsers: vi.fn(),
 }));
 
-vi.mock('@/hooks', () => ({
-  useAuth: mocks.useAuth,
-  useChangePassword: mocks.useChangePassword,
-  useClients: mocks.useClients,
-  useDashboardAnalytics: mocks.useDashboardAnalytics,
-  useDashboardRecentActivity: mocks.useDashboardRecentActivity,
-  useNotifications: mocks.useNotifications,
-  useProjects: mocks.useProjects,
-  useTeamDailyOverview: mocks.useTeamDailyOverview,
-  useTeamEmployees: mocks.useTeamEmployees,
-  useTenants: mocks.useTenants,
-  useUsers: mocks.useUsers,
-  useWeekStartsOn: () => 1,
-  useAdminSystemHealth: () => ({ data: undefined, isLoading: false }),
-  useCanReview: () => false,
-  useIngestionEnabled: () => false,
-  useIngestionTimesheets: () => ({ data: { items: [] }, isLoading: false }),
-  useManagerProjectHealth: () => ({ data: undefined, isLoading: false }),
-  useManagerTeamOverview: () => ({ data: undefined, isLoading: false }),
-  useTimeEntries: () => ({ data: [], isLoading: false }),
-}));
+// importOriginal so hooks referenced by DashboardPage but not
+// explicitly stubbed here fall back to the real export.
+vi.mock('@/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks')>();
+  return {
+    ...actual,
+    useAuth: mocks.useAuth,
+    useChangePassword: mocks.useChangePassword,
+    useClients: mocks.useClients,
+    useDashboardAnalytics: mocks.useDashboardAnalytics,
+    useDashboardRecentActivity: mocks.useDashboardRecentActivity,
+    useNotifications: mocks.useNotifications,
+    useProjects: mocks.useProjects,
+    useTeamDailyOverview: mocks.useTeamDailyOverview,
+    useTeamEmployees: mocks.useTeamEmployees,
+    useTenants: mocks.useTenants,
+    useUsers: mocks.useUsers,
+    useWeekStartsOn: () => 1,
+    useAdminSystemHealth: () => ({ data: undefined, isLoading: false }),
+    useCanReview: () => false,
+    useIngestionEnabled: () => false,
+    useIngestionTimesheets: () => ({ data: { items: [] }, isLoading: false }),
+    useManagerProjectHealth: () => ({ data: undefined, isLoading: false }),
+    useManagerTeamOverview: () => ({ data: undefined, isLoading: false }),
+    useTimeEntries: () => ({ data: [], isLoading: false }),
+  };
+});
 
 vi.mock('@/components', () => ({
   Header: () => <div>Header</div>,

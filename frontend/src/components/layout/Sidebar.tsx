@@ -104,7 +104,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* ── Top gradient line ── */}
-      <div className="mx-4 h-[2px] rounded-full" style={{ background: 'linear-gradient(90deg, #0EA5E9, #06B6D4, #14B8A6, #2DD4BF)' }} />
+      {/* Themed stroke: uses the active theme's primary -> hover variant
+          (set per-theme by applyThemeVariant). Tracks the palette picker. */}
+      <div
+        className="mx-4 h-[2px] rounded-full"
+        style={{ background: 'linear-gradient(90deg, hsl(var(--primary)), var(--accent-hover, #14B8A6))' }}
+      />
 
       {/* ── Navigation sections with dropdowns ── */}
       <div className="mt-3 flex-1 space-y-1 overflow-y-auto px-3 pb-2">

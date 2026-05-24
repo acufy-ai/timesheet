@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, Clock, Loader2, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Clock, EyeOff, LayoutGrid, Loader2, Plus, RefreshCw, Rows, Search, Trash2, Users, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
@@ -10,6 +10,8 @@ import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
 import {
   useAuth,
+  useIsManager,
+  useIsViewer,
   useAssignChainCandidate,
   useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
@@ -20,14 +22,24 @@ import {
   useFetchJobStatus,
   useIngestionTimesheets,
   useMailboxes,
+  useMyPreferences,
   useReprocessIngestionEmail,
   useReprocessSkippedEmails,
   useSkippedEmails,
+  usePromoteSkippedEmail,
+  useConfirmSkippedEmail,
   useTriggerFetchEmails,
   useUpdateIngestionTimesheetData,
-  useUsers,
+  useUpdateMyPreferences,
+  useAssignableUsers,
 } from '@/hooks';
+import { ingestionAPI } from '@/api/endpoints';
 import type { ChainCandidate, FetchMessageDiagnostic, IngestionTimesheetSummary, SkippedEmail } from '@/types';
+import {
+  buildRowGroups,
+  buildSkippedRowGroup,
+  type TimesheetRowGroup,
+} from '@/utils/inboxGrouping';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
   if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
@@ -196,6 +208,15 @@ const hasTimesheetKeywords = (value: string | null | undefined): boolean => {
 };
 
 const isActionableSkippedEmail = (email: SkippedEmail): boolean => {
+  // Classifier-skipped emails are always actionable when the backend
+  // surfaces them — these are exactly the rows the reviewer needs to
+  // audit. The "isNoiseSkipReason" filter was hiding them by design;
+  // we now keep them visible so misclassified timesheets don't vanish.
+  const isClassifierSkip =
+    email.skip_reason?.startsWith('not_timesheet_email:') ||
+    email.skip_reason?.startsWith('low_confidence_no_attachments:');
+  if (isClassifierSkip) return true;
+
   if (isNoiseSkipReason(email.skip_reason)) return false;
 
   const hasTimesheetContext =
@@ -266,112 +287,12 @@ const getFriendlySystemMessage = (message: string | null | undefined, fallback: 
   return message;
 };
 
-type TimesheetRowGroup = {
-  key: string;
-  status: string;
-  timesheets: IngestionTimesheetSummary[];
-  primary: IngestionTimesheetSummary;
-  periods: number;
-  totalHours: number;
-  anomalyCount: number;
-  kind?: 'timesheet' | 'skipped';
-  skipped?: SkippedEmail;
-};
+// TimesheetRowGroup type + buildSkippedRowGroup helper moved to
+// utils/inboxGrouping.ts so the dashboard's "X await review" tile
+// can use the same grouping definition.
 
-// Adapt a SkippedEmail into the same row-group shape used by the main table,
-// with status 'skipped' and placeholder fields for client/employee/week/hours.
-const buildSkippedRowGroup = (email: SkippedEmail): TimesheetRowGroup => {
-  const primary = {
-    id: 0,
-    email_id: email.id,
-    sender_email: email.sender_email,
-    sender_name: email.sender_name,
-    subject: email.subject,
-    received_at: email.received_at,
-    created_at: email.received_at,
-    mailbox_label: email.mailbox_label,
-    client_name: null,
-    employee_name: null,
-    extracted_employee_name: null,
-    employee_id: null,
-    client_id: null,
-    period_start: null,
-    period_end: null,
-    total_hours: null,
-    status: 'skipped',
-    attachment_id: email.reprocessable_attachments[0]?.id ?? null,
-    llm_anomalies: [],
-    is_likely_resubmission: false,
-  } as unknown as IngestionTimesheetSummary;
-  return {
-    key: `skipped-${email.id}`,
-    status: 'skipped',
-    timesheets: [primary],
-    primary,
-    periods: 1,
-    totalHours: 0,
-    anomalyCount: 0,
-    kind: 'skipped',
-    skipped: email,
-  };
-};
-
-const buildRowGroups = (timesheets: IngestionTimesheetSummary[]): TimesheetRowGroup[] => {
-  const map = new Map<string, TimesheetRowGroup>();
-
-  for (const ts of timesheets) {
-    // Group all timesheets from the same email into one inbox row.
-    // The review panel shows individual week tabs inside.
-    const key = `email-${ts.email_id}`;
-    if (!map.has(key)) {
-      map.set(key, {
-        key,
-        status: ts.status,
-        timesheets: [ts],
-        primary: ts,
-        periods: 1,
-        totalHours: Number(ts.total_hours ?? 0),
-        anomalyCount: ts.llm_anomalies?.length ?? 0,
-      });
-      continue;
-    }
-
-    const group = map.get(key)!;
-    const isDuplicatePeriod = group.timesheets.some((existing) => {
-      const existingSignature = `${existing.attachment_id ?? 'no-att'}|${existing.period_start ?? ''}|${existing.period_end ?? ''}|${existing.total_hours ?? ''}`;
-      const incomingSignature = `${ts.attachment_id ?? 'no-att'}|${ts.period_start ?? ''}|${ts.period_end ?? ''}|${ts.total_hours ?? ''}`;
-      return existingSignature === incomingSignature;
-    });
-    if (isDuplicatePeriod) {
-      continue;
-    }
-    group.timesheets.push(ts);
-    group.periods += 1;
-    group.totalHours += Number(ts.total_hours ?? 0);
-    group.anomalyCount += ts.llm_anomalies?.length ?? 0;
-
-    if (ts.status === 'pending' || group.status === 'pending') {
-      group.status = 'pending';
-    } else if (ts.status === 'under_review' || group.status === 'under_review') {
-      group.status = 'under_review';
-    } else if (ts.status === 'rejected' || group.status === 'rejected') {
-      group.status = 'rejected';
-    } else if (ts.status === 'on_hold' || group.status === 'on_hold') {
-      group.status = 'on_hold';
-    } else if (group.timesheets.every((item) => item.status === 'approved')) {
-      group.status = 'approved';
-    }
-  }
-
-  return Array.from(map.values()).map((group) => ({
-    ...group,
-    timesheets: [...group.timesheets].sort((left, right) => {
-      const leftValue = left.period_start ? new Date(left.period_start).getTime() : Number.MAX_SAFE_INTEGER;
-      const rightValue = right.period_start ? new Date(right.period_start).getTime() : Number.MAX_SAFE_INTEGER;
-      return leftValue - rightValue;
-    }),
-  }));
-};
+// buildRowGroups moved to utils/inboxGrouping.ts. The function below
+// is kept private because it depends on STATUS_OPTIONS defined here.
 
 const countStatuses = (groups: TimesheetRowGroup[]) =>
   STATUS_OPTIONS.reduce<Record<string, number>>((accumulator, option) => {
@@ -387,6 +308,12 @@ export const InboxPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  // Shortcut to /user-management?tab=timesheets is visible only when
+  // the user can actually navigate there. AdminOrManagerGuard on that
+  // route allows ADMIN/MANAGER/VIEWER. Admin never lands on Inbox
+  // (gated out at the route level), so MANAGER + VIEWER are the
+  // realistic overlap. EMPLOYEE reviewers don't have access.
+  const canSeeTeamTimesheets = useIsManager() || useIsViewer();
   // Pick up job ID from navigation state (e.g., after reprocess from review panel)
   const navJobId =
     typeof location.state === 'object' && location.state !== null && 'jobId' in location.state && typeof location.state.jobId === 'string'
@@ -413,9 +340,108 @@ export const InboxPage: React.FC = () => {
   const assignChainCandidate = useAssignChainCandidate();
   const updateTimesheet = useUpdateIngestionTimesheetData();
   const createClient = useCreateClient();
-  const { data: users = [] } = useUsers();
+
+  // Cascade a client assignment across every sibling week from the same
+  // email that's still editable (status pending / under_review). The
+  // reviewer's client decision is the final answer for the whole
+  // submission, so the inbox card pickers should set it once and have
+  // it propagate to every week pill on the same email.
+  //
+  // We re-fetch the sibling list scoped only by email_id rather than
+  // trusting the caller's snapshot of ``group.timesheets``. The inbox
+  // list query is filtered (by status, client, search) and may not
+  // contain all the pills for the email — without this re-fetch the
+  // cascade would skip pills hidden by the active filter, leaving
+  // some sibling weeks without the new client.
+  const cascadeClientAcrossEmail = React.useCallback(
+    async (
+      primaryId: number,
+      clientId: number,
+      emailId: number | null,
+    ) => {
+      const targets = new Set<number>([primaryId]);
+      if (emailId !== null) {
+        try {
+          const allSiblings = await ingestionAPI.listTimesheets({ email_id: emailId, limit: 200 });
+          for (const sibling of allSiblings.data) {
+            if (sibling.id === primaryId) continue;
+            if (sibling.status === 'approved' || sibling.status === 'rejected') continue;
+            targets.add(sibling.id);
+          }
+        } catch {
+          // Fall back to single-row update if the sibling fetch fails.
+          // Better one row right than zero rows updated.
+        }
+      }
+      await Promise.all(
+        [...targets].map((id) =>
+          updateTimesheet.mutateAsync({ id, data: { client_id: clientId } }).catch(() => null),
+        ),
+      );
+    },
+    [updateTimesheet],
+  );
+  // Use the assignable-users endpoint (full tenant list, reviewer-
+  // permissive) so the inbox card employee picker matches what's
+  // available in the review panel. Without this, managers see only
+  // their direct-report chain on the card picker but every tenant
+  // user inside the review panel — an inconsistency that prevents
+  // reassigning a misattributed timesheet from the card view.
+  const { data: users = [] } = useAssignableUsers();
   // Which row has an inline picker open: { id, kind: 'client'|'employee' }
   const [inlinePicker, setInlinePicker] = React.useState<{ id: number; kind: 'client' | 'employee' } | null>(null);
+  // When the reviewer clicks "+ Create new client" in the inline picker, we
+  // reveal an editable name field prefilled with the AI suggestion (or the
+  // smart-guess from the sender's domain). The user can keep, edit, or
+  // replace it. Nothing is created until they confirm via "Create & assign".
+  // Keyed by timesheet id so multiple rows can stay in different states.
+  const [creatingClientFor, setCreatingClientFor] = React.useState<number | null>(null);
+  const [createClientDraftName, setCreateClientDraftName] = React.useState('');
+  // Multi-period rows render as a parent card with per-week children
+  // tucked underneath; expansion state lives here, keyed by group key.
+  const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(new Set());
+  const toggleExpanded = (key: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // View mode: "cards" or "table". Persisted server-side via
+  // users.preferences.inbox_view_mode so the choice follows the user
+  // across browsers. localStorage is the fast-path fallback used until
+  // the preferences hook resolves on first paint.
+  const VIEW_MODE_STORAGE_KEY = 'inbox.viewMode';
+  const { data: preferences } = useMyPreferences();
+  const updatePreferences = useUpdateMyPreferences();
+  const [viewMode, setViewMode] = React.useState<'cards' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'cards';
+    try {
+      const raw = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      return raw === 'table' ? 'table' : 'cards';
+    } catch {
+      return 'cards';
+    }
+  });
+  // Hydrate from server prefs once they arrive (server wins over local).
+  React.useEffect(() => {
+    if (!preferences) return;
+    const serverMode = preferences['inbox_view_mode'];
+    if (serverMode === 'cards' || serverMode === 'table') {
+      setViewMode(serverMode);
+      try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, serverMode); } catch { /* quota / private mode - swallow */ }
+    }
+  }, [preferences]);
+  const handleSetViewMode = (mode: 'cards' | 'table') => {
+    setViewMode(mode);
+    try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode); } catch { /* swallow */ }
+    // Fire-and-forget server persistence so the choice follows the user
+    // to other browsers/devices. We don't await; a failed PATCH keeps
+    // the local state, the next session re-reads from preferences.
+    updatePreferences.mutate({ inbox_view_mode: mode });
+  };
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
   const { data: mailboxes = [] } = useMailboxes();
@@ -429,6 +455,8 @@ export const InboxPage: React.FC = () => {
     return new Date(Math.max(...stamps));
   }, [mailboxes]);
   const reprocessSkipped = useReprocessSkippedEmails();
+  const promoteSkipped = usePromoteSkippedEmail();
+  const confirmSkipped = useConfirmSkippedEmail();
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
   const [deletingEmailId, setDeletingEmailId] = useState<number | null>(null);
@@ -472,7 +500,10 @@ export const InboxPage: React.FC = () => {
     });
     return fuzzy ? fuzzy.name : guess;
   }, [cascadePopover, clients]);
-  const { data: skippedOverview, isLoading: skippedLoading } = useSkippedEmails(8);
+  // Surface classifier-rejected emails too: the reviewer needs to see
+  // what the LLM dropped so a misclassified timesheet doesn't disappear
+  // silently. The Skipped tab handles promote/confirm actions.
+  const { data: skippedOverview, isLoading: skippedLoading } = useSkippedEmails(50, true, true);
   const { data: allTimesheets = [], isLoading: countsLoading } = useIngestionTimesheets(
     { limit: 200 },
     true,
@@ -494,11 +525,18 @@ export const InboxPage: React.FC = () => {
     [actionableSkippedEmails],
   );
   const allGroups = React.useMemo(
-    () => [...buildRowGroups(allTimesheets), ...skippedGroups],
+    // Include rejected rows here so the per-tab count badge for
+    // 'Rejected' stays accurate. The display tabs further down decide
+    // whether to actually render rejected rows.
+    () => [...buildRowGroups(allTimesheets, { includeRejected: true }), ...skippedGroups],
     [allTimesheets, skippedGroups],
   );
   const groups = React.useMemo(() => {
-    const baseGroups = buildRowGroups(timesheets);
+    // Include rejected rows only when the reviewer is explicitly on
+    // the Rejected tab. Otherwise the inbox row aggregates (count,
+    // total hours, week span) shouldn't be inflated by pills the
+    // reviewer already dismissed as duplicates.
+    const baseGroups = buildRowGroups(timesheets, { includeRejected: statusFilter === 'rejected' });
     // Skipped rows aren't filtered server-side, so mirror the client-side
     // status/search/client filters here to keep the table consistent.
     const searchLower = search.trim().toLowerCase();
@@ -642,7 +680,7 @@ export const InboxPage: React.FC = () => {
   const handleBulkReprocess = async () => {
     const ids = [...selectedEmailIds];
     if (ids.length === 0) return;
-    if (!window.confirm(`Reprocess ${ids.length} email(s)? This will re-run extraction and matching.`)) return;
+    if (!window.confirm(`Try processing ${ids.length} email(s) again? This will re-read the timesheets and try to match them.`)) return;
     try {
       const result = await bulkReprocessEmails.mutateAsync(ids);
       setSelectedEmailIds(new Set());
@@ -667,7 +705,7 @@ export const InboxPage: React.FC = () => {
   };
 
   const handleReprocessSkipped = async () => {
-    if (!window.confirm('Reprocess stored skipped emails for this tenant? This keeps the ingested emails in place and re-runs extraction.')) {
+    if (!window.confirm('Try again on every skipped email? This keeps the emails in place and re-reads them.')) {
       return;
     }
 
@@ -702,6 +740,35 @@ export const InboxPage: React.FC = () => {
     }
   };
 
+  const handlePromoteSkipped = async (emailId: number, subject?: string | null) => {
+    try {
+      const result = await promoteSkipped.mutateAsync(emailId);
+      setStatusTone('success');
+      setStatusMessage(
+        result.already_promoted
+          ? `"${subject || '(no subject)'}" was already in the review queue.`
+          : `"${subject || '(no subject)'}" added to the review queue. Open it to fill in the details.`,
+      );
+    } catch (error) {
+      setStatusTone('danger');
+      setStatusMessage(getApiErrorMessage(error, 'Unable to promote this email.'));
+    }
+  };
+
+  const handleConfirmSkipped = async (emailId: number, subject?: string | null) => {
+    if (!window.confirm(`Confirm "${subject || '(no subject)'}" really isn't a timesheet? It will stop showing in the Skipped tab.`)) {
+      return;
+    }
+    try {
+      await confirmSkipped.mutateAsync(emailId);
+      setStatusTone('info');
+      setStatusMessage(`Hid "${subject || '(no subject)'}" from the Skipped tab.`);
+    } catch (error) {
+      setStatusTone('danger');
+      setStatusMessage(getApiErrorMessage(error, 'Unable to dismiss this email.'));
+    }
+  };
+
   const handleDeleteEmail = async (emailId: number, subject?: string | null, refetch: boolean = false) => {
     const action = refetch ? 'Delete & re-fetch' : 'Delete';
     const suffix = refetch ? ' The next Fetch Emails will re-ingest it.' : ' This does not remove the original mailbox email.';
@@ -719,11 +786,11 @@ export const InboxPage: React.FC = () => {
           setActiveJobId(response.job_id);
         } catch {
           setStatusTone('success');
-          setStatusMessage('Email removed. Auto-fetch failed — click "Fetch Emails" to re-ingest manually.');
+          setStatusMessage('Email removed. Auto-fetch failed. Click "Fetch Emails" to re-process manually.');
         }
       } else {
         setStatusTone('success');
-        setStatusMessage('Removed stored email and derived staged records.');
+        setStatusMessage('Removed the email and its timesheets.');
       }
     } catch (error) {
       setStatusTone('danger');
@@ -756,14 +823,14 @@ export const InboxPage: React.FC = () => {
   const handleBulkDelete = async () => {
     const ids = [...selectedEmailIds];
     if (ids.length === 0) return;
-    if (!window.confirm(`Delete ${ids.length} email(s) and all their staged timesheets from this application?`)) {
+    if (!window.confirm(`Delete ${ids.length} email(s) and all their timesheets from this application?`)) {
       return;
     }
     try {
       await bulkDeleteEmails.mutateAsync(ids);
       setSelectedEmailIds(new Set());
       setStatusTone('success');
-      setStatusMessage(`Deleted ${ids.length} email(s) and their staged records.`);
+      setStatusMessage(`Deleted ${ids.length} email(s) and their timesheets.`);
     } catch (error) {
       setStatusTone('danger');
       setStatusMessage(getApiErrorMessage(error, 'Unable to bulk delete emails.'));
@@ -813,6 +880,17 @@ export const InboxPage: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {canSeeTeamTimesheets && (
+            <button
+              type="button"
+              onClick={() => navigate('/user-management?tab=timesheets')}
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm hover:bg-muted transition"
+              title="Open the Approved Timesheets tab"
+            >
+              <Users className="h-4 w-4" />
+              Approved Timesheets
+            </button>
+          )}
           <button
             type="button"
             onClick={handleFetch}
@@ -935,7 +1013,7 @@ export const InboxPage: React.FC = () => {
                         </Badge>
                       ) : (
                         <Badge tone="success" className="normal-case tracking-normal">
-                          {message.timesheets_created ? `${message.timesheets_created} staged` : 'Processed'}
+                          {message.timesheets_created ? `${message.timesheets_created} timesheet${message.timesheets_created === 1 ? '' : 's'}` : 'Processed'}
                         </Badge>
                       )}
                     </div>
@@ -958,7 +1036,7 @@ export const InboxPage: React.FC = () => {
         >
           <div className="text-sm text-foreground">
             <span className="font-medium">{skippedCount}</span>{' '}
-            {skippedCount === 1 ? 'email was' : 'emails were'} skipped during ingestion.{' '}
+            {skippedCount === 1 ? "email couldn't be processed" : "emails couldn't be processed"}.{' '}
             <button
               type="button"
               className="font-medium text-primary underline-offset-4 hover:underline"
@@ -976,7 +1054,7 @@ export const InboxPage: React.FC = () => {
               className="action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className="mr-2 h-4 w-4" />
-              Reprocess {skippedCount} skipped
+              Try again on {skippedCount} skipped
             </button>
             <button
               type="button"
@@ -1007,15 +1085,54 @@ export const InboxPage: React.FC = () => {
                 Open a submission directly, or expand grouped emails to choose a specific week.
               </p>
             </div>
-            {showFilters ? (
-              <button
-                type="button"
-                onClick={clearFilters}
-                className="text-sm font-medium text-muted-foreground transition hover:text-foreground"
+            <div className="flex items-center gap-3">
+              <div
+                role="tablist"
+                aria-label="Inbox view"
+                data-testid="inbox-view-toggle"
+                className="inline-flex rounded-md border border-border bg-muted/30 p-0.5"
               >
-                Reset filters
-              </button>
-            ) : null}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === 'cards'}
+                  onClick={() => handleSetViewMode('cards')}
+                  className={[
+                    'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition',
+                    viewMode === 'cards'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  ].join(' ')}
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                  Cards
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === 'table'}
+                  onClick={() => handleSetViewMode('table')}
+                  className={[
+                    'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition',
+                    viewMode === 'table'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  ].join(' ')}
+                >
+                  <Rows className="h-3.5 w-3.5" />
+                  Table
+                </button>
+              </div>
+              {showFilters ? (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                >
+                  Reset filters
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -1051,7 +1168,7 @@ export const InboxPage: React.FC = () => {
                   className="ml-auto action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <RefreshCw className="mr-2 h-4 w-4" />
-                  Reprocess {skippedCount} skipped
+                  Try again on {skippedCount} skipped
                 </button>
               ) : null}
             </div>
@@ -1102,7 +1219,7 @@ export const InboxPage: React.FC = () => {
                   className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/20 disabled:opacity-50"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${bulkReprocessEmails.isPending ? 'animate-spin' : ''}`} />
-                  {bulkReprocessEmails.isPending ? 'Queueing...' : `Reprocess ${selectedEmailIds.size}`}
+                  {bulkReprocessEmails.isPending ? 'Queueing...' : `Try again on ${selectedEmailIds.size}`}
                 </button>
                 <button
                   type="button"
@@ -1123,12 +1240,12 @@ export const InboxPage: React.FC = () => {
             <div className="px-6 py-12">
               <div className="mx-auto max-w-xl rounded-3xl border border-dashed border-border/70 bg-card/60 px-8 py-12 text-center">
                 <p className="text-lg font-semibold text-foreground">
-                  {hasActiveFilters ? 'No submissions match the current filters.' : 'No staged timesheets to review.'}
+                  {hasActiveFilters ? 'No timesheets match the current filters.' : 'No timesheets to review.'}
                 </p>
                 <p className="mt-3 text-sm text-muted-foreground">
                   {hasActiveFilters
                     ? 'Clear the current filters to return to the full review queue.'
-                    : 'Fetch new emails to create staged timesheets, or review skipped emails if any need attention.'}
+                    : 'Fetch new emails to bring in new timesheets, or review skipped emails if any need attention.'}
                 </p>
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
                   {!hasActiveFilters ? (
@@ -1145,7 +1262,7 @@ export const InboxPage: React.FC = () => {
                 </div>
               </div>
             </div>
-          ) : (
+          ) : viewMode === 'table' ? (
             <table className="min-w-full text-left">
               <thead className="border-b border-border">
                 <tr className="text-xs uppercase tracking-[0.06em] text-muted-foreground">
@@ -1259,49 +1376,108 @@ export const InboxPage: React.FC = () => {
                             if (!senderDomain || isPersonalDomain(senderDomain)) {
                               const pickerId = rowTarget.id;
                               const isOpen = inlinePicker?.id === pickerId && inlinePicker.kind === 'client';
+                              const isCreating = creatingClientFor === pickerId;
+                              const suggestedName =
+                                rowTarget.extracted_client_name
+                                || (senderDomain ? suggestNameFromDomain(senderDomain) : '');
+                              const startCreate = () => {
+                                setCreateClientDraftName(suggestedName);
+                                setCreatingClientFor(pickerId);
+                              };
+                              const confirmCreate = async () => {
+                                const name = createClientDraftName.trim();
+                                if (!name) return;
+                                const created = await createClient.mutateAsync({ name });
+                                await cascadeClientAcrossEmail(pickerId, created.id, rowTarget.email_id ?? null);
+                                setCreatingClientFor(null);
+                                setCreateClientDraftName('');
+                                setInlinePicker(null);
+                              };
+                              const cancelCreate = () => {
+                                setCreatingClientFor(null);
+                                setCreateClientDraftName('');
+                              };
                               return isOpen ? (
-                                <div className="flex flex-col gap-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
-                                  <select
-                                    autoFocus
-                                    className="h-7 rounded border border-border bg-background px-2 text-xs"
-                                    defaultValue=""
-                                    onChange={async (e) => {
-                                      const val = e.target.value;
-                                      if (!val) return;
-                                      await updateTimesheet.mutateAsync({ id: pickerId, data: { client_id: Number(val) } });
-                                      setInlinePicker(null);
-                                    }}
-                                    onBlur={() => setInlinePicker(null)}
-                                  >
-                                    <option value="">Pick client…</option>
-                                    {clients.map((c: { id: number; name: string }) => (
-                                      <option key={c.id} value={c.id}>{c.name}</option>
-                                    ))}
-                                  </select>
-                                  {rowTarget.extracted_client_name && (
-                                    <button
-                                      type="button"
-                                      className="text-left text-xs text-primary hover:underline disabled:opacity-60"
-                                      disabled={createClient.isPending}
-                                      onMouseDown={async (e) => {
-                                        e.preventDefault();
-                                        const created = await createClient.mutateAsync({ name: rowTarget.extracted_client_name! });
-                                        await updateTimesheet.mutateAsync({ id: pickerId, data: { client_id: created.id } });
-                                        setInlinePicker(null);
-                                      }}
-                                    >
-                                      {createClient.isPending ? 'Creating…' : `+ Create "${rowTarget.extracted_client_name}"`}
-                                    </button>
+                                <div className="flex flex-col gap-1.5 min-w-[200px]" onClick={(e) => e.stopPropagation()}>
+                                  {isCreating ? (
+                                    <>
+                                      <label className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">New client name</label>
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        className="h-7 rounded border border-border bg-background px-2 text-xs"
+                                        value={createClientDraftName}
+                                        onChange={(e) => setCreateClientDraftName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') { e.preventDefault(); void confirmCreate(); }
+                                          if (e.key === 'Escape') { e.preventDefault(); cancelCreate(); }
+                                        }}
+                                        placeholder="Client name"
+                                      />
+                                      <div className="flex gap-1.5">
+                                        <button
+                                          type="button"
+                                          disabled={createClient.isPending || !createClientDraftName.trim()}
+                                          onClick={() => void confirmCreate()}
+                                          className="rounded bg-primary px-2 py-1 text-xs font-medium text-white transition hover:bg-primary/90 disabled:opacity-50"
+                                        >
+                                          {createClient.isPending ? 'Creating…' : 'Create & assign'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={cancelCreate}
+                                          className="rounded border border-border bg-transparent px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+                                        >
+                                          Back
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <select
+                                        autoFocus
+                                        className="h-7 rounded border border-border bg-background px-2 text-xs"
+                                        defaultValue=""
+                                        onChange={async (e) => {
+                                          const val = e.target.value;
+                                          if (!val) return;
+                                          await cascadeClientAcrossEmail(pickerId, Number(val), rowTarget.email_id ?? null);
+                                          setInlinePicker(null);
+                                        }}
+                                      >
+                                        <option value="">Pick an existing client…</option>
+                                        {clients.map((c: { id: number; name: string }) => (
+                                          <option key={c.id} value={c.id}>{c.name}</option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        className="text-left text-xs text-primary hover:underline"
+                                        onClick={startCreate}
+                                      >
+                                        {suggestedName
+                                          ? `+ Create new client (suggested: "${suggestedName}")`
+                                          : '+ Create new client'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="text-left text-[11px] text-muted-foreground hover:text-foreground"
+                                        onClick={() => setInlinePicker(null)}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'client' }); }}
-                                  className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
-                                  title="Click to assign client"
+                                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2.5 py-1 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
+                                  title="Click to assign or create a client"
                                 >
-                                  Needs client
+                                  <Plus className="h-3.5 w-3.5" />
+                                  Add client
                                 </button>
                               );
                             }
@@ -1316,11 +1492,11 @@ export const InboxPage: React.FC = () => {
                                     anchorEl: event.currentTarget,
                                   });
                                 }}
-                                className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
+                                className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2.5 py-1 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
                                 title={`Create or link a client for ${senderDomain}`}
                               >
                                 <Plus className="h-3.5 w-3.5" />
-                                {senderDomain}
+                                Add client from {senderDomain}
                                 {count > 1 ? <span className="opacity-60">({count})</span> : null}
                               </button>
                             );
@@ -1380,10 +1556,11 @@ export const InboxPage: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'employee' }); }}
-                                className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
-                                title="Click to assign employee"
+                                className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2.5 py-1 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
+                                title="Click to assign an employee"
                               >
-                                Needs employee
+                                <Plus className="h-3.5 w-3.5" />
+                                Add employee
                               </button>
                             );
                           })()}
@@ -1431,19 +1608,47 @@ export const InboxPage: React.FC = () => {
                         <td className="px-4 py-5 align-top text-right">
                           <div className="flex justify-end gap-2">
                             {isSkipped && group.skipped ? (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleReprocessEmail(group.skipped!.id);
-                                }}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70"
-                                aria-label={`Reprocess email ${group.skipped.id}`}
-                                title="Reprocess"
-                                disabled={isBusy}
-                              >
-                                <RefreshCw className="h-4 w-4" />
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handlePromoteSkipped(group.skipped!.id, group.skipped!.subject);
+                                  }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 transition hover:bg-emerald-500/25 disabled:opacity-40"
+                                  aria-label={`Promote email ${group.skipped.id} to the review queue`}
+                                  title="This is a timesheet. Add to review queue."
+                                  disabled={isBusy || promoteSkipped.isPending}
+                                >
+                                  <CheckCircle2 className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleConfirmSkipped(group.skipped!.id, group.skipped!.subject);
+                                  }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-muted-foreground transition hover:bg-muted/70 disabled:opacity-40"
+                                  aria-label={`Confirm email ${group.skipped.id} is not a timesheet`}
+                                  title="Not a timesheet. Hide from this list."
+                                  disabled={isBusy || confirmSkipped.isPending}
+                                >
+                                  <EyeOff className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleReprocessEmail(group.skipped!.id);
+                                  }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70"
+                                  aria-label={`Try processing email ${group.skipped.id} again`}
+                                  title="Try processing again"
+                                  disabled={isBusy}
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </button>
+                              </>
                             ) : null}
                             <button
                               type="button"
@@ -1483,6 +1688,398 @@ export const InboxPage: React.FC = () => {
                 })}
               </tbody>
             </table>
+          ) : (
+            <div data-testid="inbox-cards-view" className="flex flex-col gap-2 p-3">
+              {groups.map((group) => {
+                const isSkipped = group.kind === 'skipped';
+                const isMultiPeriod = group.periods > 1;
+                const rowTarget = group.primary;
+                const isFinal = group.status === 'approved' || group.status === 'rejected';
+                const isExpanded = expandedGroups.has(group.key);
+                const canOpenReview = isSkipped
+                  ? Boolean(group.skipped?.id)
+                  : Number.isInteger(rowTarget.id) && rowTarget.id > 0;
+                const openReview = () => {
+                  if (isSkipped && group.skipped) {
+                    navigate(`/ingestion/email/${group.skipped.id}`);
+                  } else if (canOpenReview) {
+                    navigate(`/ingestion/review/${rowTarget.id}`);
+                  }
+                };
+                const receivedTs = rowTarget.received_at || rowTarget.created_at;
+                const stale = !isSkipped && isStaleReceived(receivedTs);
+                const senderDomain = domainOf(rowTarget.sender_email);
+
+                return (
+                  <div
+                    key={group.key}
+                    data-testid="inbox-card"
+                    className={[
+                      'rounded-xl border border-border/70 bg-card/40 transition hover:bg-muted hover:border-border-strong/80',
+                      isSkipped ? 'border-l-2 border-l-amber-400/60' : '',
+                      isFinal ? 'opacity-70 hover:opacity-100' : '',
+                    ].join(' ')}
+                  >
+                    <div
+                      className={`flex items-start gap-3 px-4 py-3 ${canOpenReview ? 'cursor-pointer' : ''}`}
+                      onClick={() => { if (canOpenReview) openReview(); }}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-border accent-primary"
+                        checked={selectedEmailIds.has(rowTarget.email_id)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleEmailId(rowTarget.email_id)}
+                        aria-label={`Select email ${rowTarget.email_id}`}
+                      />
+                      <div
+                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold uppercase tracking-wide text-slate-100 ring-1 ring-inset ring-white/5 dark:ring-white/10"
+                        style={{ background: 'linear-gradient(135deg, #334155, #1e293b)' }}
+                        aria-hidden="true"
+                      >
+                        {getInitials(rowTarget.sender_name, rowTarget.sender_email)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span className="font-semibold text-foreground">
+                            {rowTarget.sender_name || rowTarget.sender_email || 'Unknown sender'}
+                          </span>
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {rowTarget.sender_email || ''}
+                          </span>
+                        </div>
+                        <p
+                          className="mt-0.5 truncate text-sm text-muted-foreground"
+                          title={rowTarget.subject ?? undefined}
+                        >
+                          {rowTarget.subject || 'No subject'}
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                          {/* Client */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">Client</span>
+                            {rowTarget.client_name ? (
+                              <span className="text-foreground">{rowTarget.client_name}</span>
+                            ) : isSkipped ? (
+                              <span className="text-muted-foreground">--</span>
+                            ) : (() => {
+                              if (!senderDomain || isPersonalDomain(senderDomain)) {
+                                const pickerId = rowTarget.id;
+                                const isOpen = inlinePicker?.id === pickerId && inlinePicker.kind === 'client';
+                                const isCreating = creatingClientFor === pickerId;
+                                const suggestedName =
+                                  rowTarget.extracted_client_name
+                                  || (senderDomain ? suggestNameFromDomain(senderDomain) : '');
+                                const startCreate = () => {
+                                  setCreateClientDraftName(suggestedName);
+                                  setCreatingClientFor(pickerId);
+                                };
+                                const confirmCreate = async () => {
+                                  const name = createClientDraftName.trim();
+                                  if (!name) return;
+                                  const created = await createClient.mutateAsync({ name });
+                                  await cascadeClientAcrossEmail(pickerId, created.id, rowTarget.email_id ?? null);
+                                  setCreatingClientFor(null);
+                                  setCreateClientDraftName('');
+                                  setInlinePicker(null);
+                                };
+                                const cancelCreate = () => {
+                                  setCreatingClientFor(null);
+                                  setCreateClientDraftName('');
+                                };
+                                return isOpen ? (
+                                  <div className="flex flex-col gap-1.5 min-w-[200px]" onClick={(e) => e.stopPropagation()}>
+                                    {isCreating ? (
+                                      <>
+                                        <label className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">New client name</label>
+                                        <input
+                                          autoFocus
+                                          type="text"
+                                          className="h-7 rounded border border-border bg-background px-2 text-xs"
+                                          value={createClientDraftName}
+                                          onChange={(e) => setCreateClientDraftName(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') { e.preventDefault(); void confirmCreate(); }
+                                            if (e.key === 'Escape') { e.preventDefault(); cancelCreate(); }
+                                          }}
+                                          placeholder="Client name"
+                                        />
+                                        <div className="flex gap-1.5">
+                                          <button
+                                            type="button"
+                                            disabled={createClient.isPending || !createClientDraftName.trim()}
+                                            onClick={() => void confirmCreate()}
+                                            className="rounded bg-primary px-2 py-1 text-xs font-medium text-white transition hover:bg-primary/90 disabled:opacity-50"
+                                          >
+                                            {createClient.isPending ? 'Creating…' : 'Create & assign'}
+                                          </button>
+                                          <button type="button" onClick={cancelCreate} className="rounded border border-border bg-transparent px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground">Back</button>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <select
+                                          autoFocus
+                                          className="h-7 rounded border border-border bg-background px-2 text-xs"
+                                          defaultValue=""
+                                          onChange={async (e) => {
+                                            const val = e.target.value;
+                                            if (!val) return;
+                                            await cascadeClientAcrossEmail(pickerId, Number(val), rowTarget.email_id ?? null);
+                                            setInlinePicker(null);
+                                          }}
+                                        >
+                                          <option value="">Pick an existing client…</option>
+                                          {clients.map((c: { id: number; name: string }) => (
+                                            <option key={c.id} value={c.id}>{c.name}</option>
+                                          ))}
+                                        </select>
+                                        <button type="button" className="text-left text-xs text-primary hover:underline" onClick={startCreate}>
+                                          {suggestedName ? `+ Create new client (suggested: "${suggestedName}")` : '+ Create new client'}
+                                        </button>
+                                        <button type="button" className="text-left text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setInlinePicker(null)}>Cancel</button>
+                                      </>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'client' }); }}
+                                    className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
+                                    title="Click to assign or create a client"
+                                  >
+                                    <Plus className="h-3 w-3" /> Add client
+                                  </button>
+                                );
+                              }
+                              const count = cascadePendingCount(senderDomain);
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setCascadePopover({ domain: senderDomain, anchorEl: event.currentTarget });
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
+                                  title={`Create or link a client for ${senderDomain}`}
+                                >
+                                  <Plus className="h-3 w-3" /> Add client from {senderDomain}
+                                  {count > 1 ? <span className="opacity-60">({count})</span> : null}
+                                </button>
+                              );
+                            })()}
+                          </div>
+
+                          {/* Employee */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">Employee</span>
+                            {rowTarget.employee_name || rowTarget.extracted_employee_name ? (
+                              <span className="text-foreground">{cleanEmployeeNameForDisplay(rowTarget.employee_name || rowTarget.extracted_employee_name)}</span>
+                            ) : isSkipped ? (
+                              <span className="text-muted-foreground">--</span>
+                            ) : (() => {
+                              const pickerId = rowTarget.id;
+                              const isOpen = inlinePicker?.id === pickerId && inlinePicker.kind === 'employee';
+                              return isOpen ? (
+                                <div onClick={(e) => e.stopPropagation()}>
+                                  <select
+                                    autoFocus
+                                    className="h-7 rounded border border-border bg-background px-2 text-xs min-w-[160px]"
+                                    defaultValue=""
+                                    onChange={async (e) => {
+                                      const val = e.target.value;
+                                      if (!val) return;
+                                      await updateTimesheet.mutateAsync({ id: pickerId, data: { employee_id: Number(val) } });
+                                      setInlinePicker(null);
+                                    }}
+                                    onBlur={() => setInlinePicker(null)}
+                                  >
+                                    <option value="">Pick employee…</option>
+                                    {users.map((u: { id: number; full_name: string }) => (
+                                      <option key={u.id} value={u.id}>{u.full_name}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'employee' }); }}
+                                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/60 bg-transparent px-2 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/15 hover:border-amber-400 dark:text-amber-300"
+                                  title="Click to assign an employee"
+                                >
+                                  <Plus className="h-3 w-3" /> Add employee
+                                </button>
+                              );
+                            })()}
+                          </div>
+
+                          {/* Period */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">Period</span>
+                            <span className="text-foreground">
+                              {isMultiPeriod
+                                ? formatDateRange(group.timesheets[0]?.period_start ?? null, group.timesheets[group.timesheets.length - 1]?.period_end ?? null)
+                                : formatDateRange(rowTarget.period_start, rowTarget.period_end)}
+                            </span>
+                          </div>
+
+                          {/* Hours */}
+                          {!isSkipped ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">Hours</span>
+                              {group.anomalyCount > 0 ? (
+                                <span className="inline-flex items-center gap-1 font-mono text-amber-700 dark:text-amber-400">
+                                  {formatHours(group.totalHours)}
+                                  <AlertTriangle className="h-3 w-3" />
+                                </span>
+                              ) : (
+                                <span className="font-mono text-foreground">{formatHours(group.totalHours)}</span>
+                              )}
+                            </div>
+                          ) : null}
+
+                          {/* Received */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase tracking-[0.4px] text-muted-foreground">Received</span>
+                            {stale ? (
+                              <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                                <Clock className="h-3 w-3" />
+                                {formatRelativeReceived(receivedTs)}
+                              </span>
+                            ) : (
+                              <span className="text-foreground">{formatRelativeReceived(receivedTs)}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Pills row: only render when there is something to show */}
+                        {(isMultiPeriod || rowTarget.is_likely_resubmission || isSkipped) ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {isMultiPeriod ? (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); toggleExpanded(group.key); }}
+                                className="inline-flex items-center gap-1 rounded-full bg-info-soft px-2.5 py-0.5 text-[11px] font-medium text-indigo-300 transition hover:brightness-125"
+                                style={{ background: 'rgba(99, 102, 241, 0.15)' }}
+                                aria-expanded={isExpanded}
+                                aria-label={isExpanded ? `Collapse ${group.periods} weeks` : `Expand ${group.periods} weeks`}
+                              >
+                                {group.periods} weeks {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                              </button>
+                            ) : null}
+                            {rowTarget.is_likely_resubmission ? (
+                              <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300" title="A rejected submission from this sender exists for a similar period.">
+                                Possible resubmission
+                              </span>
+                            ) : null}
+                            {isSkipped ? (
+                              <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">Skipped</span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* Status pill */}
+                      <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal whitespace-nowrap self-start">
+                        {statusLabel(group.status)}
+                      </Badge>
+
+                      {/* Row actions */}
+                      <div className="flex shrink-0 items-center gap-1.5 self-start">
+                        {isSkipped && group.skipped ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void handlePromoteSkipped(group.skipped!.id, group.skipped!.subject); }}
+                              disabled={isBusy || promoteSkipped.isPending}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 transition hover:bg-emerald-500/25 disabled:opacity-40"
+                              aria-label={`Promote email ${group.skipped.id} to the review queue`}
+                              title="This is a timesheet"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void handleConfirmSkipped(group.skipped!.id, group.skipped!.subject); }}
+                              disabled={isBusy || confirmSkipped.isPending}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-muted-foreground transition hover:bg-muted/70 disabled:opacity-40"
+                              aria-label={`Confirm email ${group.skipped.id} is not a timesheet`}
+                              title="Not a timesheet"
+                            >
+                              <EyeOff className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void handleReprocessEmail(group.skipped!.id); }}
+                              disabled={isBusy}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70 disabled:opacity-40"
+                              aria-label={`Reprocess email ${group.skipped.id}`}
+                              title="Try processing again"
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                            </button>
+                          </>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openReview(); }}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70"
+                          aria-label={isSkipped ? `Open email ${group.skipped?.id}` : `Open submission ${rowTarget.id}`}
+                          title="Open"
+                          disabled={!canOpenReview}
+                        >
+                          <ArrowRight className="h-4 w-4" />
+                        </button>
+                        {!isFinal ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleDeleteEmail(rowTarget.email_id, rowTarget.subject); }}
+                            disabled={isBusy}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                            aria-label={`Delete email ${rowTarget.email_id}`}
+                            title="Delete"
+                          >
+                            {deletingEmailId === rowTarget.email_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {/* Multi-period child cards (per-week breakdown) */}
+                    {isMultiPeriod && isExpanded ? (
+                      <div
+                        data-testid={`inbox-card-children-${group.key}`}
+                        className="ml-12 mr-3 mb-3 border-l-2 border-border/60 pl-3"
+                      >
+                        <div className="flex flex-col gap-1.5">
+                          {group.timesheets.map((ts) => (
+                            <div
+                              key={ts.id}
+                              className="flex items-center gap-3 rounded-md border border-border/60 bg-card/30 px-3 py-2 text-xs"
+                            >
+                              <span className="font-medium text-foreground min-w-[120px]">{formatDateRange(ts.period_start, ts.period_end)}</span>
+                              <span className="font-mono text-muted-foreground">{formatHours(ts.total_hours)}h</span>
+                              <Badge tone={getStatusTone(ts.status)} className="normal-case tracking-normal text-[10px]">{statusLabel(ts.status)}</Badge>
+                              <div className="ml-auto flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); navigate(`/ingestion/review/${ts.id}`); }}
+                                  className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
+                                  aria-label={`Open week ${ts.id}`}
+                                  title="Open"
+                                >
+                                  <ArrowRight className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </section>

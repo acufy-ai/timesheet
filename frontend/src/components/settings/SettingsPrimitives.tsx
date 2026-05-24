@@ -94,3 +94,71 @@ export const InfoBanner: React.FC<{ children: React.ReactNode }> = ({ children }
     {children}
   </div>
 );
+
+// Card with a tinted icon tile in the top-left and a horizontal rule under
+// the title. Used by the two-card layouts on Reminders and Notifications.
+// Pass an icon element (e.g. <Users className="..." />) sized to fit the
+// 18-pixel-square tile.
+export const IconCard: React.FC<{
+  icon: React.ReactNode;
+  title: string;
+  desc?: string;
+  children: React.ReactNode;
+}> = ({ icon, title, desc, children }) => (
+  <div className="rounded-xl border border-border bg-card p-5">
+    <div className="flex items-start gap-3 pb-4 border-b border-border/60">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <h2 className="text-[15px] font-semibold text-foreground leading-tight">{title}</h2>
+        {desc && (
+          <p className="text-[12px] text-muted-foreground leading-snug mt-0.5">{desc}</p>
+        )}
+      </div>
+    </div>
+    <div className="pt-4 space-y-4">{children}</div>
+  </div>
+);
+
+// Sticky save row used by the redesigned settings panels. Shows when
+// dirty, summarizes save state, exposes Discard + Save buttons. Mirrors
+// the bar inside TenantSettingsForm so the two layouts behave identically.
+export const SettingsSaveBar: React.FC<{
+  isDirty: boolean;
+  isSaving: boolean;
+  saveFlash: 'idle' | 'saved' | 'error';
+  onSave: () => void;
+  onDiscard: () => void;
+}> = ({ isDirty, isSaving, saveFlash, onSave, onDiscard }) => {
+  if (!isDirty && saveFlash === 'idle') return null;
+  return (
+    <div className="sticky bottom-0 z-10 flex items-center justify-end gap-2 border-t border-border bg-card/95 backdrop-blur px-4 py-3 rounded-b-xl">
+      <span className="mr-auto text-xs text-muted-foreground">
+        {saveFlash === 'saved'
+          ? 'Saved.'
+          : saveFlash === 'error'
+          ? 'Save failed.'
+          : isSaving
+          ? 'Saving…'
+          : 'Unsaved changes.'}
+      </span>
+      <button
+        type="button"
+        className="action-button-secondary text-sm"
+        onClick={onDiscard}
+        disabled={isSaving}
+      >
+        Discard
+      </button>
+      <button
+        type="button"
+        className="action-button text-sm"
+        onClick={onSave}
+        disabled={isSaving || !isDirty}
+      >
+        {isSaving ? 'Saving…' : 'Save changes'}
+      </button>
+    </div>
+  );
+};

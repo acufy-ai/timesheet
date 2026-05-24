@@ -60,6 +60,13 @@ vi.mock('@/components', () => ({
       />
     </div>
   ),
+  DatePickerSingle: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <input
+      type="date"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
 }));
 
 const employeeUser: User = {

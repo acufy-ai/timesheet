@@ -3,3 +3,9 @@ dist
 .env
 .env.local
 .git
+
+# Local-only quick-login helper. Never ship in any built image. The
+# component file is also gitignored. Excluding it here means the build
+# context never sees it, so Vite's import.meta.glob('./DevQuickLogin.tsx')
+# matches zero modules and the Quick Login UI is tree-shaken out.
+src/pages/DevQuickLogin.tsx

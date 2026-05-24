@@ -71,6 +71,8 @@ const makeMailbox = (overrides: Partial<Mailbox>): Mailbox => ({
   linked_client_id: null,
   is_active: true,
   last_fetched_at: null,
+  last_fetch_error: null,
+  last_fetch_failed_at: null,
   created_at: '2026-04-01T00:00:00Z',
   updated_at: '2026-04-01T00:00:00Z',
   ...overrides,

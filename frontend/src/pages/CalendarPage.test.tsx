@@ -12,12 +12,18 @@ const mocks = vi.hoisted(() => ({
   useUpdateTimeOffRequest: vi.fn(),
 }));
 
-vi.mock('@/hooks', () => ({
-  useTimeEntries: mocks.useTimeEntries,
-  useTimeOffRequests: mocks.useTimeOffRequests,
-  useUpdateTimeEntry: mocks.useUpdateTimeEntry,
-  useUpdateTimeOffRequest: mocks.useUpdateTimeOffRequest,
-}));
+// importOriginal so any hook the page references but this test
+// doesn't stub falls back to the real export.
+vi.mock('@/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks')>();
+  return {
+    ...actual,
+    useTimeEntries: mocks.useTimeEntries,
+    useTimeOffRequests: mocks.useTimeOffRequests,
+    useUpdateTimeEntry: mocks.useUpdateTimeEntry,
+    useUpdateTimeOffRequest: mocks.useUpdateTimeOffRequest,
+  };
+});
 
 vi.mock('@/components', () => ({
   Header: () => <div>Header</div>,

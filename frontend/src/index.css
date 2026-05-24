@@ -229,22 +229,36 @@ html {
   }
 
   .field-input {
-    @apply h-9 w-full rounded-md border border-transparent bg-muted px-3 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
+    @apply h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
   }
 
   .field-textarea {
-    @apply w-full rounded-md border border-transparent bg-muted px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
+    @apply w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
   }
 
-  /* Primary button — Acufy sky→teal gradient */
+  /* Primary button. Solid theme primary so it tracks the active
+     theme variant picked from the top-bar palette (slate / white /
+     teal / emerald / amber / purple / rose / royal-blue). The previous
+     hardcoded Acufy sky->teal gradient stayed put while every other
+     accent surface (nav pill, chips, focus rings) moved with the theme,
+     producing the cross-accent clash users flagged. */
   .action-button {
-    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60;
-    background: linear-gradient(135deg, var(--acufy-sky), var(--acufy-teal));
+    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold transition disabled:cursor-not-allowed;
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
   }
 
   .action-button:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 8px 25px rgba(14, 165, 233, 0.3);
+    /* Shadow uses the active --primary so the glow tints with the theme. */
+    box-shadow: 0 8px 25px hsl(var(--primary) / 0.30);
+  }
+
+  .action-button:disabled {
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    opacity: 0.5;
+    box-shadow: none;
   }
 
   /* Secondary button */
@@ -260,9 +274,12 @@ html {
     border-color: var(--glass-border);
   }
 
-  /* Acufy gradient text */
+  /* Brand gradient text. Tracks the active theme variant - the gradient
+     runs from the theme primary to its hover variant (each variant
+     exposes both via --primary and --accent-hover). Falls back to the
+     Acufy sky->teal pair when --accent-hover is unset. */
   .gradient-text {
-    background: linear-gradient(135deg, var(--acufy-sky), var(--acufy-cyan), var(--acufy-teal), var(--acufy-mint));
+    background: linear-gradient(135deg, hsl(var(--primary)), var(--accent-hover, #14B8A6));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;

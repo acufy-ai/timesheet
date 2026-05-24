@@ -40,6 +40,15 @@ describe('WeeklyRoster', () => {
     expect(screen.getByText('0 behind')).toBeInTheDocument();
   });
 
+  it('classifies a member with PTO later this week as pto', () => {
+    // Mirrors the "Yaswanth scheduled PTO Thursday on Wednesday" case
+    // — is_on_pto_today=false but is_on_pto_this_week=true should
+    // still land them in the PTO bucket.
+    render(<WeeklyRoster members={[mk({ user_id: 33, full_name: 'PtoLater', is_on_pto_today: false, is_on_pto_this_week: true, submitted_days: 0, working_days_in_week: 5 })]} />);
+    expect(screen.getByText('1 on PTO')).toBeInTheDocument();
+    expect(screen.getByText('0 behind')).toBeInTheDocument();
+  });
+
   it('flags a repeatedly-late member as critical and shows the Late badge', () => {
     render(<WeeklyRoster members={[mk({ user_id: 4, full_name: 'Dan', is_repeatedly_late: true, submitted_days: 5, working_days_in_week: 5 })]} />);
     expect(screen.getByText('1 critical')).toBeInTheDocument();

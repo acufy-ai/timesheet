@@ -8,8 +8,9 @@ import { LogEntryModal } from '@/components/timer/LogEntryModal';
 import { useAuth } from '@/hooks';
 import type { UserRole } from '@/types';
 
-const getPostPickRoute = (role: UserRole): string =>
-  role === 'PLATFORM_ADMIN' ? '/platform/tenants' : '/dashboard';
+// Same landing for everyone after the multi-role picker resolves.
+// /dashboard renders PA-specific content for PAs via DashboardRouteSwitch.
+const getPostPickRoute = (_role: UserRole): string => '/dashboard';
 
 export const AppLayout: React.FC = () => {
   const { user, needsRolePick, switchRole, dismissRolePick } = useAuth();

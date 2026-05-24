@@ -18,7 +18,7 @@ import {
   startOfYear,
   endOfYear,
 } from 'date-fns';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 interface DateRangePickerCalendarProps {
   startDate: string;
@@ -124,12 +124,15 @@ export const DateRangePickerCalendar: React.FC<DateRangePickerCalendarProps> = (
     <div className="relative">
       <button
         onClick={handleToggleOpen}
-        className="w-full px-3 py-2 border rounded bg-white text-left flex items-center justify-between hover:bg-muted"
+        className="relative inline-flex items-center gap-2 rounded-lg border border-border bg-card pl-3 pr-9 py-2 text-sm hover:border-primary/40 transition"
       >
-        <span>{displayText()}</span>
-        <span className="text-muted-foreground text-xs">
-          {isOpen ? '▼' : '◀'}
-        </span>
+        <Calendar className="w-4 h-4 text-muted-foreground" />
+        <span className="text-foreground">{displayText()}</span>
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-muted-foreground absolute right-2.5 transition-transform ${
+            isOpen ? 'rotate-180' : ''
+          }`}
+        />
       </button>
 
       {isOpen && (

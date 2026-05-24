@@ -39,10 +39,11 @@ const initialsFor = (fullName: string): string => {
 };
 
 const classify = (member: ManagerTeamMemberStatus): RowState => {
-  // Critical: repeatedly-late pattern wins — surface the pattern even if
-  // the rest looks fine, because the manager needs to act on the pattern.
+  // Critical: missed-deadline pattern wins. The flag is now cadence-aware
+  // on the backend (last closed weekly or monthly period), so surface it
+  // even when the rest of the row looks fine.
   if (member.is_repeatedly_late) return 'critical';
-  if (member.is_on_pto_today) return 'pto';
+  if (member.is_on_pto_today || member.is_on_pto_this_week) return 'pto';
   if (member.working_days_in_week === 0) return 'on-track';
   if (member.submitted_days >= member.working_days_in_week) return 'on-track';
   return 'behind';

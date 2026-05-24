@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff, Mail, PlusCircle, Settings, Shield } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { platformSettingsAPI, SmtpConfigUpdate } from '@/api/endpoints';
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks';
 import { UserRole } from '@/types';
+import { PlatformAuditPage } from './PlatformAuditPage';
 
 const apiError = (e: unknown) =>
   (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Something went wrong';
@@ -50,7 +52,7 @@ const SmtpSection: React.FC = () => {
     mutationFn: () => platformSettingsAPI.clearSmtp().then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['platform-smtp'] });
-      setSuccessMsg('SMTP configuration cleared — environment variables are now active.');
+      setSuccessMsg('SMTP configuration cleared. Environment variables are now active.');
       setTimeout(() => setSuccessMsg(''), 4000);
     },
     onError: (e) => setFormError(apiError(e)),
@@ -87,24 +89,35 @@ const SmtpSection: React.FC = () => {
 
   return (
     <div className="rounded-xl border border-border bg-card shadow-sm p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Mail className="w-5 h-5 text-primary" />
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">SMTP Configuration</h2>
-            <p className="text-xs text-muted-foreground">
-              Outbound email settings for verification and notification emails.{' '}
+      <div className="flex items-start justify-between mb-4 gap-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <Mail className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-semibold text-foreground">SMTP Configuration</h2>
+              {/* D-035: source state surfaced as a badge in the header,
+                  not buried in subtitle copy. An operator scanning the
+                  page sees "env vars vs DB" without reading paragraphs. */}
               {config?.source === 'environment' && (
-                <span className="text-amber-600 font-medium">Currently using environment variables.</span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                  Using env vars
+                </span>
               )}
               {config?.source === 'database' && (
-                <span className="text-emerald-600 font-medium">Using database configuration.</span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                  DB configured
+                </span>
               )}
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Platform-default outbound: password resets, invitations, and
+              tenant onboarding emails sent before a tenant configures their
+              own SMTP. Tenants can override per-tenant in their own settings.
             </p>
           </div>
         </div>
         {!editMode && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             {config?.source === 'database' && (
               <button
                 onClick={() => clearMutation.mutate()}
@@ -134,14 +147,31 @@ const SmtpSection: React.FC = () => {
         config.smtp_host ? (
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
             <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Host</dt><dd className="font-mono text-foreground">{config.smtp_host}:{config.smtp_port}</dd></div>
-            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Username</dt><dd className="font-mono text-foreground">{config.smtp_username || '—'}</dd></div>
-            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Password</dt><dd className="text-foreground">{config.smtp_password_set ? '••••••••' : '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Username</dt><dd className="font-mono text-foreground">{config.smtp_username || 'N/A'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Password</dt><dd className="text-foreground">{config.smtp_password_set ? '••••••••' : 'N/A'}</dd></div>
             <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">TLS</dt><dd className="text-foreground">{config.smtp_use_tls ? 'Enabled' : 'Disabled'}</dd></div>
-            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Address</dt><dd className="text-foreground">{config.smtp_from_address || '—'}</dd></div>
-            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Name</dt><dd className="text-foreground">{config.smtp_from_name || '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Address</dt><dd className="text-foreground">{config.smtp_from_address || 'N/A'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Name</dt><dd className="text-foreground">{config.smtp_from_name || 'N/A'}</dd></div>
           </dl>
         ) : (
-          <p className="text-sm text-muted-foreground">No SMTP server configured. Verification emails will be logged to the console.</p>
+          /* D-034: replace passive "No SMTP server configured" line with a
+             CTA-driven empty state that explains the consequence (emails
+             log to console) and invites the operator to configure. */
+          <div className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-5 text-center">
+            <Mail className="mx-auto h-6 w-6 text-muted-foreground" />
+            <p className="mt-2 text-sm font-medium text-foreground">No SMTP server configured</p>
+            <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+              Without an SMTP host, password-reset and invitation emails are
+              logged to the container's console instead of being delivered.
+              Configure once here and every tenant inherits this default.
+            </p>
+            <button
+              onClick={openEdit}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <Mail className="h-3.5 w-3.5" /> Configure SMTP
+            </button>
+          </div>
         )
       )}
 
@@ -323,7 +353,24 @@ const PlatformAdminsSection: React.FC = () => {
       </div>
 
       {platformAdmins.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No platform admins found.</p>
+        /* D-034: replace passive empty state with a CTA-driven block.
+           A platform admin landing on an empty list needs a one-click
+           path to add the first PA, not a flat "None" line. */
+        <div className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-5 text-center">
+          <Shield className="mx-auto h-6 w-6 text-muted-foreground" />
+          <p className="mt-2 text-sm font-medium text-foreground">No platform admins yet</p>
+          <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+            Platform admins manage every tenant across the deployment and bypass
+            tenant boundaries. The first PA was usually seeded at install; add
+            more here to share ownership without sharing credentials.
+          </p>
+          <button
+            onClick={() => { setForm(emptyAdminForm()); setFormError(''); setShowAdd(true); }}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <PlusCircle className="h-3.5 w-3.5" /> Add platform admin
+          </button>
+        </div>
       ) : (
         <div className="space-y-2">
           {platformAdmins.map((pa) => (
@@ -442,22 +489,80 @@ const PlatformAdminsSection: React.FC = () => {
   );
 };
 
-// ─── Page ──────────────────────────────────────────────────────────────────
+// ─── Page hub ──────────────────────────────────────────────────────────────
+//
+// Settings is a hub with two sub-tabs:
+//   - General: platform admins + SMTP configuration (the old page content)
+//   - Logs: the platform audit log, embedded from PlatformAuditPage
+//
+// Tab is stored in ?tab= so deep-links work. The legacy /platform/audit
+// route redirects to ?tab=logs in App.tsx.
+
+const SETTINGS_TABS = [
+  { key: 'general', label: 'General' },
+  { key: 'logs', label: 'Logs' },
+] as const;
+type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key'];
 
 export const PlatformSettingsPage: React.FC = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab') as SettingsTabKey | null;
+  const activeTab: SettingsTabKey =
+    SETTINGS_TABS.some((t) => t.key === rawTab) ? (rawTab as SettingsTabKey) : 'general';
+
+  const setTab = (next: SettingsTabKey) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'general') {
+      params.delete('tab');
+    } else {
+      params.set('tab', next);
+    }
+    setSearchParams(params, { replace: true });
+  };
+
   return (
     <div className="p-1">
-      <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex items-center gap-3 mb-2">
+      <div className="max-w-5xl mx-auto space-y-5">
+        <div className="flex items-center gap-3">
           <Settings className="w-6 h-6 text-primary" />
           <div>
             <h1 className="text-2xl font-bold text-foreground">Platform Settings</h1>
-            <p className="text-sm text-muted-foreground">Manage platform-level configuration and administrators</p>
+            <p className="text-sm text-muted-foreground">
+              Manage platform-level configuration, administrators, and audit history.
+            </p>
           </div>
         </div>
 
-        <PlatformAdminsSection />
-        <SmtpSection />
+        <div role="tablist" className="flex flex-wrap gap-1 border-b border-border">
+          {SETTINGS_TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                role="tab"
+                aria-selected={isActive}
+                type="button"
+                onClick={() => setTab(tab.key)}
+                className={[
+                  'border-b-2 px-4 py-2.5 text-sm font-medium transition',
+                  isActive
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                ].join(' ')}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {activeTab === 'general' && (
+          <div className="space-y-6">
+            <PlatformAdminsSection />
+            <SmtpSection />
+          </div>
+        )}
+        {activeTab === 'logs' && <PlatformAuditPage embedded />}
       </div>
     </div>
   );

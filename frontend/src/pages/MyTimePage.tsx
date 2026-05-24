@@ -1,13 +1,22 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+//
+// D-060 refactor: the legacy weekly-grid body of the Enter tab was
+// replaced by <WeekEditor>. The grid's state, handlers, and the
+// PortalPicker scaffold live below but are no longer referenced from
+// JSX. They're parked rather than ripped out in this PR so the
+// History / Rework tabs (which share some hooks) stay stable; a
+// follow-up PR will excise the dead surface once the new editor
+// proves out in UAT.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loading, Error, EmptyState, Modal, TimeEntryRow, DateRangePickerCalendar, SearchInput } from '@/components';
+import { Loading, Error, EmptyState, Modal, TimeEntryRow, DateRangePickerCalendar, DatePickerSingle, SearchInput } from '@/components';
+import { WeekEditor } from '@/components/my-time/WeekEditor';
 import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead, useTenantPublicSettings, useWeekStartsOn } from '@/hooks';
 import { timeentriesAPI } from '@/api/endpoints';
 import { Project, Task, TimeEntry, TimeEntryStatus } from '@/types';
 import { addDays, endOfWeek, format, parseISO, startOfWeek, startOfYear, subDays } from 'date-fns';
-import { ArrowDown, ArrowUp, ChevronDown, Loader2, Search, Sparkles, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Clock, PencilLine, Sparkles, Wrench, X } from 'lucide-react';
 
 type EntryFormData = {
   project_id: number;
@@ -146,6 +155,23 @@ export const MyTimePage: React.FC = () => {
   const deepLinkDate = searchParams.get('date') || '';
   const deepLinkMode = searchParams.get('mode') || '';
 
+  // Active tab is URL-driven so deep links + browser back work.
+  // ?tab=history -> History tab. ?tab=rework -> Rework tab. Anything else -> Enter.
+  type MyTimeTab = 'enter' | 'history' | 'rework';
+  const parseTab = (value: string | null): MyTimeTab => {
+    if (value === 'history' || value === 'rework') return value;
+    return 'enter';
+  };
+  const activeTab = parseTab(searchParams.get('tab'));
+  const setActiveTab = (next: MyTimeTab) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next === 'enter') params.delete('tab');
+      else params.set('tab', next);
+      return params;
+    }, { replace: true });
+  };
+
   const [editingId, setEditingId] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<'ALL' | TimeEntryStatus>('ALL');
   const [pendingNotificationTarget, setPendingNotificationTarget] = useState<TimeEntryStatus | null>(null);
@@ -231,6 +257,7 @@ export const MyTimePage: React.FC = () => {
   const [gridRows, setGridRows] = useState<GridRow[]>([
     { id: 1, projectId: 0, taskId: 0, hours: {}, description: '', notes: '', isBillable: true },
   ]);
+  const [gridError, setGridError] = useState<string | null>(null);
 
   const [editFormData, setEditFormData] = useState<EntryFormData | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -257,13 +284,30 @@ export const MyTimePage: React.FC = () => {
   const projectsSectionRef = useRef<HTMLElement | null>(null);
   const { data: editTasks } = useTasks({ project_id: editFormData?.project_id || 0, active_only: true, limit: 500 });
 
+  // Auto-switch to the tab that contains the deep-linked entry so the
+  // scroll-into-view + edit-modal effects below can find their target. Only
+  // runs when no tab is already explicitly set in the URL.
+  useEffect(() => {
+    if (!deepLinkEntryId || !entries || entries.length === 0) return;
+    if (searchParams.get('tab')) return; // user already chose a tab
+    const target = entries.find((entry: TimeEntry) => entry.id === deepLinkEntryId);
+    if (!target) return;
+    if (target.status === 'REJECTED') {
+      setActiveTab('rework');
+    } else if (target.status === 'SUBMITTED' || target.status === 'APPROVED') {
+      setActiveTab('history');
+    }
+    // DRAFT entries stay on the Enter tab where they're editable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkEntryId, entries]);
+
   useEffect(() => {
     if (!deepLinkEntryId || !entries || entries.length === 0) return;
     const target = document.getElementById(`time-entry-${deepLinkEntryId}`);
     if (target) {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-  }, [deepLinkEntryId, entries]);
+  }, [deepLinkEntryId, entries, activeTab]);
 
   useEffect(() => {
     if (!deepLinkEntryId || deepLinkMode !== 'edit' || !entries || entries.length === 0) return;
@@ -541,6 +585,7 @@ export const MyTimePage: React.FC = () => {
 
 
   const handleGridRowChange = (rowId: number, field: 'projectId' | 'taskId' | 'description', value: number | string) => {
+    setGridError(null);
     setGridRows((current) =>
       current.map((row) => {
         if (row.id !== rowId) return row;
@@ -560,6 +605,7 @@ export const MyTimePage: React.FC = () => {
   };
 
   const handleGridRowHourChange = (rowId: number, dateKey: string, value: string) => {
+    setGridError(null);
     setGridRows((current) =>
       current.map((row) => {
         if (row.id !== rowId) return row;
@@ -737,6 +783,7 @@ export const MyTimePage: React.FC = () => {
   };
 
   const handleSaveGridRows = async () => {
+    setGridError(null);
     const existingHoursByKey = new Map<string, number>();
     const draftEntriesByKey = new Map<string, TimeEntry[]>();
     regularWeeklyGridEntries.forEach((entry: TimeEntry) => {
@@ -752,19 +799,36 @@ export const MyTimePage: React.FC = () => {
       }
     });
 
+    // Pre-flight validation. Run BEFORE the create/update/delete planning
+    // loop so the right warning surfaces. Previously the loop skipped no-
+    // project rows entirely, so hours on those rows looked like "no hours
+    // entered" and the wrong alert fired.
+    const rowsMissingProject = gridRows.some((r) => {
+      const hasAnyHours = weekDates.some((d) => parseFloat(r.hours[getWeekDateKey(d)] || '0') > 0);
+      return hasAnyHours && !r.projectId;
+    });
+    if (rowsMissingProject) {
+      setGridError('Select a project for every row that has hours entered.');
+      return;
+    }
+
+    const anyHoursAnywhere = gridRows.some((r) =>
+      weekDates.some((d) => parseFloat(r.hours[getWeekDateKey(d)] || '0') > 0)
+    );
+    if (!anyHoursAnywhere) {
+      setGridError('Enter hours for at least one day before saving.');
+      return;
+    }
+
     const allCreates: { row: GridRow; dateKey: string; dayHours: number }[] = [];
     const updateOps: Promise<unknown>[] = [];
     const deleteOps: Promise<unknown>[] = [];
-    let hasAnyEnteredHours = false;
     let hasImmutableReductionAttempt = false;
     for (const row of gridRows) {
       if (!row.projectId) continue;
       for (const day of weekDates) {
         const dateKey = getWeekDateKey(day);
         const dayHours = parseFloat(row.hours[dateKey] || '0');
-        if (dayHours > 0) {
-          hasAnyEnteredHours = true;
-        }
         const entryKey = `${row.projectId}|${row.taskId || 0}|${dateKey}|${row.isBillable ? '1' : '0'}`;
         if (dayHours <= 0) continue;
 
@@ -817,26 +881,11 @@ export const MyTimePage: React.FC = () => {
     }
 
     if (allCreates.length === 0 && updateOps.length === 0 && deleteOps.length === 0) {
-      if (!hasAnyEnteredHours) {
-        alert('Enter hours for at least one day before saving.');
-        return;
-      }
-
       if (hasImmutableReductionAttempt) {
-        alert('Some entered values are lower than already submitted/approved hours. Only draft hours can be reduced from this section.');
+        showStatus('error', 'Some entered values are lower than already submitted or approved hours. Only draft hours can be reduced from this section.');
         return;
       }
-
-      alert('No new changes to save.');
-      return;
-    }
-
-    const rowsMissingProject = gridRows.some((r) => {
-      const hasAnyHours = weekDates.some((d) => parseFloat(r.hours[getWeekDateKey(d)] || '0') > 0);
-      return hasAnyHours && !r.projectId;
-    });
-    if (rowsMissingProject) {
-      alert('Please select a project for every row that has hours entered.');
+      showStatus('success', 'No new changes to save.');
       return;
     }
 
@@ -1023,6 +1072,41 @@ export const MyTimePage: React.FC = () => {
           <h1 className="text-3xl font-bold">My Time Entries</h1>
         </div>
 
+        {/* Tab strip. URL-driven so deep links + back/forward navigation work. */}
+        <div className="flex gap-1 border-b border-border mb-6">
+          {([
+            { key: 'enter', label: 'Enter time', icon: <PencilLine className="w-4 h-4" /> },
+            { key: 'history', label: 'History', icon: <Clock className="w-4 h-4" /> },
+            { key: 'rework', label: 'Rework', icon: <Wrench className="w-4 h-4" />, count: rejectedEntries.length },
+          ] as const).map((t) => {
+            const isActive = activeTab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActiveTab(t.key)}
+                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+                  isActive
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t.icon}
+                {t.label}
+                {'count' in t && t.count > 0 && (
+                  <span className={`inline-flex items-center justify-center min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold ${
+                    isActive
+                      ? 'bg-primary/15 text-primary'
+                      : 'bg-destructive/15 text-destructive'
+                  }`}>
+                    {t.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
         {error && entries && (
           <div role="alert" className="mb-4 rounded-lg px-4 py-3 text-sm font-medium bg-destructive/10 text-destructive border border-destructive/20">
             Something went wrong loading your data. Please refresh.
@@ -1048,6 +1132,32 @@ export const MyTimePage: React.FC = () => {
               <X className="h-4 w-4" />
             </button>
           </div>
+        )}
+
+        {activeTab === 'enter' && (<>
+
+        {/* Rework promotion banner. Surfaces rejected entries at the TOP of
+            the Enter tab so the user sees rework before scrolling. Only shown
+            when there's actually something to fix. Clicking opens the Rework tab. */}
+        {rejectedEntries.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('rework')}
+            className="mb-6 w-full flex items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-left hover:bg-destructive/15 transition"
+          >
+            <div className="flex items-center gap-3">
+              <Wrench className="w-4 h-4 text-destructive" />
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {rejectedEntries.length} {rejectedEntries.length === 1 ? 'entry needs' : 'entries need'} rework
+                </p>
+                <p className="text-xs text-muted-foreground">Fix the rejection reasons and resubmit from the Rework tab.</p>
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
+              Review <ArrowDown className="w-3 h-3 -rotate-90" />
+            </span>
+          </button>
         )}
 
         {myTimeNotifications.length > 0 && (
@@ -1081,7 +1191,7 @@ export const MyTimePage: React.FC = () => {
         <section className="mb-6 surface-card overflow-hidden">
           <div className="border-b px-4 py-3 flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold text-muted-foreground">Quick Entry — Describe your work</h2>
+            <h2 className="text-sm font-semibold text-muted-foreground">Quick Entry: describe your work</h2>
             <span className="text-xs text-muted-foreground/60 ml-1">e.g. "8h on Project X debugging login issue"</span>
           </div>
           <div className="p-4">
@@ -1116,7 +1226,7 @@ export const MyTimePage: React.FC = () => {
             {nlResult && nlResult.entries.length > 0 && (
               <div className="mt-3 space-y-3">
                 <p className="text-xs font-medium text-muted-foreground">
-                  Parsed entries — edit any field before applying to your grid. Notes are private and never appear in approvals or exports.
+                  Parsed entries: edit any field before applying to your grid. Notes are private and never appear in approvals or exports.
                 </p>
                 {nlResult.entries.map((entry, idx) => {
                   const rowTasks = entry.project_id
@@ -1184,11 +1294,9 @@ export const MyTimePage: React.FC = () => {
                           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                             <label className="flex flex-col gap-1">
                               <span className="text-xs text-muted-foreground">Date</span>
-                              <input
-                                type="date"
-                                className="h-8 rounded border bg-background px-2 text-sm"
+                              <DatePickerSingle
                                 value={entry.entry_date}
-                                onChange={(e) => updateNlEntry(idx, { entry_date: e.target.value })}
+                                onChange={(val) => updateNlEntry(idx, { entry_date: val })}
                               />
                             </label>
                             <label className="flex flex-col gap-1">
@@ -1233,13 +1341,13 @@ export const MyTimePage: React.FC = () => {
                           {/* Row 4: Notes (private) */}
                           <label className="flex flex-col gap-1">
                             <span className="text-xs text-muted-foreground">
-                              Notes <span className="italic">(private — only you see these)</span>
+                              Notes <span className="italic">(private, only you see these)</span>
                             </span>
                             <textarea
                               className="min-h-[56px] rounded border bg-background px-2 py-1.5 text-sm"
                               value={entry.notes}
                               onChange={(e) => updateNlEntry(idx, { notes: e.target.value })}
-                              placeholder="Blockers, context, reminders — won't appear in approvals."
+                              placeholder="Blockers, context, reminders. Won't appear in approvals."
                             />
                           </label>
                         </div>
@@ -1296,223 +1404,14 @@ export const MyTimePage: React.FC = () => {
             )}
           </div>
         </section>
+        <WeekEditor
+          weekAnchorDate={weekAnchorDate}
+          onAnchorChange={setWeekAnchorDate}
+        />
 
-        <section ref={projectsSectionRef} className="mb-6 surface-card overflow-hidden">
-          <div className="border-b px-4 py-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-muted-foreground">Projects</h2>
-            <div className="flex items-center gap-2 text-sm">
-              <button
-                className="h-7 w-7 rounded-lg border hover:bg-muted"
-                onClick={() => setWeekAnchorDate((current) => addDays(current, -7))}
-                aria-label="Previous week"
-              >
-                {'<'}
-              </button>
-              <span>{format(weekStart, 'MMM d')} - {format(weekEnd, 'MMM d')}</span>
-              <button
-                className="h-7 w-7 rounded-lg border hover:bg-muted"
-                onClick={() => setWeekAnchorDate((current) => addDays(current, 7))}
-                aria-label="Next week"
-              >
-                {'>'}
-              </button>
-            </div>
-          </div>
+        </>)}
 
-          <div className="md:hidden px-4 pt-2 text-xs text-muted-foreground italic">
-            ← Swipe to see all days →
-          </div>
-          <div className="p-4 overflow-x-auto overflow-y-visible pb-6">
-            <div className="min-w-[900px]">
-              <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 text-xs text-muted-foreground mb-3 px-2">
-                <div>Project / Task</div>
-                {weekDates.map((day) => (
-                  <div key={getWeekDateKey(day)} className="text-center">{format(day, 'EEE, MMM d')}</div>
-                ))}
-                <div className="text-center">Total</div>
-                <div className="text-right mr-1">Action</div>
-              </div>
-
-              <div className="space-y-2">
-                {gridRows.map((row) => {
-                  const rowTasks = row.projectId ? tasksByProject.get(row.projectId) ?? [] : [];
-
-                  return (
-                    <div key={row.id} className="space-y-1">
-                      <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 border rounded-md p-2">
-                        <div className="flex flex-col gap-2">
-                          <select
-                            value={row.projectId}
-                            onChange={(e) => handleGridRowChange(row.id, 'projectId', parseInt(e.target.value))}
-                            className="w-full rounded border px-2 py-1.5 text-sm"
-                          >
-                            <option value={0}>Select a project</option>
-                            {selectableProjects.map((p: Project) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </select>
-                          <select
-                            value={row.taskId}
-                            onChange={(e) => handleGridRowChange(row.id, 'taskId', parseInt(e.target.value))}
-                            className="w-full rounded border px-2 py-1.5 text-sm"
-                            disabled={row.projectId === 0}
-                          >
-                            <option value={0}>No task</option>
-                            {rowTasks.map((t: Task) => (
-                              <option key={t.id} value={t.id}>
-                                {t.name}
-                              </option>
-                            ))}
-                          </select>
-                          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={row.isBillable}
-                              onChange={() => handleGridRowBillableToggle(row.id)}
-                              className="rounded"
-                            />
-                            <span className={row.isBillable ? 'text-green-700 font-medium' : 'text-muted-foreground'}>
-                              {row.isBillable ? 'Billable' : 'Non-billable'}
-                            </span>
-                          </label>
-                        </div>
-
-                        {weekDates.map((day) => {
-                          const dateKey = getWeekDateKey(day);
-                          return (
-                            <input
-                              key={dateKey}
-                              type="number"
-                              min="0"
-                              step="0.25"
-                              value={row.hours[dateKey] || ''}
-                              onChange={(event) => handleGridRowHourChange(row.id, dateKey, event.target.value)}
-                              className="w-full rounded border px-2 py-1.5 text-center"
-                              placeholder="0"
-                            />
-                          );
-                        })}
-
-                        <div className="text-center text-muted-foreground text-xs"></div>
-
-                        <div className="flex justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveGridRow(row.id)}
-                            disabled={gridRows.length <= 1}
-                            className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
-                            title={gridRows.length <= 1 ? 'Add another row before removing this one' : 'Remove this row'}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 px-2 text-xs text-muted-foreground">
-                        <div></div>
-                        {weekDates.map((day) => {
-                          const dateKey = getWeekDateKey(day);
-                          const dayValue = parseFloat(row.hours[dateKey] || '0') || 0;
-                          return (
-                            <div key={dateKey} className="text-center">
-                              {dayValue > 0 ? dayValue.toFixed(2) : ''}
-                            </div>
-                          );
-                        })}
-                        <div></div>
-                        <div></div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 border-t-2 border-primary pt-2 px-2 font-semibold text-sm">
-                  <div className="text-right">Daily Totals:</div>
-                  {weekDates.map((day) => {
-                    const dateKey = getWeekDateKey(day);
-                    const dailyTotal = gridRows.reduce(
-                      (sum, row) => sum + (parseFloat(row.hours[dateKey] || '0') || 0),
-                      0
-                    );
-                    return (
-                      <div key={dateKey} className="text-center">
-                        {dailyTotal > 0 ? dailyTotal.toFixed(2) : '-'}
-                      </div>
-                    );
-                  })}
-                  <div className="text-center">
-                    {gridRows.reduce(
-                      (sum, row) => sum + weekDates.reduce((daySum, day) => daySum + (parseFloat(row.hours[getWeekDateKey(day)] || '0') || 0), 0),
-                      0
-                    ).toFixed(2)}
-                  </div>
-                  <div></div>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-col gap-3">
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleAddGridRow}
-                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
-                  >
-                    Add another project/task
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCopyLastWeek(false)}
-                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
-                    title="Copy project/task rows from the previous week"
-                  >
-                    Copy last week
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCopyLastWeek(true)}
-                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
-                    title="Copy project/task rows and hours from the previous week"
-                  >
-                    Copy last week with hours
-                  </button>
-                </div>
-
-                <textarea
-                  value={gridDescription}
-                  onChange={(event) => setGridDescription(event.target.value)}
-                  placeholder="Description for created entries"
-                  className="w-full border rounded px-3 py-2 text-sm"
-                  rows={2}
-                />
-
-                {weeklySubmitStatus?.reason && (
-                  <p className="text-xs text-muted-foreground -mb-1">{weeklySubmitStatus.reason}</p>
-                )}
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={handleSaveGridRows}
-                    disabled={createMutation.isPending}
-                    className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-muted text-foreground hover:bg-muted/70 disabled:opacity-50 text-sm font-medium transition"
-                  >
-                    {createMutation.isPending ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving...</> : 'Save Week'}
-                  </button>
-                  <button
-                    onClick={handleSubmitWeek}
-                    disabled={!weeklySubmitStatus?.can_submit || submitMutation.isPending}
-                    className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 text-sm font-medium transition"
-                    title={weeklySubmitStatus?.can_submit ? 'Submit drafts in the editable window for approval' : weeklySubmitStatus?.reason ?? 'Nothing to submit'}
-                  >
-                    {submitMutation.isPending ? 'Submitting...' : 'Submit for Approval'}
-                  </button>
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </section>
-
+        {activeTab === 'history' && (<>
         <section aria-label="Time entry history" className="mb-2">
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -1595,22 +1494,6 @@ export const MyTimePage: React.FC = () => {
 
 
 
-        {rejectedEntries.length > 0 && (
-          <div className="mb-8" ref={historySectionRef}>
-            <h2 className="text-xl font-bold mb-4">Rejected entries · needs rework</h2>
-            <div className="space-y-3">
-              {groupRejectedEntries(rejectedEntries, weekStartsOn).map((group) => (
-                <RejectedGroupCard
-                  key={group.key}
-                  group={group}
-                  onEdit={handleEditEntry}
-                  highlightedEntryId={deepLinkEntryId}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
         {hasHistoryRange && historyEntries.length > 0 && (
           <div className="mb-8">
             <h2 className="text-xl font-bold mb-4">History Entries</h2>
@@ -1632,9 +1515,31 @@ export const MyTimePage: React.FC = () => {
         {!hasHistoryRange && (
           <EmptyState message="Select a date range, status filter, or search to view history entries." />
         )}
+        </>)}
 
-        {!isLoading && regularEntries.length === 0 && (
-          <EmptyState message="No timesheet entries. Create one to get started!" />
+        {activeTab === 'rework' && (
+          <div ref={historySectionRef}>
+            {rejectedEntries.length > 0 ? (
+              <div className="mb-8">
+                <h2 className="text-xl font-bold mb-1">Rejected entries · needs rework</h2>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Fix the rejection reason, then resubmit. Approved entries don't show up here.
+                </p>
+                <div className="space-y-3">
+                  {groupRejectedEntries(rejectedEntries, weekStartsOn).map((group) => (
+                    <RejectedGroupCard
+                      key={group.key}
+                      group={group}
+                      onEdit={handleEditEntry}
+                      highlightedEntryId={deepLinkEntryId}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <EmptyState message="No rejected entries. You're all caught up." />
+            )}
+          </div>
         )}
       </div>
 
@@ -1649,11 +1554,9 @@ export const MyTimePage: React.FC = () => {
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-sm font-medium">Date</label>
-                <input
-                  type="date"
-                  className="field-input"
+                <DatePickerSingle
                   value={editFormData.entry_date}
-                  onChange={(e) => setEditFormData((f) => f ? { ...f, entry_date: e.target.value } : f)}
+                  onChange={(val) => setEditFormData((f) => f ? { ...f, entry_date: val } : f)}
                   min={minEntryDateStr}
                   max={maxEntryDateStr}
                   required
@@ -1711,14 +1614,14 @@ export const MyTimePage: React.FC = () => {
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium">
-                Notes <span className="font-normal italic text-muted-foreground">(private — only you see these)</span>
+                Notes <span className="font-normal italic text-muted-foreground">(private, only you see these)</span>
               </label>
               <textarea
                 className="field-textarea"
                 rows={2}
                 value={editFormData.notes}
                 onChange={(e) => setEditFormData((f) => f ? { ...f, notes: e.target.value } : f)}
-                placeholder="Blockers, context, reminders — won't appear in approvals."
+                placeholder="Blockers, context, reminders. Won't appear in approvals."
               />
             </div>
             <div>

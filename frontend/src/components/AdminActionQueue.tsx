@@ -4,6 +4,7 @@ import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, Clock, File
 
 import { useDismissAttentionSignal, useDismissedAttentionSignals } from '@/hooks';
 import type { DashboardRecentActivityItem, NotificationItem, User } from '@/types';
+import { isSystemBotUser } from '@/utils/userFilters';
 
 type Urgency = 'urgent' | 'warn' | 'info';
 
@@ -150,6 +151,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     if (!u.is_active) return false;
     if (u.email_verified) return false;
     if (u.is_external) return false;
+    if (isSystemBotUser(u)) return false;
     const created = u.created_at ? Date.parse(u.created_at) : NaN;
     return Number.isFinite(created) && created < staleCutoff;
   });

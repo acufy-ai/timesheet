@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { useIngestionEnabled } from '@/hooks';
+
 const iconProps = {
   width: 14, height: 14, viewBox: '0 0 24 24',
   fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
@@ -12,45 +14,69 @@ const LockIcon    = () => <svg {...iconProps}><rect x="3" y="11" width="18" heig
 const BellIcon    = () => <svg {...iconProps}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
 const ListIcon    = () => <svg {...iconProps}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>;
 const MailIcon    = () => <svg {...iconProps}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>;
+const InboxIcon   = () => <svg {...iconProps}><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>;
+const ImageIcon   = () => <svg {...iconProps}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>;
 
 type NavItem = { key: string; label: string; icon: React.ReactNode };
 type NavGroup = { title: string; items: NavItem[] };
 
-const NAV: NavGroup[] = [
-  {
-    title: 'Time management',
-    items: [
-      { key: 'time-entry',      label: 'Time entry',        icon: <ClockIcon /> },
-      { key: 'timeoff-policy',  label: 'Time-off policy',   icon: <CalIcon /> },
-    ],
-  },
-  {
-    title: 'Access & security',
-    items: [
-      { key: 'security',    label: 'Security',    icon: <LockIcon /> },
-    ],
-  },
-  {
-    title: 'Notifications',
-    items: [
-      { key: 'reminders',     label: 'Reminders',     icon: <BellIcon /> },
-      { key: 'notifications', label: 'Notifications', icon: <ListIcon /> },
-    ],
-  },
-  {
-    title: 'Integrations',
-    items: [
-      { key: 'email-smtp',      label: 'Email / SMTP',    icon: <MailIcon /> },
-    ],
-  },
-];
+// NAV is built per-render so feature-flag-gated entries (currently
+// Mailboxes, gated by ``ingestion_enabled``) can be filtered out for
+// tenants where the feature is off. Keeping it inside the component
+// trades a tiny re-render cost for keeping the nav source of truth
+// next to its consumer.
+const buildNav = (ingestionEnabled: boolean): NavGroup[] => {
+  const integrations: NavItem[] = [
+    { key: 'outbound-email',    label: 'Outbound email',    icon: <MailIcon /> },
+  ];
+  if (ingestionEnabled) {
+    integrations.push({ key: 'mailboxes', label: 'Mailboxes', icon: <InboxIcon /> });
+  }
+  integrations.push({ key: 'email-templates', label: 'Email templates', icon: <MailIcon /> });
+
+  return [
+    {
+      title: 'Time management',
+      items: [
+        { key: 'time-entry',      label: 'Time entry',        icon: <ClockIcon /> },
+        { key: 'timeoff-policy',  label: 'Time-off policy',   icon: <CalIcon /> },
+      ],
+    },
+    {
+      title: 'Access & security',
+      items: [
+        { key: 'security',    label: 'Security',    icon: <LockIcon /> },
+      ],
+    },
+    {
+      title: 'Notifications',
+      items: [
+        { key: 'reminders',     label: 'Reminders',     icon: <BellIcon /> },
+        { key: 'notifications', label: 'Notifications', icon: <ListIcon /> },
+      ],
+    },
+    {
+      title: 'Integrations',
+      items: integrations,
+    },
+    {
+      title: 'Branding',
+      items: [
+        { key: 'branding', label: 'Brand & logo', icon: <ImageIcon /> },
+      ],
+    },
+  ];
+};
 
 interface Props {
   activeSection: string;
   onChange: (key: string) => void;
 }
 
-export const SettingsSidebar: React.FC<Props> = ({ activeSection, onChange }) => (
+export const SettingsSidebar: React.FC<Props> = ({ activeSection, onChange }) => {
+  const ingestionEnabled = useIngestionEnabled();
+  const nav = buildNav(ingestionEnabled);
+  return (
   <nav
     className="shrink-0 overflow-y-auto border-r border-border"
     style={{ width: 210, minHeight: 0 }}
@@ -61,7 +87,7 @@ export const SettingsSidebar: React.FC<Props> = ({ activeSection, onChange }) =>
     </div>
 
     <div className="px-2 pb-4">
-      {NAV.map((group, gi) => (
+      {nav.map((group, gi) => (
         <div key={group.title}>
           {gi > 0 && <hr className="my-[7px] mx-[14px] border-border" />}
           <p className="px-2 pt-3 pb-1.5 text-xs font-semibold uppercase tracking-[0.65px] text-muted-foreground/50 select-none">
@@ -94,4 +120,5 @@ export const SettingsSidebar: React.FC<Props> = ({ activeSection, onChange }) =>
       ))}
     </div>
   </nav>
-);
+  );
+};

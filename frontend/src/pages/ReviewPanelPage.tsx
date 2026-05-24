@@ -1,6 +1,6 @@
 import React from 'react';
 import { format } from 'date-fns';
-import { ArrowLeft, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, XCircle } from 'lucide-react';
+import { ArrowDown, ArrowLeft, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, X, XCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -449,6 +449,23 @@ const ChainCandidatesPanel: React.FC<ChainCandidatesPanelProps> = ({
 };
 
 
+// Renders a brief loading message and bounces back to the inbox via
+// useEffect. The bounce sits in an effect (not in render) so React
+// doesn't complain about setState during render. Used as the
+// terminal fallback when a review URL points at a timesheet the
+// server no longer has — almost always because a reprocess just
+// replaced the row.
+const SubmissionNotFoundRedirect: React.FC<{ navigate: (path: string, opts?: { replace?: boolean }) => void }> = ({ navigate }) => {
+  React.useEffect(() => {
+    navigate('/ingestion/inbox', { replace: true });
+  }, [navigate]);
+  return (
+    <div className="mx-auto mt-12 max-w-xl rounded-xl border border-border bg-card p-6">
+      <p className="text-sm text-muted-foreground">Loading the latest version of this submission…</p>
+    </div>
+  );
+};
+
 export const ReviewPanelPage: React.FC = () => {
   const navigate = useNavigate();
   const { timesheetId, emailId } = useParams();
@@ -503,22 +520,38 @@ export const ReviewPanelPage: React.FC = () => {
   // Reprocess deletes non-approved IngestionTimesheet rows and creates new
   // ones with fresh IDs, so the current /ingestion/review/:timesheetId URL
   // will 404. Redirect to the email view so the user lands on the new row.
+  //
+  // Order matters here:
+  //   1. Capture the target email_id BEFORE we touch any caches — once we
+  //      drop the timesheet detail from cache, ``emailContext`` (which
+  //      reads timesheet?.email) becomes null and we'd lose the
+  //      navigation target.
+  //   2. REMOVE the old timesheet detail from cache (not just invalidate)
+  //      so TanStack doesn't trigger a refetch that 404s and flashes the
+  //      "Submission not found" error page while we're mid-navigate.
+  //   3. Invalidate the list/email queries so siblings refresh.
+  //   4. Navigate to email-mode, which then bounces to the new first
+  //      sibling timesheet.
   React.useEffect(() => {
     if (!reprocessJobId || !reprocessStatus) return;
     if (reprocessStatus.status !== 'complete' && reprocessStatus.status !== 'failed') return;
     if (reprocessStatus.status === 'complete') {
-      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet'] });
+      const targetEmailId = emailContext?.id ?? normalizedEmailId;
+      // Capture before mutating caches.
+      const oldTimesheetId = normalizedTimesheetId;
+      if (oldTimesheetId != null) {
+        queryClient.removeQueries({ queryKey: ['ingestion', 'timesheet', oldTimesheetId] });
+      }
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'email'] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
-      const targetEmailId = emailContext?.id ?? normalizedEmailId;
       if (isTimesheetMode && targetEmailId) {
         navigate(`/ingestion/email/${targetEmailId}`, { replace: true });
       }
     }
     const timer = window.setTimeout(() => setReprocessJobId(null), 6000);
     return () => window.clearTimeout(timer);
-  }, [reprocessJobId, reprocessStatus?.status, queryClient, isTimesheetMode, emailContext?.id, normalizedEmailId, navigate]);
+  }, [reprocessJobId, reprocessStatus?.status, queryClient, isTimesheetMode, emailContext?.id, normalizedEmailId, normalizedTimesheetId, navigate]);
   const emailId_forSiblings = emailContext?.id ?? null;
   const extractedName = ((timesheet?.extracted_employee_name ?? timesheet?.employee_name) ?? '').toLowerCase().trim();
   const resolvedEmployeeId = timesheet?.employee_id ?? null;
@@ -533,6 +566,12 @@ export const ReviewPanelPage: React.FC = () => {
   const siblings = React.useMemo(() => {
     if (!Array.isArray(siblingData)) return [];
     const filtered = [...siblingData].filter((s) => {
+      // Hide rejected pills from the sibling row. The per-pill ✕
+      // dismiss action rejects with reason 'Duplicate submission';
+      // once that completes the pill should disappear from the
+      // reviewer's pill list, not stick around as a red-dot ghost.
+      // The row itself stays in the DB for audit.
+      if (s.status === 'rejected') return false;
       if (resolvedEmployeeId != null && s.employee_id != null) {
         return s.employee_id === resolvedEmployeeId;
       }
@@ -630,6 +669,13 @@ export const ReviewPanelPage: React.FC = () => {
   const [leftPct, setLeftPct] = React.useState(62);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const isDragging = React.useRef(false);
+  // Anchor for the "Go to attachment" jump link in the email header.
+  // Long forwarded chains push the attached file far below the fold;
+  // this lets the reviewer skip straight to it without scrolling.
+  const attachmentPreviewRef = React.useRef<HTMLDivElement>(null);
+  const scrollToAttachment = React.useCallback(() => {
+    attachmentPreviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   React.useEffect(() => {
     const onUp = () => { isDragging.current = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; };
@@ -668,6 +714,50 @@ export const ReviewPanelPage: React.FC = () => {
     setSelectedAttachmentId(timesheet.attachment_id);
   }, [timesheet?.attachment_id]);
 
+  // When the reviewer clicks a sibling week pill, the route changes to a
+  // new timesheet id but the email is the same. The browser's default
+  // is to reset scroll to the top of the new page, which dumps the user
+  // back at the email headers and forces another "Go to attachment"
+  // click. Detect the "same email, different timesheet" transition and
+  // jump back to the attachment so context stays continuous.
+  //
+  // First mount (no previous email) and inbox→review jumps (different
+  // email) intentionally do NOT auto-scroll — there the reviewer should
+  // start at the top to read the email body.
+  //
+  // Implementation: store the attachment_id we want to scroll TO when
+  // a pill switch is detected. A separate effect watches for that
+  // attachment to actually load (its blob URL populated, or its
+  // server-rendered HTML present), and only then fires the scroll. The
+  // value is cleared after firing so we never scroll twice. Using the
+  // attachment_id as the trigger instead of a generic flag prevents
+  // the race where the flag gets consumed by stale-URL state from the
+  // previous pill before the new attachment has loaded.
+  const prevPillContextRef = React.useRef<{ emailId: number | null; timesheetId: number | null }>({
+    emailId: null,
+    timesheetId: null,
+  });
+  const [scrollTargetAttachmentId, setScrollTargetAttachmentId] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const currentEmailId = timesheet?.email?.id ?? null;
+    const currentTimesheetId = timesheet?.id ?? null;
+    const prev = prevPillContextRef.current;
+    const isPillSwitch =
+      prev.emailId !== null &&
+      prev.emailId === currentEmailId &&
+      prev.timesheetId !== null &&
+      prev.timesheetId !== currentTimesheetId;
+    prevPillContextRef.current = { emailId: currentEmailId, timesheetId: currentTimesheetId };
+    if (isPillSwitch && timesheet?.attachment_id) {
+      setScrollTargetAttachmentId(timesheet.attachment_id);
+    }
+  }, [timesheet?.email?.id, timesheet?.id, timesheet?.attachment_id]);
+
+  // (The scroll-on-pill-switch effect lives below selectedAttachment's
+  // declaration; see the block right after ``selectedAttachment`` is
+  // computed. Moved out of this block to satisfy TypeScript's
+  // use-before-declaration check on selectedAttachment.)
+
   React.useEffect(() => {
     let objectUrl: string | null = null;
     if (!selectedAttachmentId) {
@@ -702,6 +792,40 @@ export const ReviewPanelPage: React.FC = () => {
     timesheet?.attachment_id != null
       ? emailContext?.attachments.find((item) => item.id === timesheet.attachment_id) ?? null
       : null;
+
+  // Scroll runner for the pill-switch auto-scroll. Fires only when the
+  // targeted attachment id matches the currently-selected one AND the
+  // attachment has fully loaded (blob URL populated, or server-rendered
+  // HTML present). This prevents the stale-state race where we'd scroll
+  // while the previous pill's blob was still mounted.
+  React.useEffect(() => {
+    if (scrollTargetAttachmentId === null) return;
+    if (selectedAttachmentId !== scrollTargetAttachmentId) return;
+    const ready =
+      Boolean(attachmentUrl) ||
+      Boolean(selectedAttachment?.rendered_html) ||
+      Boolean(selectedAttachment?.raw_extracted_text);
+    if (!ready) return;
+
+    // Two frames of cushion: first for the iframe/image to mount with
+    // its content, second for its layout to settle. ``auto`` (instant)
+    // rather than smooth — smooth scrolls get interrupted when content
+    // is still shifting under them and produce unpredictable end-Y.
+    const handleRefs: { raf: number } = { raf: 0 };
+    handleRefs.raf = window.requestAnimationFrame(() => {
+      handleRefs.raf = window.requestAnimationFrame(() => {
+        attachmentPreviewRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
+        setScrollTargetAttachmentId(null);
+      });
+    });
+    return () => window.cancelAnimationFrame(handleRefs.raf);
+  }, [
+    scrollTargetAttachmentId,
+    selectedAttachmentId,
+    attachmentUrl,
+    selectedAttachment?.rendered_html,
+    selectedAttachment?.raw_extracted_text,
+  ]);
   const selectedAttachmentType = attachmentKind(selectedAttachment);
   const structured = timesheet?.extracted_data;
   const fromStructured = structured && typeof structured === 'object' && typeof (structured as Record<string, unknown>).employee_name === 'string'
@@ -754,7 +878,7 @@ export const ReviewPanelPage: React.FC = () => {
   }, [timesheet?.id, summaryForm.employee_id, extractedEmployeeMatch]);
 
   if ((isTimesheetMode && isTimesheetLoading) || (isEmailMode && isEmailLoading)) {
-    return <Loading message={isEmailMode ? 'Loading stored email...' : 'Loading staged submission...'} />;
+    return <Loading message={isEmailMode ? 'Loading email...' : 'Loading timesheet...'} />;
   }
 
   if (!isTimesheetMode && !isEmailMode) {
@@ -769,16 +893,16 @@ export const ReviewPanelPage: React.FC = () => {
     );
   }
 
-  if (isTimesheetMode && (isTimesheetError || !timesheet)) {
-    return (
-      <div className="mx-auto mt-12 max-w-xl rounded-xl border border-border bg-card p-6">
-        <p className="text-lg font-semibold text-foreground">Submission not found</p>
-        <p className="mt-2 text-sm text-muted-foreground">The selected submission may have been deleted or is no longer available.</p>
-        <button type="button" onClick={() => navigate('/ingestion/inbox')} className="action-button mt-4">
-          Back to inbox
-        </button>
-      </div>
-    );
+  // A 404 on the timesheet detail almost always means the row was just
+  // replaced by a reprocess (the backend deletes the old rows and
+  // creates new ones with different IDs). Showing "Submission not
+  // found" with a manual back button is the wrong default — the user
+  // ends up refreshing repeatedly. Auto-bounce to the inbox so the
+  // freshly-reprocessed rows surface naturally. The redirect runs
+  // inside an effect (not during render) to avoid React's "setState
+  // during render" warning.
+  if (isTimesheetMode && (isTimesheetError || !timesheet) && !isTimesheetLoading) {
+    return <SubmissionNotFoundRedirect navigate={navigate} />;
   }
 
   if (isEmailMode && (isEmailError || !storedEmail)) {
@@ -831,7 +955,14 @@ export const ReviewPanelPage: React.FC = () => {
         createdId = created.id;
       }
       if (createdId != null) {
-        setSummaryForm((c) => ({ ...c, client_id: String(createdId) }));
+        // Route through the cascade handler so the newly-created
+        // client persists across every editable sibling week and the
+        // sibling caches refresh, instead of sitting in local form
+        // state until the reviewer clicks Approve. Without this the
+        // "create new client" path was inconsistent with the picker:
+        // selecting an existing client cascaded; creating a new one
+        // didn't.
+        await handleClientPickerChange(String(createdId));
       }
       setAddClientAnchor(null);
     } catch {
@@ -853,6 +984,64 @@ export const ReviewPanelPage: React.FC = () => {
       total_hours: summaryForm.total_hours || null,
       internal_notes: summaryForm.internal_notes || null,
     } });
+  };
+
+  // Auto-save the reviewer's client decision and cascade it to every
+  // editable sibling week (same employee, same email). The reviewer's
+  // client pick is the final decision per the role contract — it should
+  // persist immediately, not be a draft that resets on refresh. Already-
+  // approved or already-rejected siblings are skipped (their state is
+  // frozen). Updates fire in parallel; per-sibling errors are swallowed
+  // so one stale sibling doesn't block the others.
+  //
+  // After all cascades commit we explicitly invalidate every targeted
+  // sibling's detail cache so navigating to another pill doesn't show
+  // stale data — the mutation hook's onSuccess invalidates only the
+  // single id it was called with, which TanStack runs per-mutation,
+  // but in practice we've seen detail caches not refresh fast enough
+  // when several mutateAsync calls fan out at once.
+  const handleClientPickerChange = async (value: string) => {
+    if (!timesheet) return;
+    setSummaryForm((c) => ({ ...c, client_id: value }));
+    const clientId = value ? Number(value) : null;
+    const clientObj = clientId != null
+      ? (clients as { id: number; name: string }[]).find((c) => c.id === clientId)
+      : null;
+    const targetIds = new Set<number>([timesheet.id]);
+    for (const sibling of siblings) {
+      if (sibling.status === 'approved' || sibling.status === 'rejected') continue;
+      targetIds.add(sibling.id);
+    }
+
+    // Optimistically write the new client into every sibling detail
+    // cache BEFORE awaiting the network round-trip. Without this, when
+    // the reviewer clicks another pill, TanStack serves the stale
+    // cached detail (with the old client_id), the form-reseed effect
+    // runs, summaryForm.client_id snaps to the stale value, and only
+    // a moment later does the refetch arrive — by which point the
+    // user has already concluded the cascade "didn't work."
+    //
+    // We also write the resolved client name so the rest of the UI
+    // (e.g. anywhere reading timesheet.client_name) stays consistent
+    // until the refetch confirms the same shape.
+    for (const id of targetIds) {
+      queryClient.setQueryData<Record<string, unknown> | undefined>(
+        ['ingestion', 'timesheet', id],
+        (prev) => prev ? { ...prev, client_id: clientId, client_name: clientObj?.name ?? null } : prev,
+      );
+    }
+
+    await Promise.all(
+      [...targetIds].map((id) =>
+        updateTimesheet.mutateAsync({ id, data: { client_id: clientId } }).catch(() => null),
+      ),
+    );
+    // Belt-and-suspenders: invalidate every sibling's detail cache key
+    // and the list query so pill clicks render the cascade result.
+    for (const id of targetIds) {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', id] });
+    }
+    queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
   };
 
   const handleSaveLineItem = async (event: React.FormEvent) => {
@@ -1091,15 +1280,15 @@ export const ReviewPanelPage: React.FC = () => {
             : score >= 0.5 ? 'bg-amber-50 text-amber-700'
             : 'bg-red-50 text-red-700';
           const tooltip = hasUncertain
-            ? `Model self-rated. Uncertain fields: ${uncertain.join(', ')}. Verify before approving.`
-            : 'Model self-rated extraction certainty — not a calibrated probability. Always verify the extracted fields against the source document.';
+            ? `How confident the system was when reading this timesheet. Fields to verify: ${uncertain.join(', ')}.`
+            : 'How confident the system was when reading this timesheet. Always check the values against the source document before approving.';
           return (
             <span
               className={`text-xs px-2 py-0.5 rounded ${tone}`}
               title={tooltip}
             >
-              AI self-rated: {(score * 100).toFixed(0)}%
-              {hasUncertain && ` · ${uncertain.length} uncertain`}
+              Confidence: {(score * 100).toFixed(0)}%
+              {hasUncertain && ` · ${uncertain.length} to verify`}
             </span>
           );
         })()}
@@ -1107,7 +1296,7 @@ export const ReviewPanelPage: React.FC = () => {
           <div className="flex items-center gap-2">
             <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
             <span className="text-xs text-primary font-medium">
-              {reprocessStatus?.status === 'queued' ? 'Queued...' : `Reprocessing... ${Math.round(Number(reprocessStatus?.progress ?? 0))}%`}
+              {reprocessStatus?.status === 'queued' ? 'Queued...' : `Trying again... ${Math.round(Number(reprocessStatus?.progress ?? 0))}%`}
             </span>
             <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
               <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${Number(reprocessStatus?.progress ?? 0)}%` }} />
@@ -1116,7 +1305,7 @@ export const ReviewPanelPage: React.FC = () => {
         )}
         {reprocessDone && (
           <span className={`text-xs font-medium ${reprocessStatus?.status === 'complete' ? 'text-sky-600' : 'text-destructive'}`}>
-            {reprocessStatus?.status === 'complete' ? 'Reprocessing complete.' : 'Reprocessing failed.'}
+            {reprocessStatus?.status === 'complete' ? 'Done.' : 'Failed. Please try again.'}
           </span>
         )}
         <div className="flex shrink-0 items-center gap-2">
@@ -1127,10 +1316,10 @@ export const ReviewPanelPage: React.FC = () => {
               onClick={() => setReprocessMenuOpen((v) => !v)}
               disabled={reprocessEmail.isPending || isReprocessing}
               className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
-              aria-label="Reprocess"
+              aria-label="Try again"
               aria-haspopup="menu"
               aria-expanded={reprocessMenuOpen}
-              title="Reprocess this timesheet or the whole email"
+              title="Try this timesheet or the whole email again"
             >
               <RefreshCw className={`h-4 w-4 ${isReprocessing ? 'animate-spin' : ''}`} />
             </button>
@@ -1150,7 +1339,7 @@ export const ReviewPanelPage: React.FC = () => {
                   disabled={reprocessEmail.isPending || isReprocessing}
                   role="menuitem"
                 >
-                  <div className="font-medium text-foreground">Reprocess this timesheet</div>
+                  <div className="font-medium text-foreground">Try this timesheet again</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     Re-runs LLM extraction on the linked attachment only.
                   </div>
@@ -1165,7 +1354,7 @@ export const ReviewPanelPage: React.FC = () => {
                   disabled={reprocessEmail.isPending || isReprocessing}
                   role="menuitem"
                 >
-                  <div className="font-medium text-foreground">Reprocess whole email</div>
+                  <div className="font-medium text-foreground">Try the whole email again</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     Re-fetches and re-extracts all attachments from this email.
                   </div>
@@ -1190,7 +1379,7 @@ export const ReviewPanelPage: React.FC = () => {
                 const summary = lineCount > 0
                   ? `Create ${lineCount} time ${lineCount === 1 ? 'entry' : 'entries'}?`
                   : totalHoursNum && totalHoursNum > 0
-                    ? `Only ${totalHoursNum} total hours — no daily breakdown. Approve anyway?`
+                    ? `Only ${totalHoursNum} total hours, no daily breakdown. Approve anyway?`
                     : 'Nothing to create. Approve anyway?';
                 return (
                   <div className="absolute right-0 top-full z-30 mt-2 w-max max-w-[560px] rounded-lg border border-primary/30 bg-popover p-3 shadow-lg">
@@ -1215,12 +1404,25 @@ export const ReviewPanelPage: React.FC = () => {
         <div className="overflow-y-auto border-r border-border/60" style={{ flex: `0 0 ${leftPct}%`, minWidth: 0 }}>
           <div className="px-8 py-6">
             {/* Email header */}
-            <div className="mb-4 space-y-1.5 border-b border-border/60 pb-4 text-sm">
-              <p><span className="w-16 inline-block text-muted-foreground">From</span> <span className="text-foreground">{emailContext?.sender_name ? `${emailContext.sender_name} <${emailContext.sender_email}>` : emailContext?.sender_email || '--'}</span></p>
-              {emailContext?.forwarded_from_email && (
-                <p><span className="w-16 inline-block text-muted-foreground">Originally from</span> <span className="text-foreground">{emailContext.forwarded_from_name ? `${emailContext.forwarded_from_name} <${emailContext.forwarded_from_email}>` : emailContext.forwarded_from_email}</span></p>
+            <div className="mb-4 flex items-start justify-between gap-4 border-b border-border/60 pb-4 text-sm">
+              <div className="flex-1 space-y-1.5 min-w-0">
+                <p><span className="w-16 inline-block text-muted-foreground">From</span> <span className="text-foreground">{emailContext?.sender_name ? `${emailContext.sender_name} <${emailContext.sender_email}>` : emailContext?.sender_email || '--'}</span></p>
+                {emailContext?.forwarded_from_email && (
+                  <p><span className="w-16 inline-block text-muted-foreground">Originally from</span> <span className="text-foreground">{emailContext.forwarded_from_name ? `${emailContext.forwarded_from_name} <${emailContext.forwarded_from_email}>` : emailContext.forwarded_from_email}</span></p>
+                )}
+                <p><span className="w-16 inline-block text-muted-foreground">Date</span> <span className="text-foreground">{formatDateTime(emailContext?.received_at)}</span></p>
+              </div>
+              {selectedAttachment && (
+                <button
+                  type="button"
+                  onClick={scrollToAttachment}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                  title="Jump to the attached file below"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                  Go to attachment
+                </button>
               )}
-              <p><span className="w-16 inline-block text-muted-foreground">Date</span> <span className="text-foreground">{formatDateTime(emailContext?.received_at)}</span></p>
             </div>
 
             {/* Body text */}
@@ -1262,7 +1464,7 @@ export const ReviewPanelPage: React.FC = () => {
 
           {/* Attachment preview — inline below email content, scrollable as one unit */}
           {selectedAttachment && (
-            <div className="border-t border-border/60">
+            <div ref={attachmentPreviewRef} className="border-t border-border/60">
               <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-6 py-2.5">
                 <p className="font-medium text-foreground">{selectedAttachment.filename}</p>
                 <Badge tone="outline">{selectedAttachment.extraction_status}</Badge>
@@ -1309,7 +1511,33 @@ export const ReviewPanelPage: React.FC = () => {
         {/* RIGHT – review panel */}
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-6 py-6">
           {/* Week tabs */}
-          {siblings.length > 1 && (
+          {siblings.length > 1 && (() => {
+            const handleDismissPill = async (
+              event: React.MouseEvent,
+              sibling: typeof siblings[number],
+            ) => {
+              event.stopPropagation();
+              const periodLabel = sibling.period_start && sibling.period_end
+                ? `${new Date(sibling.period_start).toLocaleDateString()} – ${new Date(sibling.period_end).toLocaleDateString()}`
+                : `#${sibling.id}`;
+              if (!window.confirm(
+                `Remove the timesheet for ${periodLabel} from this email's pills?\n\n` +
+                'It stays in the system as a rejected duplicate for audit but will no longer show up here.',
+              )) return;
+              try {
+                await rejectTimesheet.mutateAsync({
+                  id: sibling.id,
+                  reason: 'Duplicate submission',
+                  comment: undefined,
+                });
+                queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+                queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', sibling.id] });
+              } catch (err) {
+                window.alert((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                  ?? 'Could not remove this pill. Please try again.');
+              }
+            };
+            return (
             <div className="mb-5">
               <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 {siblings.length} timesheets from this email
@@ -1336,24 +1564,41 @@ export const ReviewPanelPage: React.FC = () => {
                     dotTitle = `${anomalyCount} anomaly${anomalyCount === 1 ? '' : 'ies'} flagged`;
                   }
                   return (
-                    <button
+                    <span
                       key={s.id}
-                      type="button"
-                      onClick={() => navigate(`/ingestion/review/${s.id}`)}
-                      title={dotTitle}
-                      className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition ${isActive ? 'bg-primary text-primary-foreground' : 'border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/30 hover:text-foreground'}`}
+                      className={`group/pill inline-flex items-center gap-2 rounded-full pl-3 ${isActive ? 'pr-3 bg-primary text-primary-foreground' : 'pr-1 border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/30 hover:text-foreground'} text-xs font-medium transition`}
                     >
-                      <span
-                        aria-hidden="true"
-                        className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass} ${isActive ? 'opacity-90' : ''}`}
-                      />
-                      {label}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/ingestion/review/${s.id}`)}
+                        title={dotTitle}
+                        className="inline-flex items-center gap-2 py-1.5"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass} ${isActive ? 'opacity-90' : ''}`}
+                        />
+                        {label}
+                      </button>
+                      {!isActive && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDismissPill(e, s)}
+                          disabled={rejectTimesheet.isPending}
+                          title="Remove this pill"
+                          aria-label={`Remove ${label}`}
+                          className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground/60 transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
                   );
                 })}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Rejection reason banner */}
           {timesheet?.status === 'rejected' && timesheet.rejection_reason && (
@@ -1387,14 +1632,14 @@ export const ReviewPanelPage: React.FC = () => {
                         Add client
                       </button>
                     </div>
-                    <select className="field-input" value={summaryForm.client_id} onChange={(e) => setSummaryForm((c) => ({ ...c, client_id: e.target.value }))}>
+                    <select className="field-input" value={summaryForm.client_id} onChange={(e) => handleClientPickerChange(e.target.value)}>
                       <option value="">Select client</option>
                       {clients.map((client: { id: number; name: string }) => <option key={client.id} value={client.id}>{client.name}</option>)}
                     </select>
                     {extractedClientHint && !extractedClientMatchesExisting && !summaryForm.client_id && (
                       <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
                         <p className="text-xs text-muted-foreground">
-                          Extracted client: <span className="font-medium text-foreground">{extractedClientHint}</span> — not in your client list.
+                          Found in document. Client: <span className="font-medium text-foreground">{extractedClientHint}</span> (not in your client list).
                         </p>
                         <button
                           type="button"
@@ -1402,7 +1647,10 @@ export const ReviewPanelPage: React.FC = () => {
                           onClick={async () => {
                             try {
                               const created = await createClient.mutateAsync({ name: extractedClientHint });
-                              setSummaryForm((c) => ({ ...c, client_id: String(created.id) }));
+                              // Cascade across siblings + persist immediately
+                              // rather than parking the choice in local form
+                              // state until Approve fires.
+                              await handleClientPickerChange(String(created.id));
                             } catch {
                               // Surface via generic error handling; leave the form as-is.
                             }
@@ -1423,12 +1671,12 @@ export const ReviewPanelPage: React.FC = () => {
                     >
                       <option value="">Select employee</option>
                       {showExtractedEmployeeOption && (
-                        <option value="__extracted__">Extracted: {extractedEmployeeDisplayName || extractedEmployeeHint} (unmatched)</option>
+                        <option value="__extracted__">From document: {extractedEmployeeDisplayName || extractedEmployeeHint} (not in system)</option>
                       )}
                       {users.map((user) => <option key={user.id} value={user.id}>{cleanEmployeeNameForDisplay(user.full_name) || user.full_name}</option>)}
                     </select>
                     {extractedEmployeeHint && (
-                      <p className="mt-1.5 text-xs text-muted-foreground">Extracted name: <span className="font-medium text-foreground">{extractedEmployeeDisplayName || extractedEmployeeHint}</span></p>
+                      <p className="mt-1.5 text-xs text-muted-foreground">Found in document: <span className="font-medium text-foreground">{extractedEmployeeDisplayName || extractedEmployeeHint}</span></p>
                     )}
                     <ChainCandidatesPanel
                       timesheetId={timesheet?.id ?? null}
@@ -1443,24 +1691,30 @@ export const ReviewPanelPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Supervisor: free-form (typically a client contact). */}
-                <div className="mt-3">
-                  <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
-                  <input
-                    type="text"
-                    className="field-input"
-                    value={summaryForm.extracted_supervisor_name}
-                    onChange={(e) => setSummaryForm((c) => ({ ...c, extracted_supervisor_name: e.target.value }))}
-                    placeholder="Name from the timesheet (e.g. Jianli Xiao)"
-                  />
-                  {timesheet?.extracted_supervisor_name
-                    && timesheet.extracted_supervisor_name !== summaryForm.extracted_supervisor_name
-                    && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Extracted from document: <span className="font-medium text-foreground">{timesheet.extracted_supervisor_name}</span>. Saved with the approved entries for audit.
-                      </p>
-                    )}
-                </div>
+                {/* Supervisor: free-form (typically a client contact).
+                    Only shown when one was actually extracted from the
+                    source timesheet — hiding the field entirely when
+                    nothing was extracted keeps the assignment block
+                    focused on fields that have real signal. */}
+                {Boolean((timesheet?.extracted_supervisor_name ?? '').trim()) && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
+                    <input
+                      type="text"
+                      className="field-input"
+                      value={summaryForm.extracted_supervisor_name}
+                      onChange={(e) => setSummaryForm((c) => ({ ...c, extracted_supervisor_name: e.target.value }))}
+                      placeholder="Name from the timesheet"
+                    />
+                    {timesheet?.extracted_supervisor_name
+                      && timesheet.extracted_supervisor_name !== summaryForm.extracted_supervisor_name
+                      && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Found in the document: <span className="font-medium text-foreground">{timesheet.extracted_supervisor_name}</span>. Saved with your approval.
+                        </p>
+                      )}
+                  </div>
+                )}
               </div>
 
               {/* Week & Hours */}
@@ -1483,7 +1737,7 @@ export const ReviewPanelPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-foreground">Internal Notes</label>
+                <label className="mb-1.5 block text-sm font-medium text-foreground">Reviewer notes</label>
                 <textarea className="field-textarea" rows={3} value={summaryForm.internal_notes} onChange={(e) => setSummaryForm((c) => ({ ...c, internal_notes: e.target.value }))} />
               </div>
 
@@ -1670,10 +1924,10 @@ export const ReviewPanelPage: React.FC = () => {
                 )}
               </div>
 
-              {/* AI Flags */}
+              {/* Issues to review */}
               {!!timesheet.llm_anomalies?.length && (
                 <div>
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">AI Flags</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Issues to review</p>
                   <div className="space-y-2">
                     {timesheet.llm_anomalies.map((anomaly, index) => (
                       <div key={index} className="rounded-xl border border-[var(--warning)]/25 bg-[var(--warning-light)] px-3 py-2.5 text-sm text-[var(--warning)]">
@@ -1720,10 +1974,10 @@ export const ReviewPanelPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Audit Trail */}
+              {/* Activity log */}
               {!!timesheet.audit_log?.length && (
                 <div>
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Audit Trail</p>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Activity log</p>
                   <div className="space-y-2">
                     {timesheet.audit_log.map((entry) => (
                       <div key={entry.id} className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2.5">

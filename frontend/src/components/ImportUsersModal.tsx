@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
 // ---------------------------------------------------------------------------
 
 const IMPORT_FIELD_OPTIONS = [
-  { value: 'ignore', label: '— Ignore —' },
+  { value: 'ignore', label: 'Ignore' },
   { value: 'full_name', label: 'Full Name' },
   { value: 'email', label: 'Primary Email' },
   { value: 'extra_email_1', label: 'Extra Email 1' },
@@ -31,8 +31,11 @@ const IMPORT_FIELD_OPTIONS = [
 function autoDetect(header: string): string {
   const h = header.toLowerCase().replace(/[^a-z0-9]/g, ' ').trim();
   if (/\bfull.?name\b|\bname\b/.test(h)) return 'full_name';
-  if (/\bemail\b/.test(h) && !/extra|alias|2|two/.test(h)) return 'email';
-  if (/\bemail.?2\b|\bsecond.?email\b|\bextra.?email\b/.test(h)) return 'extra_email_1';
+  // Primary email must NOT also look like an alias header. Adding
+  // ``alt|alternate`` keeps phrases like "alt email" out of the
+  // primary bucket so they fall through to extra_email_1 below.
+  if (/\bemail\b/.test(h) && !/extra|alias|alternate|alt|secondary|2|two|3|three/.test(h)) return 'email';
+  if (/\bemail.?2\b|\bsecond.?email\b|\bsecondary.?email\b|\bextra.?email\b|\balt.?email\b|\balternate.?email\b|\bemail.?alias\b|\baliases?\b/.test(h)) return 'extra_email_1';
   if (/\bemail.?3\b|\bthird.?email\b/.test(h)) return 'extra_email_2';
   if (/\bphone\b|\bmobile\b|\bcell\b/.test(h) && !/2|two|extra/.test(h)) return 'phone';
   if (/\bphone.?2\b|\bsecond.?phone\b|\bextra.?phone\b|\balt.?phone\b/.test(h)) return 'extra_phone_1';
@@ -87,6 +90,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
       updated: Array<{ row: number; user_id: number; full_name: string; warnings: string[] }>;
       skipped: Array<{ row: number; reason: string }>;
     };
+    new_clients?: string[];
   } | null>(null);
   const [stepError, setStepError] = useState<string | null>(null);
 
@@ -322,7 +326,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                       onChange={(e) => { setBatchClientId(e.target.value); setBatchProjectId(''); }}
                       className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
                     >
-                      <option value="">— None —</option>
+                      <option value="">None</option>
                       {clients?.map((c: Client) => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
@@ -335,7 +339,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                       onChange={(e) => setBatchProjectId(e.target.value)}
                       className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
                     >
-                      <option value="">— None —</option>
+                      <option value="">None</option>
                       {filteredProjects?.map((p: Project) => (
                         <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
@@ -348,7 +352,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                       onChange={(e) => setBatchManagerId(e.target.value)}
                       className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
                     >
-                      <option value="">— None —</option>
+                      <option value="">None</option>
                       {users?.filter((u: User) => u.role === 'MANAGER' || u.role === 'ADMIN').map((u: User) => (
                         <option key={u.id} value={u.id}>{u.full_name}</option>
                       ))}
@@ -380,7 +384,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                       return (
                         <tr key={header} className="border-t border-border">
                           <td className="px-4 py-2 font-medium">{header}</td>
-                          <td className="px-4 py-2 text-muted-foreground truncate max-w-[160px]">{sample || '—'}</td>
+                          <td className="px-4 py-2 text-muted-foreground truncate max-w-[160px]">{sample || 'N/A'}</td>
                           <td className="px-4 py-2">
                             <select
                               value={mapping[header] ?? 'ignore'}
@@ -442,7 +446,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                           .filter(([, v]) => v !== 'ignore')
                           .map(([col]) => (
                             <td key={col} className="px-3 py-1.5 truncate max-w-[140px]">
-                              {row[col] || <span className="text-muted-foreground/50">—</span>}
+                              {row[col] || <span className="text-muted-foreground/50">N/A</span>}
                             </td>
                           ))}
                       </tr>
@@ -511,7 +515,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
                             <span>
                               <span className="text-destructive font-medium">Existing: </span>
-                              {row.existing_name || '—'}
+                              {row.existing_name || 'N/A'}
                             </span>
                             <span>
                               <span className="text-primary font-medium">File: </span>
@@ -571,6 +575,29 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                 </div>
               </div>
 
+              {commitResult.new_clients && commitResult.new_clients.length > 0 && (
+                <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <p className="text-xs font-medium text-foreground mb-2">
+                    Created {commitResult.new_clients.length} new client
+                    {commitResult.new_clients.length !== 1 ? 's' : ''} during import
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {commitResult.new_clients.map((name) => (
+                      <span
+                        key={name}
+                        className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                      >
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    New clients default to type <span className="font-medium">External</span>.
+                    Open Client Management to adjust types or details.
+                  </p>
+                </div>
+              )}
+
               {commitResult.details.updated.length > 0 && (
                 <div>
                   <p className="text-xs font-medium text-primary mb-2">Updated records:</p>
@@ -601,12 +628,12 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                 </div>
               )}
 
-              {commitResult.details.skipped.filter((r) => !r.reason.startsWith('Already exists (exact match)')).length > 0 && (
+              {commitResult.details.skipped.filter((r) => !r.reason.startsWith('Already exists (exact match)') && !r.reason.startsWith('Email already exists')).length > 0 && (
                 <div>
                   <p className="text-xs font-medium text-destructive mb-2">Skipped rows:</p>
                   <ul className="space-y-1">
                     {commitResult.details.skipped
-                      .filter((r) => !r.reason.startsWith('Already exists (exact match)'))
+                      .filter((r) => !r.reason.startsWith('Already exists (exact match)') && !r.reason.startsWith('Email already exists'))
                       .map((r) => (
                         <li key={r.row} className="text-xs rounded border border-destructive/20 bg-destructive/5 px-3 py-1.5">
                           <span className="font-medium">Row {r.row}:</span> {r.reason}
@@ -664,14 +691,28 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
             {step === 'preview' && (
               <button
                 type="button"
-                disabled={validateMutation.isPending || previewMutation.isPending}
+                // ``commitMutation.isPending`` matters here too: when
+                // validate returns clean (no conflicts), the modal
+                // chains straight into commit while still on the preview
+                // step. Without this guard the spinner disappears the
+                // moment validate resolves and the button re-enables —
+                // a user clicking again fires a second
+                // validate-then-commit round trip and we end up
+                // double-importing.
+                disabled={
+                  validateMutation.isPending
+                  || previewMutation.isPending
+                  || commitMutation.isPending
+                }
                 onClick={handleValidateStep}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50 hover:bg-primary/90 transition"
               >
-                {(validateMutation.isPending || previewMutation.isPending) && (
+                {(validateMutation.isPending || previewMutation.isPending || commitMutation.isPending) && (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 )}
-                Import {preview?.total_rows} user{preview?.total_rows !== 1 ? 's' : ''}
+                {commitMutation.isPending
+                  ? `Importing ${preview?.total_rows} user${preview?.total_rows !== 1 ? 's' : ''}…`
+                  : `Import ${preview?.total_rows} user${preview?.total_rows !== 1 ? 's' : ''}`}
               </button>
             )}
             {step === 'conflicts' && (

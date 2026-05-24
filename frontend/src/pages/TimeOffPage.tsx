@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loading, Error, EmptyState, SearchInput } from '@/components';
+import { Loading, Error, EmptyState, SearchInput, DateRangePickerCalendar, DatePickerSingle } from '@/components';
 import {
   useCreateTimeOffRequest,
   useDeleteTimeOffRequest,
@@ -8,9 +8,11 @@ import {
   useSubmitTimeOffRequests,
   useTimeOffRequests,
   useUpdateTimeOffRequest,
+  useUsers,
 } from '@/hooks';
-import { TimeOffRequest, TimeOffStatus, TimeOffType, LeaveType } from '@/types';
+import { TimeOffRequest, TimeOffStatus, TimeOffType, LeaveType, User } from '@/types';
 import { ArrowDown, ArrowUp, Plus } from 'lucide-react';
+import { fmtLong } from '@/lib/format-date';
 
 const resolveLabel = (types: LeaveType[], code: string): string =>
   types.find((t) => t.code === code)?.label || code;
@@ -70,6 +72,16 @@ export const TimeOffPage: React.FC = () => {
 
   const { data: requests, isLoading, error } = useTimeOffRequests(queryParams);
   const { data: leaveTypes = [] } = useLeaveTypes();
+  // Look up the approver's name from the user list. ``useUsers``
+  // returns the manager-visible roster; for employee-only accounts
+  // it falls back to a smaller set, so the lookup is a soft enrich:
+  // we render "Manager #<id>" when the user row isn't visible.
+  const { data: usersList = [] } = useUsers();
+  const usersById = useMemo(() => {
+    const map = new Map<number, User>();
+    (usersList as User[]).forEach((u) => map.set(u.id, u));
+    return map;
+  }, [usersList]);
   // Default the leave_type picker to the first active type once they load.
   useEffect(() => {
     if (leaveTypes.length > 0 && !leaveTypes.some((t) => t.code === formData.leave_type)) {
@@ -186,6 +198,20 @@ export const TimeOffPage: React.FC = () => {
 
   const renderRequestCard = (entry: TimeOffRequest, showActions: boolean) => {
     const isHighlighted = entry.id === deepLinkEntryId;
+    // Decision attribution (approver name + timestamp). Shown on
+    // APPROVED and REJECTED so the employee always has a clear record
+    // of who acted and when, without having to dig into Notifications.
+    const isDecided = entry.status === 'APPROVED' || entry.status === 'REJECTED';
+    const approverName = entry.approved_by != null
+      ? (usersById.get(entry.approved_by)?.full_name ?? `Manager #${entry.approved_by}`)
+      : null;
+    const actedAtLabel = entry.approved_at
+      ? new Date(entry.approved_at).toLocaleString(undefined, {
+          month: 'short', day: 'numeric', year: 'numeric',
+          hour: 'numeric', minute: '2-digit',
+        })
+      : null;
+    const actionVerb = entry.status === 'APPROVED' ? 'Approved' : 'Rejected';
     return (
       <div
         id={`time-off-${entry.id}`}
@@ -194,10 +220,17 @@ export const TimeOffPage: React.FC = () => {
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="font-medium">{entry.request_date}</p>
+            <p className="font-medium">{fmtLong(entry.request_date)}</p>
             <p className="text-sm text-muted-foreground">{resolveLabel(leaveTypes, entry.leave_type)}</p>
             <p className="text-sm mt-2">{entry.reason}</p>
             <p className="text-sm font-medium mt-1">{entry.hours} hours</p>
+            {isDecided && (approverName || actedAtLabel) && (
+              <p className="text-xs text-muted-foreground mt-2">
+                {actionVerb}
+                {approverName && <> by <span className="text-foreground font-medium">{approverName}</span></>}
+                {actedAtLabel && <> on {actedAtLabel}</>}
+              </p>
+            )}
             {entry.rejection_reason && (
               <div className="bg-red-50 border border-red-200 p-2 rounded text-sm mt-2">
                 <p className="font-medium text-red-900">Rejection reason:</p>
@@ -253,7 +286,7 @@ export const TimeOffPage: React.FC = () => {
           <h1 className="text-3xl font-bold">Time Off</h1>
           <button
             onClick={() => setShowForm((value) => !value)}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90"
+            className="action-button gap-2"
           >
             <Plus className="w-4 h-4" />
             New Time Off Request
@@ -291,10 +324,12 @@ export const TimeOffPage: React.FC = () => {
               </option>
             ))}
           </select>
-          <div className="flex gap-2">
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full px-3 py-2 border rounded" />
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full px-3 py-2 border rounded" />
-          </div>
+          <DateRangePickerCalendar
+            startDate={startDate}
+            endDate={endDate}
+            onStartDateChange={setStartDate}
+            onEndDateChange={setEndDate}
+          />
         </div>
 
         <div className="mb-6 flex items-center justify-end gap-2">
@@ -344,26 +379,25 @@ export const TimeOffPage: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-medium mb-1">Start Date</label>
-                  <input
-                    type="date"
+                  <DatePickerSingle
                     value={formData.start_date}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setFormData((prev) => ({ ...prev, start_date: val, end_date: prev.end_date < val ? val : prev.end_date }));
-                    }}
-                    className="w-full px-3 py-2 border rounded"
+                    onChange={(val) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        start_date: val,
+                        end_date: prev.end_date < val ? val : prev.end_date,
+                      }))
+                    }
                     required
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium mb-1">End Date</label>
-                  <input
-                    type="date"
+                  <DatePickerSingle
                     value={formData.end_date}
                     min={formData.start_date}
-                    onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
-                    className="w-full px-3 py-2 border rounded"
+                    onChange={(val) => setFormData({ ...formData, end_date: val })}
                     required
                   />
                 </div>
@@ -447,11 +481,11 @@ export const TimeOffPage: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-medium mb-1">Date</label>
-                  <input
-                    type="date"
+                  <DatePickerSingle
                     value={editData.request_date}
-                    onChange={(e) => setEditData((prev) => (prev ? { ...prev, request_date: e.target.value } : prev))}
-                    className="w-full px-3 py-2 border rounded"
+                    onChange={(val) =>
+                      setEditData((prev) => (prev ? { ...prev, request_date: val } : prev))
+                    }
                     required
                   />
                 </div>

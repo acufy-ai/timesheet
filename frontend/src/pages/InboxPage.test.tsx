@@ -17,9 +17,12 @@ import type { IngestionTimesheetSummary } from '@/types';
 
 const mocks = vi.hoisted(() => ({
   useAuth: vi.fn(),
+  useIsManager: vi.fn(),
+  useIsViewer: vi.fn(),
   useBulkReprocessEmails: vi.fn(),
   useBulkDeleteIngestedEmails: vi.fn(),
   useClients: vi.fn(),
+  useCreateClient: vi.fn(),
   useCreateClientFromDomain: vi.fn(),
   useDeleteIngestedEmail: vi.fn(),
   useFetchJobStatus: vi.fn(),
@@ -29,25 +32,48 @@ const mocks = vi.hoisted(() => ({
   useReprocessSkippedEmails: vi.fn(),
   useSkippedEmails: vi.fn(),
   useTriggerFetchEmails: vi.fn(),
+  useUpdateIngestionTimesheetData: vi.fn(),
+  useAssignableUsers: vi.fn(),
+  useAssignChainCandidate: vi.fn(),
+  useMyPreferences: vi.fn(),
+  useUpdateMyPreferences: vi.fn(),
   reprocessMutate: vi.fn(),
   cascadeMutate: vi.fn(),
+  createClientMutate: vi.fn(),
+  updateTimesheetMutate: vi.fn(),
+  updatePreferencesMutate: vi.fn(),
 }));
 
-vi.mock('@/hooks', () => ({
-  useAuth: mocks.useAuth,
-  useBulkReprocessEmails: mocks.useBulkReprocessEmails,
-  useBulkDeleteIngestedEmails: mocks.useBulkDeleteIngestedEmails,
-  useClients: mocks.useClients,
-  useCreateClientFromDomain: mocks.useCreateClientFromDomain,
-  useDeleteIngestedEmail: mocks.useDeleteIngestedEmail,
-  useFetchJobStatus: mocks.useFetchJobStatus,
-  useIngestionTimesheets: mocks.useIngestionTimesheets,
-  useMailboxes: mocks.useMailboxes,
-  useReprocessIngestionEmail: mocks.useReprocessIngestionEmail,
-  useReprocessSkippedEmails: mocks.useReprocessSkippedEmails,
-  useSkippedEmails: mocks.useSkippedEmails,
-  useTriggerFetchEmails: mocks.useTriggerFetchEmails,
-}));
+// importOriginal so any hook the page references but this test
+// doesn't explicitly stub falls back to the real export rather
+// than blowing up at render time.
+vi.mock('@/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks')>();
+  return {
+    ...actual,
+    useAuth: mocks.useAuth,
+    useIsManager: mocks.useIsManager,
+    useIsViewer: mocks.useIsViewer,
+    useBulkReprocessEmails: mocks.useBulkReprocessEmails,
+    useBulkDeleteIngestedEmails: mocks.useBulkDeleteIngestedEmails,
+    useClients: mocks.useClients,
+    useCreateClient: mocks.useCreateClient,
+    useCreateClientFromDomain: mocks.useCreateClientFromDomain,
+    useDeleteIngestedEmail: mocks.useDeleteIngestedEmail,
+    useFetchJobStatus: mocks.useFetchJobStatus,
+    useIngestionTimesheets: mocks.useIngestionTimesheets,
+    useMailboxes: mocks.useMailboxes,
+    useReprocessIngestionEmail: mocks.useReprocessIngestionEmail,
+    useReprocessSkippedEmails: mocks.useReprocessSkippedEmails,
+    useSkippedEmails: mocks.useSkippedEmails,
+    useTriggerFetchEmails: mocks.useTriggerFetchEmails,
+    useUpdateIngestionTimesheetData: mocks.useUpdateIngestionTimesheetData,
+    useAssignableUsers: mocks.useAssignableUsers,
+    useAssignChainCandidate: mocks.useAssignChainCandidate,
+    useMyPreferences: mocks.useMyPreferences,
+    useUpdateMyPreferences: mocks.useUpdateMyPreferences,
+  };
+});
 
 vi.mock('@/components', () => ({
   Badge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -99,6 +125,9 @@ const setupHooks = (opts: {
   );
 
   mocks.useAuth.mockReturnValue({ user: { tenant_id: TENANT_ID, role: 'ADMIN' } });
+  // Default: shortcut not visible. Per-test override flips these on.
+  mocks.useIsManager.mockReturnValue(false);
+  mocks.useIsViewer.mockReturnValue(false);
   mocks.useIngestionTimesheets.mockReturnValue({
     data: skippedTimesheets,
     isLoading: false,
@@ -133,6 +162,28 @@ const setupHooks = (opts: {
       cascaded_count: 0,
     }),
     mutate: vi.fn(),
+    isPending: false,
+  });
+  mocks.useCreateClient.mockReturnValue({
+    mutateAsync: mocks.createClientMutate.mockResolvedValue({ id: 555, name: 'Stub' }),
+    mutate: vi.fn(),
+    isPending: false,
+  });
+  mocks.useUpdateIngestionTimesheetData.mockReturnValue({
+    mutateAsync: mocks.updateTimesheetMutate.mockResolvedValue({ status: 'updated' }),
+    mutate: vi.fn(),
+    isPending: false,
+  });
+  mocks.useAssignableUsers.mockReturnValue({ data: [], isLoading: false });
+  mocks.useAssignChainCandidate.mockReturnValue({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn().mockResolvedValue({}),
+    isPending: false,
+  });
+  mocks.useMyPreferences.mockReturnValue({ data: undefined, isLoading: false });
+  mocks.useUpdateMyPreferences.mockReturnValue({
+    mutate: mocks.updatePreferencesMutate,
+    mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   });
 };
@@ -370,6 +421,13 @@ describe('InboxPage — table layout', () => {
     });
     setupHooks({ skippedCount: 0 });
     mocks.useIngestionTimesheets.mockReturnValue({ data: [row], isLoading: false });
+    // Pre-seed server prefs so InboxPage hydrates into table mode (the
+    // tests in this block assert on table-specific markup like column
+    // headers). Cards mode is the default for first-time visitors.
+    mocks.useMyPreferences.mockReturnValue({
+      data: { inbox_view_mode: 'table' },
+      isLoading: false,
+    });
     renderPage();
   };
 
@@ -385,31 +443,35 @@ describe('InboxPage — table layout', () => {
     }
   });
 
-  it('shows the inline "Create from <domain>" cascade button when no client is assigned and the sender is on a real domain', () => {
+  it('shows the inline cascade-create button when no client is assigned and the sender is on a real domain', () => {
     renderWithRow({ client_name: null, sender_email: 'r.rajendran3@dxc.com' });
-    const button = screen.getByRole('button', { name: /Create from\s+dxc\.com/i });
+    // Button label is now "+ Add client from <domain>" (dashed-outline
+    // affordance pattern). Match by the domain since variant B keeps
+    // it in the accessible name.
+    const button = screen.getByRole('button', { name: /Add client from\s+dxc\.com/i });
     expect(button).toBeInTheDocument();
   });
 
-  it('shows the static "Needs client" pill on personal-domain rows (no cascade is possible)', () => {
+  it('shows the dashed-outline "Add client" button on personal-domain rows', () => {
     renderWithRow({ client_name: null, sender_email: 'forwarder@gmail.com' });
-    expect(screen.getByText(/Needs client/i)).toBeInTheDocument();
-    // And the Create-from button is suppressed.
-    expect(screen.queryByRole('button', { name: /Create from\s+gmail\.com/i })).toBeNull();
+    // Personal-domain rows surface the inline picker via "+ Add client";
+    // the non-personal-domain cascade variant is suppressed for gmail/etc.
+    expect(screen.getByRole('button', { name: /^Add client$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add client from\s+gmail\.com/i })).toBeNull();
   });
 
-  it('shows "Needs employee" amber pill when no employee is assigned', () => {
+  it('shows the dashed-outline "Add employee" button when no employee is assigned', () => {
     renderWithRow({
       client_name: null,
       employee_name: null,
       extracted_employee_name: null,
     });
-    expect(screen.getByText(/Needs employee/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Add employee$/i })).toBeInTheDocument();
   });
 
   it('opens the cascade popover when the inline create button is clicked', () => {
     renderWithRow({ client_name: null, sender_email: 'alice@dxc.com' });
-    const button = screen.getByRole('button', { name: /Create from\s+dxc\.com/i });
+    const button = screen.getByRole('button', { name: /Add client from\s+dxc\.com/i });
     fireEvent.click(button);
 
     // The popover renders as a dialog with the matching aria-label.
@@ -419,5 +481,255 @@ describe('InboxPage — table layout', () => {
     expect(input.value).toBe('DXC');
     // The primary button shows the "Create" label since no existing client matches.
     expect(screen.getByRole('button', { name: /Create "DXC"/i })).toBeInTheDocument();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Inline client picker — editable "Create new client" flow on personal-domain rows
+// ───────────────────────────────────────────────────────────────────────
+
+describe('InboxPage — inline picker editable create flow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  const renderPersonalDomainRow = (extractedClientName: string | null) => {
+    const row = makeSkippedSummary({
+      id: 42,
+      email_id: 9000,
+      status: 'pending',
+      subject: 'Weekly timesheet',
+      sender_name: 'Mary K.',
+      sender_email: 'mary@gmail.com',
+      client_name: null,
+      extracted_client_name: extractedClientName,
+      received_at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    setupHooks({ skippedCount: 0 });
+    mocks.useIngestionTimesheets.mockReturnValue({ data: [row], isLoading: false });
+    mocks.useClients.mockReturnValue({
+      data: [{ id: 1, name: 'Acme Corp' }],
+      isLoading: false,
+    });
+    renderPage();
+  };
+
+  it('reveals an editable name field prefilled with the AI suggestion when Create is clicked', () => {
+    renderPersonalDomainRow('Webilent Tech');
+
+    // Open the inline picker via the "+ Add client" dashed-outline button.
+    fireEvent.click(screen.getByRole('button', { name: /^Add client$/i }));
+
+    // Click the suggestion-create button — should NOT call the mutation yet.
+    fireEvent.click(screen.getByRole('button', { name: /Create new client \(suggested: "Webilent Tech"\)/i }));
+    expect(mocks.createClientMutate).not.toHaveBeenCalled();
+
+    // Editable input is revealed, prefilled with the suggestion.
+    const input = screen.getByPlaceholderText(/Client name/i) as HTMLInputElement;
+    expect(input.value).toBe('Webilent Tech');
+
+    // Primary action button switches to "Create & assign", not auto-create.
+    expect(screen.getByRole('button', { name: /Create & assign/i })).toBeInTheDocument();
+    // Back button lets the user retreat to the picker.
+    expect(screen.getByRole('button', { name: /^Back$/i })).toBeInTheDocument();
+  });
+
+  it('lets the user replace the suggestion and uses the typed name on confirm', async () => {
+    renderPersonalDomainRow('Webilent Tech');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Add client$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create new client/i }));
+
+    const input = screen.getByPlaceholderText(/Client name/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'My Custom Client' } });
+    expect(input.value).toBe('My Custom Client');
+
+    fireEvent.click(screen.getByRole('button', { name: /Create & assign/i }));
+    await Promise.resolve();
+
+    expect(mocks.createClientMutate).toHaveBeenCalledWith({ name: 'My Custom Client' });
+  });
+
+  it('falls back to the domain-derived guess when no AI extraction is present', () => {
+    renderPersonalDomainRow(null); // extracted_client_name = null
+
+    fireEvent.click(screen.getByRole('button', { name: /^Add client$/i }));
+    // gmail.com domain -> Gmail suggestion (title-cased, >4 chars)
+    expect(screen.getByRole('button', { name: /Create new client \(suggested: "Gmail"\)/i })).toBeInTheDocument();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Cards/Table view toggle + card-mode rendering
+// ───────────────────────────────────────────────────────────────────────
+
+describe('InboxPage — view mode toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  const renderTwoRows = (preferenceOverride?: 'cards' | 'table') => {
+    const rows = [
+      makeSkippedSummary({
+        id: 1,
+        email_id: 1000,
+        status: 'pending',
+        subject: 'April timesheet',
+        sender_name: 'Alice',
+        sender_email: 'alice@dxc.com',
+        client_name: 'DXC',
+        employee_name: 'Alice',
+      }),
+      makeSkippedSummary({
+        id: 2,
+        email_id: 1001,
+        status: 'pending',
+        subject: 'May timesheet',
+        sender_name: 'Bob',
+        sender_email: 'bob@acme.com',
+        client_name: 'Acme',
+        employee_name: 'Bob',
+      }),
+    ];
+    setupHooks({ skippedCount: 0 });
+    mocks.useIngestionTimesheets.mockReturnValue({ data: rows, isLoading: false });
+    if (preferenceOverride) {
+      mocks.useMyPreferences.mockReturnValue({
+        data: { inbox_view_mode: preferenceOverride },
+        isLoading: false,
+      });
+    }
+    renderPage();
+  };
+
+  it('defaults new users to Cards view (no server pref, no localStorage)', () => {
+    renderTwoRows();
+    expect(screen.getByTestId('inbox-cards-view')).toBeInTheDocument();
+    expect(screen.getAllByTestId('inbox-card').length).toBe(2);
+    // Table mode is suppressed: no column headers visible.
+    expect(screen.queryByRole('columnheader', { name: /Subject/i })).toBeNull();
+  });
+
+  it('renders both Cards and Table toggle buttons in the header', () => {
+    renderTwoRows();
+    const toggle = screen.getByTestId('inbox-view-toggle');
+    expect(within(toggle).getByRole('tab', { name: /Cards/i })).toBeInTheDocument();
+    expect(within(toggle).getByRole('tab', { name: /Table/i })).toBeInTheDocument();
+  });
+
+  it('switches to Table view when the Table toggle is clicked and persists the choice', async () => {
+    renderTwoRows();
+    const toggle = screen.getByTestId('inbox-view-toggle');
+    fireEvent.click(within(toggle).getByRole('tab', { name: /Table/i }));
+
+    // Table renders with column headers; cards are gone.
+    expect(screen.getByRole('columnheader', { name: /^Subject$/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('inbox-cards-view')).toBeNull();
+
+    // localStorage was updated for the fast-path fallback on next mount.
+    expect(window.localStorage.getItem('inbox.viewMode')).toBe('table');
+    // The server-persistence mutation was fired so the choice follows
+    // the user across browsers.
+    await Promise.resolve();
+    expect(mocks.updatePreferencesMutate).toHaveBeenCalledWith({ inbox_view_mode: 'table' });
+  });
+
+  it('honors a server-persisted preference on mount (table mode forced)', () => {
+    renderTwoRows('table');
+    expect(screen.queryByTestId('inbox-cards-view')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: /^Subject$/i })).toBeInTheDocument();
+  });
+
+  it('honors a localStorage fallback when no server pref is present', () => {
+    window.localStorage.setItem('inbox.viewMode', 'table');
+    renderTwoRows();
+    // No server preference, but localStorage said 'table' — hydrate into table mode.
+    expect(screen.queryByTestId('inbox-cards-view')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: /^Subject$/i })).toBeInTheDocument();
+  });
+});
+
+describe('InboxPage — card-mode rendering variants', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  it('renders the dashed-outline "Add client" button on personal-domain card rows', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIngestionTimesheets.mockReturnValue({
+      data: [makeSkippedSummary({
+        id: 7, email_id: 7000, status: 'pending', subject: 'X',
+        sender_email: 'forwarder@gmail.com', client_name: null,
+      })],
+      isLoading: false,
+    });
+    renderPage();
+    // Cards view (default). The Add client button should render
+    // inline inside the card body.
+    expect(screen.getByTestId('inbox-cards-view')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Add client$/i })).toBeInTheDocument();
+  });
+
+  it('renders the "+ Add client from <domain>" button on real-domain card rows', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIngestionTimesheets.mockReturnValue({
+      data: [makeSkippedSummary({
+        id: 8, email_id: 8000, status: 'pending', subject: 'X',
+        sender_email: 'alice@dxc.com', client_name: null,
+      })],
+      isLoading: false,
+    });
+    renderPage();
+    expect(screen.getByRole('button', { name: /Add client from\s+dxc\.com/i })).toBeInTheDocument();
+  });
+
+  it('omits the Delete icon on approved/rejected cards (final state)', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIngestionTimesheets.mockReturnValue({
+      data: [makeSkippedSummary({
+        id: 9, email_id: 9000, status: 'approved', subject: 'Final',
+        sender_email: 'alice@dxc.com', client_name: 'DXC', employee_name: 'Alice',
+      })],
+      isLoading: false,
+    });
+    renderPage();
+    expect(screen.getByTestId('inbox-card')).toBeInTheDocument();
+    // Open should be present, Delete should be hidden for final-state cards.
+    expect(screen.getByRole('button', { name: /^Open submission/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Delete email/i })).toBeNull();
+  });
+});
+
+describe('InboxPage — Team Timesheets shortcut role gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  it('renders the shortcut for MANAGER role', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIsManager.mockReturnValue(true);
+    mocks.useIsViewer.mockReturnValue(false);
+    renderPage();
+    expect(screen.getByRole('button', { name: /Approved Timesheets/i })).toBeInTheDocument();
+  });
+
+  it('renders the shortcut for VIEWER role', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIsManager.mockReturnValue(false);
+    mocks.useIsViewer.mockReturnValue(true);
+    renderPage();
+    expect(screen.getByRole('button', { name: /Approved Timesheets/i })).toBeInTheDocument();
+  });
+
+  it('does not render the shortcut for EMPLOYEE reviewers', () => {
+    setupHooks({ skippedCount: 0 });
+    mocks.useIsManager.mockReturnValue(false);
+    mocks.useIsViewer.mockReturnValue(false);
+    renderPage();
+    expect(screen.queryByRole('button', { name: /Approved Timesheets/i })).toBeNull();
   });
 });

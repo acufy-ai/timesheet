@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Lock, Mail } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { CheckCircle2, Eye, EyeOff, Lock, Mail } from 'lucide-react';
 
 import { Card, CardContent } from '@/components';
 import { useAuth } from '@/hooks';
@@ -23,11 +23,16 @@ const getErrorMessage = (error: unknown): string => {
 const EMAIL_NOT_VERIFIED_MSG =
   'Your account has not been verified yet. Please check your email for the verification link.';
 
-const getPostLoginRoute = (role?: string) => (role === 'PLATFORM_ADMIN' ? '/platform/tenants' : '/dashboard');
+// Same landing for everyone after login. The /dashboard route's
+// switcher renders PlatformDashboardPage for PA, DashboardPage for
+// everyone else. Kept as a function so re-introducing role-based
+// landings later is a single-line change.
+const getPostLoginRoute = (_role?: string) => '/dashboard';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [DevQuickLogin, setDevQuickLogin] = useState<React.FC<{ isLoading: boolean; onQuickLogin: (email: string, password: string) => void }> | null>(null);
@@ -36,6 +41,15 @@ export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const roleHandoffAttemptedRef = useRef(false);
+
+  // Flash banner after a successful /set-password redirect.
+  const passwordSetFlash = useMemo(() => searchParams.get('password_set'), [searchParams]);
+  const flashMessage =
+    passwordSetFlash === 'invite'
+      ? 'Password set. Sign in with your new password.'
+      : passwordSetFlash === 'reset'
+      ? 'Password reset. Sign in with your new password.'
+      : null;
 
   useEffect(() => {
     if (hasDevLogin) {
@@ -48,15 +62,22 @@ export const LoginPage: React.FC = () => {
   }, []);
 
   // ?role-handoff=<token>: exchange for an independent session, then strip the param.
+  // ?next=<path>: optional in-app destination after the exchange. We
+  // validate that it's a same-origin relative path so a hostile inbound
+  // link can't redirect a freshly handed-off session to an external URL.
   useEffect(() => {
     const roleHandoffToken = searchParams.get('role-handoff');
     if (!roleHandoffToken || roleHandoffAttemptedRef.current) return;
     roleHandoffAttemptedRef.current = true;
+    const rawNext = searchParams.get('next');
+    const isSafeRelative = (p: string | null): p is string =>
+      Boolean(p) && p!.startsWith('/') && !p!.startsWith('//');
+    const nextPath = isSafeRelative(rawNext) ? rawNext : null;
     setIsLoading(true);
     loginWithRoleHandoff(roleHandoffToken)
       .then((nextUser) => {
         setSearchParams({}, { replace: true });
-        navigate(getPostLoginRoute(nextUser.role), { replace: true });
+        navigate(nextPath ?? getPostLoginRoute(nextUser.role), { replace: true });
       })
       .catch((err: unknown) => {
         setError(getErrorMessage(err) || 'Could not open the requested portal.');
@@ -131,27 +152,6 @@ export const LoginPage: React.FC = () => {
 
           <div className="relative z-10">
             <img src={themeVariant.logoPath} alt="Acufy AI" style={{ height: 64, width: 'auto' }} />
-            <p className="mt-6 max-w-md text-base leading-relaxed text-slate-400">
-              Intelligent timesheet operations — tracking, ingestion, and approval workflows unified in one platform.
-            </p>
-          </div>
-
-          {/* Bottom card */}
-          <div className="relative z-10 rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
-            <p className="text-sm leading-relaxed text-white/80">
-              Fast reviewer workflow, AI-powered ingestion, and role-based access in one workspace built for modern IT consulting teams.
-            </p>
-          </div>
-
-          {/* Sparkle particles */}
-          <div className="absolute right-20 top-32">
-            <svg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="20" r="3" fill="#0EA5E9" opacity="0.7" />
-              <circle cx="30" cy="10" r="2" fill="#14B8A6" opacity="0.6" />
-              <circle cx="40" cy="30" r="2.5" fill="#2DD4BF" opacity="0.5" />
-              <path d="M20 5 L22 0 L24 5 L29 7 L24 9 L22 14 L20 9 L15 7 Z" fill="#0EA5E9" opacity="0.6" />
-              <path d="M45 18 L46.5 14 L48 18 L52 19.5 L48 21 L46.5 25 L45 21 L41 19.5 Z" fill="#2DD4BF" opacity="0.4" />
-            </svg>
           </div>
         </section>
 
@@ -159,14 +159,18 @@ export const LoginPage: React.FC = () => {
         <section className="flex items-center justify-center bg-card px-6 py-10">
           <Card className="w-full max-w-[420px] border-0 shadow-none">
             <CardContent className="p-0">
-              <div className="mb-8">
-                {/* Mobile logo */}
-                <div className="mb-6 lg:hidden">
-                  <AcufyLogo />
-                </div>
-                <h2 className="text-2xl font-semibold tracking-tight text-foreground">Welcome</h2>
-                <p className="mt-2 text-sm text-muted-foreground">Sign in to your account</p>
+              {/* Mobile logo */}
+              <div className="mb-6 lg:hidden">
+                <AcufyLogo />
               </div>
+              <h2 className="mb-8 text-2xl font-semibold tracking-tight text-foreground">Sign in</h2>
+
+              {flashMessage && (
+                <div className="mb-5 flex items-start gap-3 rounded-lg bg-emerald-500/10 px-3 py-2.5 text-sm text-emerald-700 dark:text-emerald-400">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <span>{flashMessage}</span>
+                </div>
+              )}
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
@@ -189,13 +193,30 @@ export const LoginPage: React.FC = () => {
                   <div className="relative">
                     <Lock className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <input
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder="********"
-                      className="field-input pl-11"
+                      className="field-input pl-11 pr-11"
                       required
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  <div className="mt-2 flex justify-end">
+                    <Link
+                      to="/forgot-password"
+                      className="text-xs font-medium text-primary hover:underline"
+                    >
+                      Forgot password?
+                    </Link>
                   </div>
                 </div>
 

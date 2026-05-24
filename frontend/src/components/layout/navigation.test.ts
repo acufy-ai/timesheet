@@ -40,10 +40,12 @@ describe('buildNavigation', () => {
     });
 
     it('shows admin-only nav items', () => {
+      // Mailboxes no longer has a top-bar entry; it lives under
+      // Settings -> Integrations -> Mailboxes.
       const labels = flatten(buildNavigation(admin, true));
       expect(labels).toEqual(expect.arrayContaining([
         'Dashboard', 'My Time', 'Time Off', 'Calendar',
-        'Users', 'Clients', 'Audit Trail', 'Settings', 'Mailboxes',
+        'Users', 'Clients', 'Audit Trail', 'Settings',
       ]));
     });
   });
@@ -77,6 +79,29 @@ describe('buildNavigation', () => {
       expect(labels).not.toContain('Clients');
       expect(labels).not.toContain('Audit Trail');
       expect(labels).not.toContain('Mailboxes');
+    });
+
+    it('flattens Operations into top-level entries for a pure manager', () => {
+      // Pure managers should not see an "Operations" dropdown wrapping
+      // Approvals + My Team; each entry lives in its own section so the
+      // topbar renders them as flat links.
+      const sections = buildNavigation(manager, true);
+      const titles = sections.map((s) => s.title);
+      expect(titles).not.toContain('Operations');
+      expect(titles).toContain('Approvals');
+      expect(titles).toContain('My Team');
+    });
+  });
+
+  describe('admin-manager grouping', () => {
+    const admin = makeUser({ role: 'ADMIN', can_review: false });
+
+    it('keeps Operations grouped for admin', () => {
+      // Admins still get the dropdown because their Operations menu
+      // has 4+ items (Users, Clients, Audit Trail, Settings).
+      const sections = buildNavigation(admin, true);
+      const titles = sections.map((s) => s.title);
+      expect(titles).toContain('Operations');
     });
   });
 

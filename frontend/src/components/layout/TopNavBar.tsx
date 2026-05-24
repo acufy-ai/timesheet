@@ -16,6 +16,7 @@ import { authAPI } from '@/api/endpoints';
 
 import { AcufyLogo, NeuralPrismIcon } from '@/components/layout/AcufyLogo';
 import { ThemePicker } from '@/components/layout/ThemePicker';
+import { FrontendSwitcher } from '@/components/layout/FrontendSwitcher';
 import { TopbarTimer } from '@/components/timer/TopbarTimer';
 import { buildNavigation } from '@/components/layout/navigation';
 import { cn } from '@/lib/utils';
@@ -68,9 +69,11 @@ const SwitchPortalChip: React.FC<{ targetRole: UserRole }> = ({ targetRole }) =>
 };
 
 /* ── Small helper: renders a single nav link (no dropdown) ── */
-const SingleNavLink: React.FC<{ to: string; label: string; onClick?: () => void }> = ({ to, label, onClick }) => {
+const SingleNavLink: React.FC<{ to: string; label: string; match?: string[]; onClick?: () => void }> = ({ to, label, match, onClick }) => {
   const location = useLocation();
-  const isActive = location.pathname === to;
+  const isActive =
+    location.pathname === to ||
+    (match?.some((prefix) => location.pathname.startsWith(prefix)) ?? false);
   return (
     <NavLink
       to={to}
@@ -237,7 +240,7 @@ export const TopNavBar: React.FC = () => {
     sections.flatMap((section) => {
       if (section.items.length === 1 || section.title === 'Workspace') {
         return section.items.map((item) => (
-          <SingleNavLink key={item.to} to={item.to} label={item.label} onClick={onNavigate} />
+          <SingleNavLink key={item.to} to={item.to} label={item.label} match={item.match} onClick={onNavigate} />
         ));
       }
       return [<NavDropdown key={section.title} section={section} onNavigate={onNavigate} />];
@@ -278,6 +281,9 @@ export const TopNavBar: React.FC = () => {
             <div className="hidden sm:block mr-2">
               <TopbarTimer />
             </div>
+
+            {/* Frontend switcher (dev/preview) */}
+            <FrontendSwitcher />
 
             {/* Theme picker */}
             <ThemePicker />
@@ -360,7 +366,7 @@ export const TopNavBar: React.FC = () => {
                 type="button"
                 onClick={() => { setProfileOpen((v) => !v); setNotificationsOpen(false); }}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold text-white transition hover:opacity-85"
-                style={{ background: 'linear-gradient(135deg, #0EA5E9, #14B8A6)' }}
+                style={{ background: 'linear-gradient(135deg, hsl(var(--primary)), var(--accent-hover, #14B8A6))' }}
                 aria-label="Profile"
               >
                 {initials}

@@ -9,6 +9,7 @@ import { Client, Project, Task } from '@/types';
 
 type ClientFormState = {
   name: string;
+  client_type: 'internal' | 'external';
   quickbooks_customer_id: string;
   contact_name: string;
   contact_email: string;
@@ -17,6 +18,7 @@ type ClientFormState = {
 
 const emptyClientForm = (): ClientFormState => ({
   name: '',
+  client_type: 'external',
   quickbooks_customer_id: '',
   contact_name: '',
   contact_email: '',
@@ -115,6 +117,7 @@ export const ClientManagementPage: React.FC = () => {
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
 
   const [clientSearch, setClientSearch] = useState('');
+  const [clientTypeFilter, setClientTypeFilter] = useState<'ALL' | 'internal' | 'external'>('ALL');
   const [projectSearch, setProjectSearch] = useState('');
   const [projectStatusFilter, setProjectStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>(() => {
     const status = searchParams.get('status');
@@ -169,11 +172,12 @@ export const ClientManagementPage: React.FC = () => {
   ).sort();
 
   const filteredClients = (clients ?? []).filter((client: Client) => {
-    if (!normalizedClientSearch) return true;
-    return (
+    const matchesSearch = !normalizedClientSearch || (
       client.name.toLowerCase().includes(normalizedClientSearch) ||
       (client.quickbooks_customer_id ?? '').toLowerCase().includes(normalizedClientSearch)
     );
+    const matchesType = clientTypeFilter === 'ALL' || client.client_type === clientTypeFilter;
+    return matchesSearch && matchesType;
   });
 
   const selectedClient = (clients ?? []).find((client: Client) => client.id === selectedClientId) ?? null;
@@ -230,6 +234,7 @@ export const ClientManagementPage: React.FC = () => {
     setEditingClient(client);
     setClientForm({
       name: client.name,
+      client_type: (client.client_type as 'internal' | 'external') || 'external',
       quickbooks_customer_id: client.quickbooks_customer_id || '',
       contact_name: client.contact_name || '',
       contact_email: client.contact_email || '',
@@ -362,6 +367,7 @@ export const ClientManagementPage: React.FC = () => {
     try {
       const payload = {
         name: clientForm.name.trim(),
+        client_type: clientForm.client_type,
         quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
         contact_name: clientForm.contact_name.trim() || undefined,
         contact_email: clientForm.contact_email.trim() || undefined,
@@ -502,7 +508,7 @@ export const ClientManagementPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="mb-4">
+            <div className="flex flex-wrap items-center gap-3 mb-4">
               <SearchInput
                 value={clientSearch}
                 onChange={setClientSearch}
@@ -519,6 +525,15 @@ export const ClientManagementPage: React.FC = () => {
                 placeholder="Search clients by name or QuickBooks ID..."
                 className="w-full md:w-96 px-3 py-2 border rounded-lg"
               />
+              <select
+                value={clientTypeFilter}
+                onChange={(e) => setClientTypeFilter(e.target.value as 'ALL' | 'internal' | 'external')}
+                className="px-3 py-2 border rounded-lg text-sm"
+              >
+                <option value="ALL">All types</option>
+                <option value="external">External</option>
+                <option value="internal">Internal</option>
+              </select>
             </div>
 
             <BulkSelectBar
@@ -547,6 +562,7 @@ export const ClientManagementPage: React.FC = () => {
                       />
                     </th>
                     <th className="text-left px-4 py-3 font-semibold">Client Name</th>
+                    <th className="text-left px-4 py-3 font-semibold">Type</th>
                     <th className="text-left px-4 py-3 font-semibold">QuickBooks Customer ID</th>
                     <th className="text-right px-4 py-3 font-semibold">Projects</th>
                     <th className="text-right px-4 py-3 w-16"></th>
@@ -555,7 +571,7 @@ export const ClientManagementPage: React.FC = () => {
                 <tbody className="divide-y">
                   {filteredClients.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="text-center py-8 text-muted-foreground">
+                      <td colSpan={6} className="text-center py-8 text-muted-foreground">
                         No clients found
                       </td>
                     </tr>
@@ -577,7 +593,12 @@ export const ClientManagementPage: React.FC = () => {
                       <td className="px-4 py-3">
                         <div className="font-semibold text-primary underline underline-offset-2">{client.name}</div>
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{client.quickbooks_customer_id || '—'}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${client.client_type === 'internal' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'}`}>
+                          {client.client_type === 'internal' ? 'Internal' : 'External'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{client.quickbooks_customer_id || 'N/A'}</td>
                       <td className="px-4 py-3 text-right text-muted-foreground">
                         {(projects ?? []).filter((project: Project) => project.client_id === client.id).length}
                       </td>
@@ -682,7 +703,7 @@ export const ClientManagementPage: React.FC = () => {
                     <div className="flex-1">
                       <h3 className="font-semibold text-base">{project.name}</h3>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Code: {project.code || '—'} • Rate: ${project.billable_rate} • Hours: {project.estimated_hours || '—'}
+                        Code: {project.code || 'N/A'} • Rate: ${project.billable_rate} • Hours: {project.estimated_hours || 'N/A'}
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
@@ -962,6 +983,29 @@ export const ClientManagementPage: React.FC = () => {
                   className="w-full px-3 py-2 border rounded"
                   placeholder="Acme Corp"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Client Type</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setClientForm((c) => ({ ...c, client_type: 'external' }))}
+                    className={`flex-1 px-3 py-2 rounded border text-sm font-medium transition-colors ${clientForm.client_type === 'external' ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+                  >
+                    External
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClientForm((c) => ({ ...c, client_type: 'internal' }))}
+                    className={`flex-1 px-3 py-2 rounded border text-sm font-medium transition-colors ${clientForm.client_type === 'internal' ? 'bg-blue-600 text-white border-blue-600' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+                  >
+                    Internal
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {clientForm.client_type === 'internal' ? 'Internal: your own company (overhead, admin work).' : 'External: a paying client your company bills.'}
+                </p>
               </div>
 
               <div>

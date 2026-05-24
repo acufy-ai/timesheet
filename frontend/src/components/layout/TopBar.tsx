@@ -29,7 +29,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobile }) => {
       '/my-time': 'My Time',
       '/approvals': 'Approvals',
       '/ingestion/inbox': 'Inbox',
-      '/mailboxes': 'Mailboxes',
       '/user-management': 'Users',
       '/client-management': 'Clients',
       '/profile': 'Profile',
@@ -236,7 +235,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobile }) => {
                 setNotificationsOpen(false);
               }}
               className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold text-white transition hover:opacity-85"
-              style={{ background: 'linear-gradient(135deg, #0EA5E9, #14B8A6)' }}
+              style={{ background: 'linear-gradient(135deg, hsl(var(--primary)), var(--accent-hover, #14B8A6))' }}
               aria-label="Open profile menu"
               aria-expanded={profileOpen}
             >

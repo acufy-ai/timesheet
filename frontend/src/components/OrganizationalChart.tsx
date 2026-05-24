@@ -266,7 +266,7 @@ function ExternalList({ users, searchQuery }: { users: User[]; searchQuery: stri
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-        External employees — {users.length} total
+        External employees ({users.length} total)
       </p>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
         {filtered.map(user => (

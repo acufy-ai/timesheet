@@ -25,6 +25,10 @@ export interface User {
   project_ids?: number[];
   default_client_id?: number | null;
   phones?: string[];
+  // Per-user UI preferences. Free-form on purpose so the frontend can
+  // add new keys without backend churn. Reserved keys so far:
+  //   inbox_view_mode: 'cards' | 'table'
+  preferences?: Record<string, unknown>;
   timesheet_locked?: boolean;
   timesheet_locked_reason?: string | null;
   created_at: string;
@@ -33,7 +37,10 @@ export interface User {
 
 export interface UserCreateResponse {
   user: User;
-  temporary_password: string;
+  // Null when Auth0 owns the user's password (the user picks their own
+  // via the invitation link). String when the legacy bcrypt path was
+  // used and the admin needs to relay the temp password manually.
+  temporary_password: string | null;
   // True only when the backend queued a verification email on this
   // create call. False for external users (no login) and for internals
   // saved without an email address.
@@ -69,12 +76,20 @@ export interface MessageResponse {
 export interface Client {
   id: number;
   name: string;
+  client_type: 'internal' | 'external';
   quickbooks_customer_id: string | null;
   contact_name: string | null;
   contact_email: string | null;
   contact_phone: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface UserClientAssignment {
+  id: number;
+  client_id: number;
+  client_name: string;
+  client_type: 'internal' | 'external';
 }
 
 // Project types
@@ -124,6 +139,31 @@ export interface LeaveType {
   created_at: string;
   updated_at: string;
 }
+
+export type HolidayType = 'PUBLIC' | 'COMPANY';
+
+export interface Holiday {
+  id: number;
+  tenant_id: number;
+  date: string;
+  name: string;
+  holiday_type: HolidayType;
+  country: string | null;
+  created_by: number | null;
+  created_at: string;
+}
+
+export interface HolidaySuggestion {
+  date: string;
+  name: string;
+  country: string;
+}
+
+export interface HolidaySuggestionsResponse {
+  country: string;
+  year: number;
+  holidays: HolidaySuggestion[];
+}
 export type TimeOffStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
 
 export interface TimeEntry {
@@ -132,6 +172,9 @@ export interface TimeEntry {
   project_id: number;
   task_id?: number | null;
   entry_date: string;
+  /** Optional explicit time block, wire-format HH:MM:SS. Both nullable. */
+  start_time?: string | null;
+  end_time?: string | null;
   hours: string | number;
   description: string;
   /** Private free-text notes for the entry owner. Not shown in approvals/exports. */
@@ -144,6 +187,12 @@ export interface TimeEntry {
   approved_at: string | null;
   rejection_reason: string | null;
   quickbooks_time_activity_id: string | null;
+  /**
+   * Set on entries materialised from an inbox-approved
+   * IngestionTimesheet. Lets the rollup view swap the Project
+   * label for the Client name on inbox-derived rows.
+   */
+  ingestion_timesheet_id?: string | null;
   created_at: string;
   updated_at: string;
   user?: User;
@@ -386,6 +435,12 @@ export interface Tenant {
   ingestion_enabled: boolean;
   max_mailboxes?: number | null;
   timezone?: string | null;
+  // Branding. has_logo true means a logo has been uploaded and is
+  // available via GET /admin/tenant/logo. The frontend fetches it
+  // through the auth-attached API client; the bytes never go through
+  // an unauthenticated static mount.
+  has_logo?: boolean;
+  logo_mime_type?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -436,6 +491,8 @@ export interface Mailbox {
   linked_client_id: number | null;
   is_active: boolean;
   last_fetched_at: string | null;
+  last_fetch_error: string | null;
+  last_fetch_failed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -506,6 +563,7 @@ export interface SkippedEmail {
   has_attachments: boolean;
   timesheet_attachment_count: number;
   classification_intent: string | null;
+  classification_confidence: number | null;
   skip_reason: string | null;
   skip_detail: string | null;
   reprocessable_attachments: Array<{
@@ -652,6 +710,10 @@ export interface IngestionTimesheetSummary {
   received_at: string | null;
   submitted_at: string | null;
   reviewed_at: string | null;
+  // Reviewer attribution. Set once a reviewer approves/rejects the
+  // timesheet. Surfaces in the Team Timesheets PDF footer.
+  reviewer_id?: number | null;
+  reviewer_name?: string | null;
   created_at: string;
 }
 
@@ -729,4 +791,123 @@ export interface ReprocessStoredEmailResult {
 export interface MappingReapplyResult {
   checked: number;
   updated: number;
+}
+
+// ── Platform admin: Dashboard / Calendar / Audit ────────────────────
+
+export interface PlatformDashboardSummary {
+  active_tenants: number;
+  active_tenants_delta: string | null;
+  total_users: number;
+  total_users_delta: string | null;
+  fetch_jobs_24h: number;
+  fetch_jobs_24h_delta: string | null;
+  hours_logged_this_week: number;
+  hours_logged_delta: string | null;
+}
+
+export interface PlatformHealthWidget {
+  key: string;
+  label: string;
+  value: string;
+  status: 'good' | 'warn' | 'bad';
+  detail: string | null;
+}
+
+export interface PlatformDashboardHealth {
+  widgets: PlatformHealthWidget[];
+  refreshed_at: string;
+}
+
+export type PlatformCalendarEventType =
+  | 'tenant_created'
+  | 'provisioning'
+  | 'migration'
+  | 'maintenance'
+  | 'contract';
+
+export interface PlatformCalendarEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  type: PlatformCalendarEventType;
+  title: string;
+  tenant_slug: string | null;
+  tenant_name: string | null;
+  detail: string | null;
+}
+
+export interface PlatformCalendarEventsResponse {
+  range_start: string;
+  range_end: string;
+  events: PlatformCalendarEvent[];
+}
+
+export type PlatformAuditCategory =
+  | 'tenant'
+  | 'feature'
+  | 'admin'
+  | 'credentials'
+  | 'migration'
+  | 'system';
+
+export type PlatformAuditSeverity = 'info' | 'warn' | 'critical';
+
+export interface PlatformAuditEventRow {
+  id: number;
+  created_at: string;
+  category: PlatformAuditCategory;
+  event: string;
+  severity: PlatformAuditSeverity;
+  summary: string;
+  actor_user_id: number | null;
+  actor_email: string | null;
+  actor_label: string | null;
+  tenant_id: number | null;
+  tenant_slug: string | null;
+  tenant_name: string | null;
+  request_ip: string | null;
+  route: string | null;
+}
+
+export interface PlatformAuditEventDetail extends PlatformAuditEventRow {
+  user_agent: string | null;
+  before_state: Record<string, unknown> | null;
+  after_state: Record<string, unknown> | null;
+}
+
+export interface PlatformAuditListResponse {
+  items: PlatformAuditEventRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PlatformAuditListParams {
+  category?: PlatformAuditCategory;
+  actor_email?: string;
+  tenant_id?: number;
+  search?: string;
+  range_start?: string;
+  range_end?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PlatformTenantsUsersCountResponse {
+  // JSON object keyed by tenant_id (stringified by JSON, but the backend
+  // uses int keys); the frontend reads via Number(tenantId).
+  counts: Record<string, number>;
+  failed_tenant_ids: number[];
+}
+
+export interface PlatformTenantStatsEntry {
+  user_count: number | null;
+  admin_count: number | null;
+  last_activity_at: string | null;
+  error: string | null;
+}
+
+export interface PlatformTenantStatsResponse {
+  // JSON object keyed by tenant_id (string from JSON; Number() to use).
+  stats: Record<string, PlatformTenantStatsEntry>;
 }

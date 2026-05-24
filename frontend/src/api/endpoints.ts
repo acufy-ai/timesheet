@@ -9,6 +9,9 @@ export type HistoryGroupEntry = {
   rejection_reason: string | null;
   project_name: string | null;
   task_name: string | null;
+  /** Optional explicit time block (HH:MM:SS). Null for hours-only entries. */
+  start_time: string | null;
+  end_time: string | null;
 };
 
 export type HistoryGroup = {
@@ -29,6 +32,9 @@ import {
   UserCreateResponse,
   DashboardAnalytics,
   Department,
+  Holiday,
+  HolidaySuggestionsResponse,
+  HolidayType,
   LeaveType,
   DashboardRecentActivityItem,
   DashboardSummary,
@@ -68,6 +74,16 @@ import {
   UserRole,
   SkippedEmailOverview,
   WeeklySubmissionStatus,
+  UserClientAssignment,
+  PlatformAuditCategory,
+  PlatformAuditEventDetail,
+  PlatformAuditListParams,
+  PlatformAuditListResponse,
+  PlatformCalendarEventsResponse,
+  PlatformDashboardHealth,
+  PlatformDashboardSummary,
+  PlatformTenantsUsersCountResponse,
+  PlatformTenantStatsResponse,
 } from '@/types';
 
 // Auth endpoints
@@ -104,26 +120,67 @@ export const authAPI = {
 
   roleHandoffExchange: (handoff_token: string) =>
     apiClient.post<TokenResponse>('/auth/role-handoff/exchange', { handoff_token }),
+
+  // Validate an invitation/reset token without consuming it (page load).
+  verifyInvitation: (token: string) =>
+    apiClient.get<{ valid: boolean; email?: string; purpose?: 'invite' | 'reset'; reason?: string }>(
+      '/auth/invitation/verify',
+      { params: { token } },
+    ),
+
+  // Consume an invitation/reset token by submitting the new password.
+  setPasswordViaInvitation: (token: string, new_password: string) =>
+    apiClient.post<{ success: boolean; email: string; purpose: 'invite' | 'reset' }>(
+      '/auth/invitation/set-password',
+      { token, new_password },
+    ),
+
+  // Anti-enumeration: always returns success regardless of email existence.
+  forgotPassword: (email: string) =>
+    apiClient.post<MessageResponse>('/auth/forgot-password', { email }),
 };
 
 // Users endpoints
 export const usersAPI = {
-  list: () =>
-    apiClient.get<User[]>('/users', { params: { limit: 1000 } }),
+  // ``tenantSlug`` is only relevant for platform-admin callers; the
+  // backend's ``get_tenant_db`` dep requires X-Tenant-Slug on PA tokens
+  // to route the session to the right tenant DB AND to scope the
+  // returned rows. Tenant-admin callers leave it undefined; their
+  // tenant comes from the JWT claim.
+  list: (tenantSlug?: string) =>
+    apiClient.get<User[]>('/users', {
+      params: { limit: 1000 },
+      headers: tenantSlug ? { 'X-Tenant-Slug': tenantSlug } : undefined,
+    }),
   listAssignable: () =>
     apiClient.get<User[]>('/users/assignable'),
   
   get: (id: number) =>
     apiClient.get<User>(`/users/${id}`),
   
-  create: (data: Partial<User> & { password?: string }) =>
-    apiClient.post<UserCreateResponse>('/users', data),
+  create: (data: Partial<User> & { password?: string }, tenantSlug?: string) =>
+    apiClient.post<UserCreateResponse>(
+      '/users',
+      data,
+      // Platform-admin tokens carry tenant_id=null in the JWT, so the
+      // backend can't route the create to the right tenant DB. Pass the
+      // tenant slug as a header so backend's get_tenant_db dep picks it up.
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
   
   update: (id: number, data: Partial<User>) =>
     apiClient.put<User>(`/users/${id}`, data),
 
   meProfile: () =>
     apiClient.get<UserProfile>('/users/me/profile'),
+
+  // Per-user UI preferences (view modes, table densities). Keys are
+  // free-form; backend validates known ones (e.g., inbox_view_mode).
+  getMyPreferences: () =>
+    apiClient.get<Record<string, unknown>>('/users/me/preferences'),
+
+  updateMyPreferences: (data: Record<string, unknown>) =>
+    apiClient.patch<Record<string, unknown>>('/users/me/preferences', data),
 
   updateMyProfile: (data: {
     full_name?: string;
@@ -159,6 +216,13 @@ export const usersAPI = {
     apiClient.post<{ message: string }>(`/users/${id}/reset-password`, { new_password: newPassword }),
   resendVerification: (id: number) =>
     apiClient.post<{ message: string }>(`/users/${id}/resend-verification`, {}),
+  resendInvite: (id: number) =>
+    apiClient.post<{ message: string }>(`/users/${id}/resend-invite`, {}),
+  // Unified Send invite: backend dispatches Auth0 vs legacy verification
+  // path based on whether the user has an auth0_sub. Prefer this over
+  // resendVerification / resendInvite in new UI.
+  sendInvite: (id: number) =>
+    apiClient.post<{ message: string }>(`/users/${id}/send-invite`, {}),
 
   listEmailAliases: (id: number) =>
     apiClient.get<EmailAlias[]>(`/users/${id}/email-aliases`),
@@ -262,6 +326,10 @@ export interface ImportCommitResponse {
     updated: Array<{ row: number; user_id: number; full_name: string; warnings: string[] }>;
     skipped: Array<{ row: number; reason: string }>;
   };
+  // Names of clients that didn't exist before this import and were
+  // auto-created during the run. Surfaced in the result panel so the
+  // admin sees that the client directory grew as a side effect.
+  new_clients?: string[];
 }
 
 // Clients endpoints
@@ -272,12 +340,12 @@ export const clientsAPI = {
   get: (id: number) =>
     apiClient.get(`/clients/${id}`),
   
-  create: (data: { name: string; quickbooks_customer_id?: string }) =>
+  create: (data: { name: string; client_type?: string; quickbooks_customer_id?: string; contact_name?: string; contact_email?: string; contact_phone?: string }) =>
     apiClient.post('/clients', data),
-  
-  update: (id: number, data: Partial<{ name: string; quickbooks_customer_id: string }>) =>
+
+  update: (id: number, data: Partial<{ name: string; client_type: string; quickbooks_customer_id: string; contact_name: string; contact_email: string; contact_phone: string }>) =>
     apiClient.put(`/clients/${id}`, data),
-  
+
   delete: (id: number) =>
     apiClient.delete(`/clients/${id}`),
 
@@ -290,6 +358,15 @@ export const clientsAPI = {
       domain: string;
       cascaded_count: number;
     }>('/clients/from-domain', data),
+
+  listUserAssignments: (userId: number) =>
+    apiClient.get<UserClientAssignment[]>(`/users/${userId}/clients`),
+
+  addUserAssignment: (userId: number, clientId: number) =>
+    apiClient.post<{ assignments: UserClientAssignment[] }>(`/users/${userId}/clients/${clientId}`),
+
+  removeUserAssignment: (userId: number, clientId: number) =>
+    apiClient.delete<{ assignments: UserClientAssignment[] }>(`/users/${userId}/clients/${clientId}`),
 };
 
 export const departmentsAPI = {
@@ -305,6 +382,23 @@ export const leaveTypesAPI = {
   update: (id: number, data: Partial<Pick<LeaveType, 'label' | 'color' | 'is_active'>>) =>
     apiClient.patch<LeaveType>(`/leave-types/${id}`, data),
   delete: (id: number) => apiClient.delete(`/leave-types/${id}`),
+};
+
+export const holidaysAPI = {
+  list: (params?: { start_date?: string; end_date?: string; country?: string }) =>
+    apiClient.get<Holiday[]>('/holidays', { params }),
+  countries: () => apiClient.get<string[]>('/holidays/countries'),
+  create: (data: { date: string; name: string; holiday_type: HolidayType; country?: string }) =>
+    apiClient.post<Holiday>('/holidays', data),
+  bulkCreate: (holidays: Array<{ date: string; name: string; holiday_type: HolidayType; country?: string }>) =>
+    apiClient.post<Holiday[]>('/holidays/bulk', { holidays }),
+  update: (id: number, data: { name?: string; holiday_type?: HolidayType }) =>
+    apiClient.patch<Holiday>(`/holidays/${id}`, data),
+  delete: (id: number) => apiClient.delete(`/holidays/${id}`),
+  suggestions: (country: string, year: number) =>
+    apiClient.get<HolidaySuggestionsResponse>('/holidays/suggestions', {
+      params: { country, year },
+    }),
 };
 
 // Projects endpoints
@@ -382,6 +476,10 @@ export const timeentriesAPI = {
     project_id: number;
     task_id?: number | null;
     entry_date: string;
+    // Wire-format HH:MM or HH:MM:SS; both nullable so the caller can
+    // log hours-only entries when no time block is known.
+    start_time?: string | null;
+    end_time?: string | null;
     hours: number;
     description: string;
     notes?: string | null;
@@ -397,6 +495,15 @@ export const timeentriesAPI = {
   
   submit: (entry_ids: number[]) =>
     apiClient.post('/timesheets/submit', { entry_ids }),
+
+  /**
+   * Recall (un-submit) a set of SUBMITTED entries back to DRAFT so
+   * the user can edit them. Backend returns 409 if any entry was
+   * already actioned by a manager (approved or rejected).
+   * Reuses the same body shape as /submit.
+   */
+  recall: (entry_ids: number[]) =>
+    apiClient.post('/timesheets/recall', { entry_ids }),
 
   weeklySubmitStatus: () =>
     apiClient.get<WeeklySubmissionStatus>('/timesheets/weekly-submit-status'),
@@ -558,6 +665,75 @@ export const adminAPI = {
    *  PLATFORM_ADMIN only; other roles get 403. Each entry is independent
    *  — one degraded service does not mask the others. */
   systemHealth: () => apiClient.get<SystemHealthCheckResponse[]>('/admin/system-health'),
+
+  /** Replace the current tenant's branding logo. Admin only. Server
+   *  derives the storage path from the authenticated tenant's slug, so
+   *  this cannot redirect to another tenant's prefix. */
+  uploadTenantLogo: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return apiClient.post<{ has_logo: boolean; mime_type: string | null }>(
+      '/admin/tenant/logo',
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+  },
+
+  /** Fetch the current tenant's logo bytes as a Blob. Auth header
+   *  attached automatically; the response is scoped to the caller's
+   *  tenant via Depends(get_tenant_db). 404 when no logo is set. */
+  getTenantLogoBlob: () =>
+    apiClient.get<Blob>('/admin/tenant/logo', { responseType: 'blob' }),
+
+  /** Remove the current tenant's logo. Admin only. */
+  deleteTenantLogo: () =>
+    apiClient.delete<{ has_logo: boolean }>('/admin/tenant/logo'),
+
+  /** Admin-readable list of approved ingestion timesheets, scoped to
+   *  the caller's tenant. Used by the Team Timesheets tab to merge
+   *  summary-only ingestion timesheets (those with no line items) into
+   *  the table. Reviewer-queue access stays gated separately under
+   *  /ingestion/timesheets. */
+  /**
+   * Approved inbox-PDF timesheets for the Approved Timesheets surface.
+   * ``scope`` defaults to ``workspace`` (admin behaviour); managers
+   * who only review their direct reports pass ``mine`` so the backend
+   * filters to (their reports' PDFs) OR (PDFs they personally
+   * reviewed). Admins / viewers always see the workspace view.
+   */
+  listApprovedIngestionTimesheets: (
+    params?: { employee_id?: number; scope?: 'mine' | 'workspace' },
+  ) =>
+    apiClient.get<IngestionTimesheetSummary[]>('/admin/approved-ingestion-timesheets', {
+      params: params && (params.employee_id !== undefined || params.scope) ? params : undefined,
+    }),
+
+  /** Stream the source file (PDF / Excel / image) for an approved
+   *  ingestion timesheet attachment. Admin-permissive counterpart to
+   *  /ingestion/attachments/{id}/file (which stays reviewer-only).
+   *  Backend rejects with 403 unless the attachment belongs to a
+   *  timesheet in the approved state. Returns both the object URL (for
+   *  iframe rendering) and the mime type (so the caller can decide
+   *  between inline rendering and a download UI). */
+  getApprovedIngestionAttachmentFile: async (attachmentId: number) => {
+    const response = await apiClient.get<Blob>(
+      `/admin/approved-ingestion-attachments/${attachmentId}/file`,
+      { responseType: 'blob', headers: { Accept: '*/*' } },
+    );
+    return {
+      url: URL.createObjectURL(response.data),
+      mime: response.data.type,
+      blob: response.data,
+    };
+  },
+
+  /** Render a spreadsheet attachment (xlsx / xls / csv) as HTML for
+   *  inline preview in the Team Timesheets modal. Admin-permissive,
+   *  scoped to approved-ingestion rows only. */
+  getApprovedIngestionAttachmentHtml: (attachmentId: number) =>
+    apiClient.get<{ html: string; mime_type: string; filename: string }>(
+      `/admin/approved-ingestion-attachments/${attachmentId}/full-html`,
+    ),
 };
 
 export interface DismissedSignal {
@@ -586,13 +762,36 @@ export const notificationsAPI = {
     apiClient.post<NotificationActionResponse>('/notifications/delete-all', {}),
 };
 
+// Server-side enum (matches app.schemas.TenantLifecycleAction).
+export type TenantLifecycleAction = 'mark_inactive' | 'suspend' | 'resume' | 'delete';
+
 export const tenantsAPI = {
   mine: () => apiClient.get<Tenant>('/tenants/mine'),
-  list: () => apiClient.get<Tenant[]>('/tenants'),
+  list: (params?: { include_archived?: boolean }) =>
+    apiClient.get<Tenant[]>('/tenants', { params }),
   get: (id: number) => apiClient.get<Tenant>(`/tenants/${id}`),
-  create: (data: { name: string; slug: string }) => apiClient.post<Tenant>('/tenants', data),
+  create: (data: { name: string; slug: string; is_isolated?: boolean }) =>
+    apiClient.post<Tenant>('/tenants', data),
   update: (id: number, data: { name?: string; slug?: string; status?: TenantStatus; ingestion_enabled?: boolean }) =>
     apiClient.patch<Tenant>(`/tenants/${id}`, data),
+  /**
+   * Apply a destructive lifecycle action (mark_inactive / suspend / resume /
+   * delete) with a typed-name confirmation. The backend re-validates the
+   * confirmation_token against the live tenant.name before performing the
+   * action and writes a PlatformAuditEvent with before/after state.
+   *
+   * confirmation_token is required for mark_inactive/suspend/delete and
+   * ignored for resume.
+   */
+  lifecycle: (
+    id: number,
+    action: TenantLifecycleAction,
+    confirmation_token?: string,
+  ) =>
+    apiClient.post<Tenant>(`/tenants/${id}/lifecycle`, {
+      action,
+      confirmation_token,
+    }),
   provisionSystemUser: (id: number) =>
     apiClient.post<{ provisioned: boolean; user_id: number; email: string }>(`/tenants/${id}/provision-system-user`),
   getServiceTokens: (tenantId: number) =>
@@ -601,6 +800,20 @@ export const tenantsAPI = {
     apiClient.post<ServiceTokenCreated>(`/tenants/${tenantId}/service-tokens`, data),
   revokeServiceToken: (tenantId: number, tokenId: number) =>
     apiClient.delete(`/tenants/${tenantId}/service-tokens/${tokenId}`),
+
+  // Feature flags (Acufy-controlled per-tenant entitlements).
+  getMyFeatures: () =>
+    apiClient.get<TenantFeatures>('/tenants/mine/features'),
+  getTenantFeatures: (tenantId: number) =>
+    apiClient.get<TenantFeatures>(`/tenants/${tenantId}/features`),
+  updateTenantFeatures: (tenantId: number, updates: Partial<Omit<TenantFeatures, 'tenant_id'>>) =>
+    apiClient.patch<TenantFeatures>(`/tenants/${tenantId}/features`, updates),
+};
+
+export type TenantFeatures = {
+  tenant_id: number;
+  custom_outbound_email: boolean;
+  custom_email_template: boolean;
 };
 
 export type SettingValue = string | number | boolean | null;
@@ -636,6 +849,10 @@ export const tenantSettingsAPI = {
     apiClient.patch<Record<string, SettingValue>>('/users/tenant-settings', data),
   unlockUser: (userId: number) =>
     apiClient.post<{ success: boolean; user_id: number }>(`/users/users/${userId}/unlock-timesheet`, {}),
+  testSmtp: () =>
+    apiClient.post<{ ok: boolean; detail?: string }>('/users/smtp-test', {}),
+  previewEmailTemplate: (data: { purpose: 'invite' | 'reset'; subject: string; greeting: string; body: string; button_label: string; signoff: string }) =>
+    apiClient.post<{ subject: string; html: string; text: string }>('/users/email-template-preview', data),
 };
 
 export const mailboxesAPI = {
@@ -652,7 +869,11 @@ export const mailboxesAPI = {
 export const ingestionAPI = {
   triggerFetch: () => apiClient.post<FetchJobResponse>('/ingestion/fetch-emails', {}),
   getFetchStatus: (jobId: string) => apiClient.get<FetchJobStatus>(`/ingestion/fetch-emails/status/${jobId}`),
-  getSkippedEmails: (params?: { limit?: number }) => apiClient.get<SkippedEmailOverview>('/ingestion/skipped-emails', { params }),
+  getSkippedEmails: (params?: { limit?: number; include_classifier_skips?: boolean }) => apiClient.get<SkippedEmailOverview>('/ingestion/skipped-emails', { params }),
+  promoteSkippedEmail: (emailId: number) =>
+    apiClient.post<{ timesheet_id: number; already_promoted: boolean }>(`/ingestion/skipped-emails/${emailId}/promote`, {}),
+  confirmSkippedEmail: (emailId: number) =>
+    apiClient.post<{ ok: boolean }>(`/ingestion/skipped-emails/${emailId}/confirm-skip`, {}),
   reprocessSkipped: () => apiClient.post<ReprocessSkippedResult>('/ingestion/fetch-emails/reprocess-skipped', {}),
   reprocessEmail: (emailId: number, attachmentIds?: number[]) =>
     apiClient.post<ReprocessStoredEmailResult>('/ingestion/fetch-emails/reprocess', { email_id: emailId, attachment_ids: attachmentIds }),
@@ -731,3 +952,37 @@ export const platformSettingsAPI = {
   updateSmtp: (data: SmtpConfigUpdate) => apiClient.put<SmtpConfigResponse>('/platform/settings/smtp', data),
   clearSmtp: () => apiClient.delete('/platform/settings/smtp'),
 };
+
+// ── Platform-admin Dashboard / Calendar / Audit endpoints ──────────────────
+//
+// All these routes require PLATFORM_ADMIN. The backend rejects tenant-realm
+// tokens at the router level, so a plain ADMIN won't reach any of them.
+export const platformDashboardAPI = {
+  summary: () =>
+    apiClient.get<PlatformDashboardSummary>('/platform/dashboard/summary'),
+  health: () =>
+    apiClient.get<PlatformDashboardHealth>('/platform/dashboard/health'),
+  // Tenant-lifecycle events bounded by a date range. Used by the Platform
+  // Calendar to populate the month grid and the "next 30 days" sidebar.
+  calendarEvents: (range_start: string, range_end: string) =>
+    apiClient.get<PlatformCalendarEventsResponse>(
+      '/platform/calendar/events',
+      { params: { range_start, range_end } },
+    ),
+  // Paginated audit log read. Backend ANDs all set filters.
+  auditList: (params: PlatformAuditListParams = {}) =>
+    apiClient.get<PlatformAuditListResponse>('/platform/audit', { params }),
+  // Single event for the drawer (includes before/after JSON payloads).
+  auditEvent: (eventId: number) =>
+    apiClient.get<PlatformAuditEventDetail>(`/platform/audit/${eventId}`),
+  // Per-tenant user count fan-out for the Tenants tab Users column.
+  tenantsUsersCount: () =>
+    apiClient.get<PlatformTenantsUsersCountResponse>('/platform/tenants/users-count'),
+  // Richer per-tenant snapshot for the compact list view: user count,
+  // admin count, and last_activity_at. Single fan-out, single round-trip.
+  tenantStats: () =>
+    apiClient.get<PlatformTenantStatsResponse>('/platform/tenants/stats'),
+};
+
+// Re-export for callers that build URLs by category name.
+export type { PlatformAuditCategory };
