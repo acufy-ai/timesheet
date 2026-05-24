@@ -28,6 +28,7 @@ backups/
 *.bat
 *.dump
 frontend/src/pages/DevQuickLogin.tsx
+frontend2/src/pages/DevQuickLogin.tsx
 
 # Local-only artifacts (mockups, plan docs, dev overlay)
 local/
@@ -45,3 +46,23 @@ CLAUDE.md
 
 # Build output
 frontend/tsconfig.tsbuildinfo
+frontend2/tsconfig.tsbuildinfo
+frontend/dist/
+frontend2/dist/
+
+# Stray package-lock from accidental `npm install` at repo root
+/package-lock.json
+
+# Dead-code holdover from the platform-admin redesign. Not imported
+# anywhere; left as a local reference until the cleanup PR.
+frontend/src/pages/PlatformAdminPage.legacy.tsx
+
+# Database dumps (contain secrets, never commit)
+db-dumps/
+
+# Production-readiness audit artifacts (local-only)
+audit/
+
+# Lightsail ldev deploy: real env values and tarred images stay local
+deploy-ldev/.env.ldev
+deploy-ldev/images/
