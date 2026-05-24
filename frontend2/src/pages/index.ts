@@ -1,0 +1,25 @@
+// Pages barrel export
+export { LoginPage } from './LoginPage';
+export { DashboardPage } from './DashboardPage';
+export { MyTimePage } from './MyTimePage';
+export { ApprovalsPage } from './ApprovalsPage';
+export { TimeOffPage } from './TimeOffPage';
+export { CalendarPage } from './CalendarPage';
+export { AdminPage } from './AdminPage';
+export { UserTimesheetsPage } from './UserTimesheetsPage';
+export { AdminSettingsPage } from './AdminSettingsPage';
+export { ClientManagementPage } from './ClientManagementPage';
+export { ProfilePage } from './ProfilePage';
+export { PlatformAdminPage } from './PlatformAdminPage';
+export { PlatformDashboardPage } from './PlatformDashboardPage';
+export { PlatformCalendarPage } from './PlatformCalendarPage';
+export { PlatformAuditPage } from './PlatformAuditPage';
+export { PlatformTenantDetailPage } from './PlatformTenantDetailPage';
+export { MailboxesPage } from './MailboxesPage';
+export { InboxPage } from './InboxPage';
+export { ReviewPanelPage } from './ReviewPanelPage';
+export { VerifyAccountPage } from './VerifyAccountPage';
+export { SetPasswordPage } from './SetPasswordPage';
+export { ForgotPasswordPage } from './ForgotPasswordPage';
+export { PlatformSettingsPage } from './PlatformSettingsPage';
+export { AuditTrailPage } from './AuditTrailPage';

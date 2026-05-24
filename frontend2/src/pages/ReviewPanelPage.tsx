@@ -1,0 +1,2079 @@
+import React from 'react';
+import { format } from 'date-fns';
+import { ArrowDown, ArrowLeft, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, X, XCircle } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+
+import { ingestionAPI } from '@/api/endpoints';
+import { Badge, Card, CardContent, CardHeader, CardTitle, Loading, Modal } from '@/components';
+import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
+import {
+  useAddIngestionLineItem,
+  useApproveIngestionTimesheet,
+  useAssignChainCandidate,
+  useClients,
+  useCreateClient,
+  useCreateClientFromDomain,
+  useDeleteIngestionLineItem,
+  useDraftIngestionComment,
+  useFetchJobStatus,
+  useHoldIngestionTimesheet,
+  useIngestionEmail,
+  useIngestionTimesheet,
+  useIngestionTimesheets,
+  useProjects,
+  useRejectIngestionLineItem,
+  useRejectIngestionTimesheet,
+  useReprocessIngestionEmail,
+  useRevertIngestionTimesheetRejection,
+  useUnrejectIngestionLineItem,
+  useUpdateIngestionLineItem,
+  useUpdateIngestionTimesheetData,
+  useAssignableUsers,
+} from '@/hooks';
+import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
+
+type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
+
+// Anchored popover for Reject and Hold; tone differs but shape is shared.
+const ReasonPopover: React.FC<{
+  open: boolean;
+  anchorEl: HTMLElement | null;
+  title: string;
+  description: string;
+  placeholder: string;
+  reason: string;
+  setReason: (s: string) => void;
+  confirmLabel: string;
+  confirmTone: 'danger' | 'primary';
+  isSubmitting?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}> = ({ open, anchorEl, title, description, placeholder, reason, setReason, confirmLabel, confirmTone, isSubmitting, onConfirm, onClose }) => {
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const [position, setPosition] = React.useState<{ top: number; left: number } | null>(null);
+
+  React.useLayoutEffect(() => {
+    if (!open || !anchorEl) return;
+    const update = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const POPOVER_WIDTH = 380;
+      const ESTIMATED_HEIGHT = 240;
+      const VIEWPORT_MARGIN = 16;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const top = spaceBelow > ESTIMATED_HEIGHT + VIEWPORT_MARGIN
+        ? rect.bottom + window.scrollY + 6
+        : rect.top + window.scrollY - ESTIMATED_HEIGHT - 6;
+      const maxLeft = window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN;
+      const left = Math.min(rect.left + window.scrollX, Math.max(maxLeft, VIEWPORT_MARGIN));
+      setPosition({ top, left });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open, anchorEl]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const id = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open || !position) return null;
+  const canSubmit = reason.trim().length > 0 && !isSubmitting;
+  const confirmClass = confirmTone === 'danger'
+    ? 'inline-flex items-center justify-center rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--danger)]/90 disabled:cursor-not-allowed disabled:opacity-60'
+    : 'action-button h-9 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60';
+
+  return (
+    <>
+      <div role="presentation" className="fixed inset-0 z-[80]" onClick={onClose} />
+      <div
+        role="dialog"
+        aria-label={title}
+        className="absolute z-[90] w-[380px] rounded-xl border border-border/70 bg-card p-4 shadow-[0_18px_48px_rgba(0,0,0,0.35)]"
+        style={{ top: position.top, left: position.left }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{title}</p>
+        <p className="mb-3 text-xs text-muted-foreground">{description}</p>
+        <textarea
+          ref={textareaRef}
+          className="field-textarea text-sm"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder={placeholder}
+        />
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="action-button-secondary h-9 px-3 text-sm">Cancel</button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canSubmit}
+            className={confirmClass}
+          >
+            {isSubmitting ? `${confirmLabel}…` : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+};
+
+// Personal email providers — never bind to a Client domain. Mirror of
+// the backend PERSONAL_EMAIL_DOMAINS set; the cascade endpoint refuses
+// to create a domain mapping for these. Same set used by InboxPage.
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com',
+  'icloud.com', 'aol.com', 'live.com', 'msn.com', 'proton.me', 'protonmail.com',
+]);
+
+const domainOf = (email: string | null | undefined): string => {
+  if (!email || !email.includes('@')) return '';
+  return email.split('@', 2)[1].trim().toLowerCase();
+};
+
+const isPersonalDomain = (domain: string): boolean =>
+  PERSONAL_EMAIL_DOMAINS.has(domain.trim().toLowerCase());
+
+// Smart-guess client name from a domain (e.g. "dxc.com" -> "DXC",
+// "aegon.com" -> "Aegon"). Uppercase short stems, title-case longer ones.
+const suggestNameFromDomain = (domain: string): string => {
+  const stem = (domain.split('.')[0] || domain).trim();
+  if (!stem) return '';
+  if (stem.length <= 4) return stem.toUpperCase();
+  return stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
+};
+
+const emptyLineItem = (): LineItemFormState => ({ work_date: '', hours: '', description: '', project_code: '', project_id: '' });
+const toLineItemPayload = (form: LineItemFormState): IngestionLineItemPayload => ({
+  work_date: form.work_date,
+  hours: form.hours,
+  description: form.description || null,
+  project_code: form.project_code || null,
+  project_id: form.project_id ? Number(form.project_id) : null,
+});
+const formatDateTime = (value?: string | null) => (value ? new Date(value).toLocaleString() : '--');
+const attachmentKind = (attachment: EmailAttachmentSummary | null) =>
+  !attachment?.mime_type ? 'other' : attachment.mime_type.includes('pdf') ? 'pdf' : attachment.mime_type.startsWith('image/') ? 'image' : 'other';
+const renderReason = (value?: string | null) => value ? value.replace(/_/g, ' ') : 'unknown';
+const cleanEmployeeNameForDisplay = (value?: string | null) => {
+  if (!value) return '';
+  const compactLeadingPrefix = value.replace(/^ven[aij](?=[A-Z])/, '');
+  const parts = compactLeadingPrefix.trim().split(/\s+/).filter(Boolean);
+  if (parts.length > 1 && /^ven[aij]$/i.test(parts[0])) {
+    parts.shift();
+  }
+  if (parts.length > 0 && /^ashw/i.test(parts[0])) {
+    parts[0] = `Ai${parts[0].slice(1)}`;
+  }
+  return parts.join(' ').trim() || compactLeadingPrefix.trim();
+};
+const normalizeEmployeeNameForMatch = (value?: string | null) => {
+  const cleaned = cleanEmployeeNameForDisplay(value);
+  if (!cleaned) return '';
+  const normalized = cleaned.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const parts = normalized.split(' ').filter(Boolean);
+  if (!parts.length) return '';
+  const first = parts[0];
+  if (first.startsWith('vena') && first.length > 6) parts[0] = first.slice(4);
+  if (first.startsWith('venj') && first.length > 6) parts[0] = first.slice(4);
+  if (first.startsWith('veni') && first.length > 6) parts[0] = first.slice(4);
+  return parts.join(' ');
+};
+
+const trimTrailingEmptyColumns = (rows: string[][]): string[][] => {
+  if (rows.length === 0) return rows;
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  let keep = width;
+  while (keep > 0 && rows.every((row) => ((row[keep - 1] ?? '') as string).trim() === '')) {
+    keep -= 1;
+  }
+  return keep === width ? rows : rows.map((row) => row.slice(0, keep));
+};
+
+const splitIntoBlocks = (rows: string[][]): string[][][] => {
+  if (rows.length === 0) return [];
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  if (width === 0) return [];
+  const emptyCols = new Set<number>();
+  for (let c = 0; c < width; c += 1) {
+    if (rows.every((row) => ((row[c] ?? '') as string).trim() === '')) emptyCols.add(c);
+  }
+  const ranges: Array<[number, number]> = [];
+  let start: number | null = null;
+  for (let c = 0; c < width; c += 1) {
+    if (emptyCols.has(c)) {
+      if (start !== null) {
+        ranges.push([start, c]);
+        start = null;
+      }
+    } else if (start === null) {
+      start = c;
+    }
+  }
+  if (start !== null) ranges.push([start, width]);
+  return ranges
+    .map(([s, e]) => rows.map((row) => row.slice(s, e)).filter((row) => row.some((cell) => cell.trim() !== '')))
+    .filter((block) => block.length > 0);
+};
+
+const BlockTable: React.FC<{ rows: string[][] }> = ({ rows }) => {
+  const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  return (
+    <table className="min-w-full border-collapse text-sm">
+      <tbody>
+        {rows.map((row, rIdx) => (
+          <tr
+            key={rIdx}
+            className={rIdx === 0 ? 'bg-muted/50 font-semibold text-foreground' : 'even:bg-muted/20'}
+          >
+            {Array.from({ length: maxCols }, (_, cIdx) => (
+              <td
+                key={cIdx}
+                className="whitespace-nowrap border border-border/60 px-3 py-1.5 align-top text-foreground"
+              >
+                {row[cIdx] ?? ''}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
+const SpreadsheetPreviewTable: React.FC<{ preview: SpreadsheetPreview }> = ({ preview }) => {
+  const [activeSheet, setActiveSheet] = React.useState(0);
+  const sheets = preview.sheets ?? [];
+  if (sheets.length === 0) {
+    return <div className="px-6 py-10 text-sm text-muted-foreground">Spreadsheet is empty.</div>;
+  }
+  const rawCurrent = sheets[Math.min(activeSheet, sheets.length - 1)];
+  const trimmedRows = trimTrailingEmptyColumns(rawCurrent.rows);
+  // Prefer server-provided blocks; fall back to computing them client-side so
+  // older previews without the `blocks` field still benefit.
+  const blocks = rawCurrent.blocks?.length
+    ? rawCurrent.blocks.map((b) => b.rows)
+    : splitIntoBlocks(trimmedRows);
+  const renderBlocks = blocks.length > 0 ? blocks : [trimmedRows];
+  return (
+    <div className="flex flex-col">
+      {sheets.length > 1 && (
+        <div className="flex shrink-0 gap-1 border-b border-border/60 px-4 py-2 overflow-x-auto">
+          {sheets.map((sheet, idx) => (
+            <button
+              key={`${sheet.name}-${idx}`}
+              type="button"
+              onClick={() => setActiveSheet(idx)}
+              className={`shrink-0 rounded-md px-3 py-1 text-xs font-medium transition ${
+                idx === activeSheet
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+              }`}
+            >
+              {sheet.name || `Sheet ${idx + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="overflow-auto max-h-[75vh] px-4 py-3 space-y-4">
+        {renderBlocks.map((rows, idx) => (
+          <BlockTable key={idx} rows={rows} />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Extract chain_candidates from the loosely-typed llm_match_suggestions blob.
+// Returns [] when the structure doesn't match — defensive because the
+// pipeline is the only writer but the column is Record<string, unknown>.
+const extractChainCandidates = (raw: Record<string, unknown> | null): ChainCandidate[] => {
+  if (!raw || typeof raw !== 'object') return [];
+  const candidates = (raw as { chain_candidates?: unknown }).chain_candidates;
+  if (!Array.isArray(candidates)) return [];
+  return candidates
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      name: typeof entry.name === 'string' ? entry.name : null,
+      email: typeof entry.email === 'string' ? entry.email : null,
+      existing_user_id:
+        typeof entry.existing_user_id === 'number' ? entry.existing_user_id : null,
+      matches_extracted_name: entry.matches_extracted_name === true,
+    }));
+};
+
+
+type ChainCandidatesPanelProps = {
+  timesheetId: number | null;
+  rawSuggestions: Record<string, unknown> | null;
+  currentEmployeeId: number | null;
+  onAssign: (payload: { name?: string | null; email?: string | null }) => Promise<void>;
+  isAssigning: boolean;
+};
+
+const ChainCandidatesPanel: React.FC<ChainCandidatesPanelProps> = ({
+  timesheetId,
+  rawSuggestions,
+  currentEmployeeId,
+  onAssign,
+  isAssigning,
+}) => {
+  const candidates = React.useMemo(() => extractChainCandidates(rawSuggestions), [rawSuggestions]);
+  const [editingIdx, setEditingIdx] = React.useState<number | null>(null);
+  const [emailInput, setEmailInput] = React.useState('');
+  const [error, setError] = React.useState<string | null>(null);
+
+  // Reset state when we switch timesheets or the underlying data changes.
+  React.useEffect(() => {
+    setEditingIdx(null);
+    setEmailInput('');
+    setError(null);
+  }, [timesheetId, rawSuggestions]);
+
+  if (!candidates.length) return null;
+  // Hide the panel once the reviewer has bound the timesheet to anyone —
+  // the primary Employee dropdown is now authoritative.
+  if (currentEmployeeId != null) return null;
+
+  const handleSelect = async (candidate: ChainCandidate, idx: number) => {
+    setError(null);
+    // If candidate has an email OR matches an existing user, we can submit
+    // immediately. Otherwise open the inline email input.
+    if (candidate.email || candidate.existing_user_id != null) {
+      try {
+        await onAssign({ name: candidate.name, email: candidate.email });
+      } catch (exc) {
+        setError(exc instanceof Error ? exc.message : 'Assignment failed');
+      }
+      return;
+    }
+    setEditingIdx(idx);
+    setEmailInput('');
+  };
+
+  const handleConfirmWithEmail = async (candidate: ChainCandidate) => {
+    setError(null);
+    try {
+      await onAssign({
+        name: candidate.name,
+        email: emailInput.trim() || null,
+      });
+      setEditingIdx(null);
+      setEmailInput('');
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Assignment failed');
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-md border border-amber-200/30 bg-amber-50/5 px-3 py-2.5" data-testid="chain-candidates-panel">
+      <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+        Candidates from email chain
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        The forwarded email included these names. Pick the one that belongs to this timesheet.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {candidates.map((candidate, idx) => {
+          const label = candidate.email
+            ? `${candidate.name ?? candidate.email} <${candidate.email}>`
+            : candidate.name ?? '(no name)';
+          const isEditing = editingIdx === idx;
+          const hasKnownUser = candidate.existing_user_id != null;
+          return (
+            <div key={idx} className="flex flex-col gap-1" data-testid="chain-candidate-chip">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                onClick={() => void handleSelect(candidate, idx)}
+                disabled={isAssigning}
+                title={hasKnownUser ? 'Bind to existing user' : 'Select this candidate'}
+              >
+                {candidate.matches_extracted_name && <span>★</span>}
+                <span>{label}</span>
+                {hasKnownUser && <span className="text-[10px] uppercase text-emerald-300">known</span>}
+              </button>
+              {isEditing && !hasKnownUser && !candidate.email && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="email"
+                    className="field-input h-7 text-xs"
+                    placeholder="email@example.com (optional)"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    onClick={() => void handleConfirmWithEmail(candidate)}
+                    disabled={isAssigning}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => { setEditingIdx(null); setEmailInput(''); }}
+                    disabled={isAssigning}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  );
+};
+
+
+// Renders a brief loading message and bounces back to the inbox via
+// useEffect. The bounce sits in an effect (not in render) so React
+// doesn't complain about setState during render. Used as the
+// terminal fallback when a review URL points at a timesheet the
+// server no longer has — almost always because a reprocess just
+// replaced the row.
+const SubmissionNotFoundRedirect: React.FC<{ navigate: (path: string, opts?: { replace?: boolean }) => void }> = ({ navigate }) => {
+  React.useEffect(() => {
+    navigate('/ingestion/inbox', { replace: true });
+  }, [navigate]);
+  return (
+    <div className="mx-auto mt-12 max-w-xl rounded-xl border border-border bg-card p-6">
+      <p className="text-sm text-muted-foreground">Loading the latest version of this submission…</p>
+    </div>
+  );
+};
+
+export const ReviewPanelPage: React.FC = () => {
+  const navigate = useNavigate();
+  const { timesheetId, emailId } = useParams();
+  const parsedTimesheetId = Number(timesheetId ?? '');
+  const parsedEmailId = Number(emailId ?? '');
+  const normalizedTimesheetId = Number.isInteger(parsedTimesheetId) && parsedTimesheetId > 0 ? parsedTimesheetId : null;
+  const normalizedEmailId = Number.isInteger(parsedEmailId) && parsedEmailId > 0 ? parsedEmailId : null;
+  const isTimesheetMode = normalizedTimesheetId !== null;
+  const isEmailMode = normalizedEmailId !== null;
+
+  const {
+    data: timesheet,
+    isLoading: isTimesheetLoading,
+    isError: isTimesheetError,
+  } = useIngestionTimesheet(normalizedTimesheetId, isTimesheetMode);
+  const {
+    data: storedEmail,
+    isLoading: isEmailLoading,
+    isError: isEmailError,
+  } = useIngestionEmail(normalizedEmailId, isEmailMode);
+  const { data: users = [] } = useAssignableUsers();
+  const { data: clients = [] } = useClients();
+  const createClient = useCreateClient();
+  // Cascade-create reuses the inbox endpoint: creates the client AND maps
+  // the domain so future emails from this domain auto-resolve. Falls back
+  // to plain createClient when the sender is on a personal-email domain
+  // (gmail/outlook/etc.), since the cascade endpoint refuses those.
+  const createClientFromDomain = useCreateClientFromDomain();
+  const { data: projects = [] } = useProjects({ active_only: true, limit: 500 });
+  const updateTimesheet = useUpdateIngestionTimesheetData();
+  const assignChainCandidate = useAssignChainCandidate();
+  const addLineItem = useAddIngestionLineItem();
+  const updateLineItem = useUpdateIngestionLineItem();
+  const deleteLineItem = useDeleteIngestionLineItem();
+  const approveTimesheet = useApproveIngestionTimesheet();
+  const rejectTimesheet = useRejectIngestionTimesheet();
+  const holdTimesheet = useHoldIngestionTimesheet();
+  const draftComment = useDraftIngestionComment();
+  const reprocessEmail = useReprocessIngestionEmail();
+  const queryClient = useQueryClient();
+  const [reprocessJobId, setReprocessJobId] = React.useState<string | null>(null);
+  const { data: reprocessStatus } = useFetchJobStatus(reprocessJobId, Boolean(reprocessJobId));
+  const isReprocessing = Boolean(reprocessJobId && reprocessStatus && (reprocessStatus.status === 'queued' || reprocessStatus.status === 'in_progress'));
+  const reprocessDone = Boolean(reprocessJobId && reprocessStatus && (reprocessStatus.status === 'complete' || reprocessStatus.status === 'failed'));
+  const rejectLineItem = useRejectIngestionLineItem();
+  const unrejectLineItem = useUnrejectIngestionLineItem();
+  const revertTimesheetRejection = useRevertIngestionTimesheetRejection();
+
+  const emailContext = timesheet?.email ?? storedEmail ?? null;
+
+  // When a reprocess job finishes, refresh data and (if needed) redirect.
+  // Reprocess deletes non-approved IngestionTimesheet rows and creates new
+  // ones with fresh IDs, so the current /ingestion/review/:timesheetId URL
+  // will 404. Redirect to the email view so the user lands on the new row.
+  //
+  // Order matters here:
+  //   1. Capture the target email_id BEFORE we touch any caches — once we
+  //      drop the timesheet detail from cache, ``emailContext`` (which
+  //      reads timesheet?.email) becomes null and we'd lose the
+  //      navigation target.
+  //   2. REMOVE the old timesheet detail from cache (not just invalidate)
+  //      so TanStack doesn't trigger a refetch that 404s and flashes the
+  //      "Submission not found" error page while we're mid-navigate.
+  //   3. Invalidate the list/email queries so siblings refresh.
+  //   4. Navigate to email-mode, which then bounces to the new first
+  //      sibling timesheet.
+  React.useEffect(() => {
+    if (!reprocessJobId || !reprocessStatus) return;
+    if (reprocessStatus.status !== 'complete' && reprocessStatus.status !== 'failed') return;
+    if (reprocessStatus.status === 'complete') {
+      const targetEmailId = emailContext?.id ?? normalizedEmailId;
+      // Capture before mutating caches.
+      const oldTimesheetId = normalizedTimesheetId;
+      if (oldTimesheetId != null) {
+        queryClient.removeQueries({ queryKey: ['ingestion', 'timesheet', oldTimesheetId] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'email'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+      if (isTimesheetMode && targetEmailId) {
+        navigate(`/ingestion/email/${targetEmailId}`, { replace: true });
+      }
+    }
+    const timer = window.setTimeout(() => setReprocessJobId(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [reprocessJobId, reprocessStatus?.status, queryClient, isTimesheetMode, emailContext?.id, normalizedEmailId, normalizedTimesheetId, navigate]);
+  const emailId_forSiblings = emailContext?.id ?? null;
+  const extractedName = ((timesheet?.extracted_employee_name ?? timesheet?.employee_name) ?? '').toLowerCase().trim();
+  const resolvedEmployeeId = timesheet?.employee_id ?? null;
+  const { data: siblingData } = useIngestionTimesheets(
+    emailId_forSiblings ? { email_id: emailId_forSiblings } : undefined,
+    !!emailId_forSiblings,
+  );
+  // Group siblings by employee: all weeks from the same person in the same
+  // email become tabs. Match by resolved employee_id first (most reliable),
+  // then fall back to extracted name. Attachment-id matching is intentionally
+  // skipped -- each week can come from a different attachment file.
+  const siblings = React.useMemo(() => {
+    if (!Array.isArray(siblingData)) return [];
+    const filtered = [...siblingData].filter((s) => {
+      // Hide rejected pills from the sibling row. The per-pill ✕
+      // dismiss action rejects with reason 'Duplicate submission';
+      // once that completes the pill should disappear from the
+      // reviewer's pill list, not stick around as a red-dot ghost.
+      // The row itself stays in the DB for audit.
+      if (s.status === 'rejected') return false;
+      if (resolvedEmployeeId != null && s.employee_id != null) {
+        return s.employee_id === resolvedEmployeeId;
+      }
+      const sName = ((s.extracted_employee_name ?? s.employee_name) ?? '').toLowerCase().trim();
+      return !extractedName || sName === extractedName;
+    });
+
+    const deduped = new Map<string, typeof filtered[number]>();
+    for (const entry of filtered) {
+      const signature = `${entry.attachment_id ?? 'no-att'}|${entry.period_start ?? ''}|${entry.period_end ?? ''}|${entry.total_hours ?? ''}`;
+      const existing = deduped.get(signature);
+      if (!existing || entry.id === timesheet?.id) {
+        deduped.set(signature, entry);
+      }
+    }
+
+    return [...deduped.values()].sort((a, b) => {
+      const av = a.period_start ? new Date(a.period_start).getTime() : 0;
+      const bv = b.period_start ? new Date(b.period_start).getTime() : 0;
+      return av - bv;
+    });
+  }, [siblingData, resolvedEmployeeId, extractedName, timesheet?.id]);
+
+  // In email mode, if exactly one timesheet exists for this email, jump
+  // directly to its timesheet view. This happens after a reprocess redirect
+  // so the user lands on the equivalent submission instead of the diagnostic.
+  React.useEffect(() => {
+    if (!isEmailMode) return;
+    if (!Array.isArray(siblingData) || siblingData.length === 0) return;
+    const first = siblingData[0];
+    if (first?.id) navigate(`/ingestion/review/${first.id}`, { replace: true });
+  }, [isEmailMode, siblingData, navigate]);
+
+  const [summaryForm, setSummaryForm] = React.useState({ employee_id: '', client_id: '', extracted_supervisor_name: '', period_start: '', period_end: '', total_hours: '', internal_notes: '' });
+  // Anchor + open state for the inline "+ Add client" popover. Reuses the
+  // cascade-from-domain popover so creating a client here also maps the
+  // sender's domain when applicable.
+  const [addClientAnchor, setAddClientAnchor] = React.useState<HTMLElement | null>(null);
+
+  // R4: bulk-select on line items. Reviewers regularly hit timesheets
+  // with 20+ rows that all need the same project assigned. Per-row
+  // edits are the worst friction point on the review page; the bulk
+  // toolbar collapses N decisions into one.
+  const [selectedLineItemIds, setSelectedLineItemIds] = React.useState<Set<number>>(new Set());
+  const [bulkProjectId, setBulkProjectId] = React.useState<string>('');
+  const [bulkExcludeReason, setBulkExcludeReason] = React.useState<string>('');
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+
+  // Reject and Hold popovers; both require a reason for audit.
+  const [rejectPopoverAnchor, setRejectPopoverAnchor] = React.useState<HTMLElement | null>(null);
+  const [holdPopoverAnchor, setHoldPopoverAnchor] = React.useState<HTMLElement | null>(null);
+  const [holdReason, setHoldReason] = React.useState<string>('');
+  const [reviewComment, setReviewComment] = React.useState('');
+  const [rejectReason, setRejectReason] = React.useState('');
+  const [lineItemModalOpen, setLineItemModalOpen] = React.useState(false);
+  const [editingLineItem, setEditingLineItem] = React.useState<IngestionLineItem | null>(null);
+  const [lineItemForm, setLineItemForm] = React.useState<LineItemFormState>(emptyLineItem());
+  const [selectedAttachmentId, setSelectedAttachmentId] = React.useState<number | null>(null);
+  const [attachmentUrl, setAttachmentUrl] = React.useState<string | null>(null);
+  const [attachmentLoadError, setAttachmentLoadError] = React.useState<string | null>(null);
+  const [showFullSheet, setShowFullSheet] = React.useState(false);
+  const [fullSheetHtml, setFullSheetHtml] = React.useState<string | null>(null);
+  const [fullSheetLoading, setFullSheetLoading] = React.useState(false);
+  const [showApproveConfirm, setShowApproveConfirm] = React.useState(false);
+  // showRejectPanel was the previous full-width banner approach.
+  // Replaced by an anchored popover (R9). State removed.
+  const [rejectingLineItemId, setRejectingLineItemId] = React.useState<number | null>(null);
+  const [lineItemRejectReason, setLineItemRejectReason] = React.useState('');
+
+  // R10: reprocess scope dropdown. Declared here (before any early
+  // returns) so the hook count is stable across loading and loaded
+  // renders — moving these below the loading guard breaks Rules of
+  // Hooks.
+  const [reprocessMenuOpen, setReprocessMenuOpen] = React.useState(false);
+  const reprocessMenuRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!reprocessMenuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (!reprocessMenuRef.current?.contains(e.target as Node)) {
+        setReprocessMenuOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setReprocessMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onClickOutside);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('mousedown', onClickOutside);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [reprocessMenuOpen]);
+
+  // Splitter drag state
+  const [leftPct, setLeftPct] = React.useState(62);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const isDragging = React.useRef(false);
+  // Anchor for the "Go to attachment" jump link in the email header.
+  // Long forwarded chains push the attached file far below the fold;
+  // this lets the reviewer skip straight to it without scrolling.
+  const attachmentPreviewRef = React.useRef<HTMLDivElement>(null);
+  const scrollToAttachment = React.useCallback(() => {
+    attachmentPreviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  React.useEffect(() => {
+    const onUp = () => { isDragging.current = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    const onMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      if (e.buttons === 0) { onUp(); return; } // mouse released outside window
+      const rect = containerRef.current.getBoundingClientRect();
+      const pct = ((e.clientX - rect.left) / rect.width) * 100;
+      setLeftPct(Math.min(Math.max(pct, 30), 78));
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
+
+  React.useEffect(() => {
+    if (!timesheet) return;
+    setSummaryForm({
+      employee_id: timesheet.employee_id ? String(timesheet.employee_id) : '',
+      client_id: timesheet.client_id ? String(timesheet.client_id) : '',
+      extracted_supervisor_name: timesheet.extracted_supervisor_name ?? '',
+      period_start: timesheet.period_start ?? '',
+      period_end: timesheet.period_end ?? '',
+      total_hours: timesheet.total_hours ? Number(timesheet.total_hours).toFixed(1) : '',
+      internal_notes: timesheet.internal_notes ?? '',
+    });
+    // Clear bulk selection when navigating between siblings or switching
+    // timesheets — the selected ids only make sense in the current scope.
+    setSelectedLineItemIds(new Set());
+    setBulkProjectId('');
+    setBulkExcludeReason('');
+  }, [timesheet]);
+
+  React.useEffect(() => {
+    if (!timesheet?.attachment_id) return;
+    setSelectedAttachmentId(timesheet.attachment_id);
+  }, [timesheet?.attachment_id]);
+
+  // When the reviewer clicks a sibling week pill, the route changes to a
+  // new timesheet id but the email is the same. The browser's default
+  // is to reset scroll to the top of the new page, which dumps the user
+  // back at the email headers and forces another "Go to attachment"
+  // click. Detect the "same email, different timesheet" transition and
+  // jump back to the attachment so context stays continuous.
+  //
+  // First mount (no previous email) and inbox→review jumps (different
+  // email) intentionally do NOT auto-scroll — there the reviewer should
+  // start at the top to read the email body.
+  //
+  // Implementation: store the attachment_id we want to scroll TO when
+  // a pill switch is detected. A separate effect watches for that
+  // attachment to actually load (its blob URL populated, or its
+  // server-rendered HTML present), and only then fires the scroll. The
+  // value is cleared after firing so we never scroll twice. Using the
+  // attachment_id as the trigger instead of a generic flag prevents
+  // the race where the flag gets consumed by stale-URL state from the
+  // previous pill before the new attachment has loaded.
+  const prevPillContextRef = React.useRef<{ emailId: number | null; timesheetId: number | null }>({
+    emailId: null,
+    timesheetId: null,
+  });
+  const [scrollTargetAttachmentId, setScrollTargetAttachmentId] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const currentEmailId = timesheet?.email?.id ?? null;
+    const currentTimesheetId = timesheet?.id ?? null;
+    const prev = prevPillContextRef.current;
+    const isPillSwitch =
+      prev.emailId !== null &&
+      prev.emailId === currentEmailId &&
+      prev.timesheetId !== null &&
+      prev.timesheetId !== currentTimesheetId;
+    prevPillContextRef.current = { emailId: currentEmailId, timesheetId: currentTimesheetId };
+    if (isPillSwitch && timesheet?.attachment_id) {
+      setScrollTargetAttachmentId(timesheet.attachment_id);
+    }
+  }, [timesheet?.email?.id, timesheet?.id, timesheet?.attachment_id]);
+
+  // (The scroll-on-pill-switch effect lives below selectedAttachment's
+  // declaration; see the block right after ``selectedAttachment`` is
+  // computed. Moved out of this block to satisfy TypeScript's
+  // use-before-declaration check on selectedAttachment.)
+
+  React.useEffect(() => {
+    let objectUrl: string | null = null;
+    if (!selectedAttachmentId) {
+      setAttachmentUrl(null);
+      setAttachmentLoadError(null);
+      return undefined;
+    }
+    ingestionAPI.getAttachmentFile(selectedAttachmentId)
+      .then((url) => { objectUrl = url; setAttachmentUrl(url); setAttachmentLoadError(null); })
+      .catch(() => { setAttachmentUrl(null); setAttachmentLoadError('Unable to load attachment preview.'); });
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [selectedAttachmentId]); // intentionally excludes emailContext — only re-fetch when the actual ID changes
+
+  // Reset full-sheet state when switching attachments.
+  React.useEffect(() => {
+    setShowFullSheet(false);
+    setFullSheetHtml(null);
+  }, [selectedAttachmentId]);
+
+  // Lazy-load full HTML the first time the toggle is flipped on.
+  React.useEffect(() => {
+    if (!showFullSheet || !selectedAttachmentId || fullSheetHtml || fullSheetLoading) return;
+    setFullSheetLoading(true);
+    ingestionAPI.getAttachmentFullHtml(selectedAttachmentId)
+      .then((res) => setFullSheetHtml(res.data.html))
+      .catch(() => setFullSheetHtml('<p style="padding:16px;font-family:sans-serif">Failed to load full sheet.</p>'))
+      .finally(() => setFullSheetLoading(false));
+  }, [showFullSheet, selectedAttachmentId, fullSheetHtml, fullSheetLoading]);
+
+  const selectedAttachment = emailContext?.attachments.find((item) => item.id === selectedAttachmentId) ?? null;
+  const linkedAttachment =
+    timesheet?.attachment_id != null
+      ? emailContext?.attachments.find((item) => item.id === timesheet.attachment_id) ?? null
+      : null;
+
+  // Scroll runner for the pill-switch auto-scroll. Fires only when the
+  // targeted attachment id matches the currently-selected one AND the
+  // attachment has fully loaded (blob URL populated, or server-rendered
+  // HTML present). This prevents the stale-state race where we'd scroll
+  // while the previous pill's blob was still mounted.
+  React.useEffect(() => {
+    if (scrollTargetAttachmentId === null) return;
+    if (selectedAttachmentId !== scrollTargetAttachmentId) return;
+    const ready =
+      Boolean(attachmentUrl) ||
+      Boolean(selectedAttachment?.rendered_html) ||
+      Boolean(selectedAttachment?.raw_extracted_text);
+    if (!ready) return;
+
+    // Two frames of cushion: first for the iframe/image to mount with
+    // its content, second for its layout to settle. ``auto`` (instant)
+    // rather than smooth — smooth scrolls get interrupted when content
+    // is still shifting under them and produce unpredictable end-Y.
+    const handleRefs: { raf: number } = { raf: 0 };
+    handleRefs.raf = window.requestAnimationFrame(() => {
+      handleRefs.raf = window.requestAnimationFrame(() => {
+        attachmentPreviewRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
+        setScrollTargetAttachmentId(null);
+      });
+    });
+    return () => window.cancelAnimationFrame(handleRefs.raf);
+  }, [
+    scrollTargetAttachmentId,
+    selectedAttachmentId,
+    attachmentUrl,
+    selectedAttachment?.rendered_html,
+    selectedAttachment?.raw_extracted_text,
+  ]);
+  const selectedAttachmentType = attachmentKind(selectedAttachment);
+  const structured = timesheet?.extracted_data;
+  const fromStructured = structured && typeof structured === 'object' && typeof (structured as Record<string, unknown>).employee_name === 'string'
+    ? String((structured as Record<string, unknown>).employee_name)
+    : '';
+  const extractedEmployeeHint = ((timesheet?.extracted_employee_name || fromStructured || '') as string).trim();
+  const extractedClientHint = (() => {
+    if (!structured || typeof structured !== 'object') return '';
+    const record = structured as Record<string, unknown>;
+    const value = record.client_name ?? record.client;
+    return typeof value === 'string' ? value.trim() : '';
+  })();
+  const extractedClientMatchesExisting = extractedClientHint
+    ? clients.some((c: { id: number; name: string }) =>
+        c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
+    : false;
+  // Forwarded-from > outer sender. Personal domains disable the cascade.
+  const senderDomain = (() => {
+    const forwardedFrom = (emailContext as { forwarded_from_email?: string | null } | null)?.forwarded_from_email;
+    return domainOf(forwardedFrom || emailContext?.sender_email);
+  })();
+  const senderDomainIsPersonal = senderDomain ? isPersonalDomain(senderDomain) : false;
+  const addClientInitialValue = (() => {
+    if (extractedClientHint) return extractedClientHint;
+    if (senderDomain && !senderDomainIsPersonal) return suggestNameFromDomain(senderDomain);
+    return '';
+  })();
+  const normalizedHint = normalizeEmployeeNameForMatch(extractedEmployeeHint);
+  const extractedEmployeeMatch = normalizedHint
+    ? users.find((user) => {
+        const normalizedUser = normalizeEmployeeNameForMatch(user.full_name);
+        return (
+          normalizedUser === normalizedHint
+          || normalizedUser.includes(normalizedHint)
+          || normalizedHint.includes(normalizedUser)
+        );
+      })
+    : undefined;
+  const extractedEmployeeDisplayName = cleanEmployeeNameForDisplay(extractedEmployeeMatch?.full_name || extractedEmployeeHint);
+  const extractedEmployeeHasMatch = !!extractedEmployeeMatch;
+  const showExtractedEmployeeOption = !summaryForm.employee_id && !!extractedEmployeeHint && !extractedEmployeeHasMatch;
+  const employeeSelectValue = summaryForm.employee_id || (showExtractedEmployeeOption ? '__extracted__' : '');
+  const isActionable = timesheet ? timesheet.status !== 'approved' && timesheet.status !== 'rejected' : false;
+
+  React.useEffect(() => {
+    if (!timesheet) return;
+    if (summaryForm.employee_id) return;
+    if (!extractedEmployeeMatch) return;
+    setSummaryForm((current) => ({ ...current, employee_id: String(extractedEmployeeMatch.id) }));
+  }, [timesheet?.id, summaryForm.employee_id, extractedEmployeeMatch]);
+
+  if ((isTimesheetMode && isTimesheetLoading) || (isEmailMode && isEmailLoading)) {
+    return <Loading message={isEmailMode ? 'Loading email...' : 'Loading timesheet...'} />;
+  }
+
+  if (!isTimesheetMode && !isEmailMode) {
+    return (
+      <div className="mx-auto mt-12 max-w-xl rounded-xl border border-border bg-card p-6">
+        <p className="text-lg font-semibold text-foreground">Invalid review link</p>
+        <p className="mt-2 text-sm text-muted-foreground">This page expects a valid timesheet or email identifier.</p>
+        <button type="button" onClick={() => navigate('/ingestion/inbox')} className="action-button mt-4">
+          Back to inbox
+        </button>
+      </div>
+    );
+  }
+
+  // A 404 on the timesheet detail almost always means the row was just
+  // replaced by a reprocess (the backend deletes the old rows and
+  // creates new ones with different IDs). Showing "Submission not
+  // found" with a manual back button is the wrong default — the user
+  // ends up refreshing repeatedly. Auto-bounce to the inbox so the
+  // freshly-reprocessed rows surface naturally. The redirect runs
+  // inside an effect (not during render) to avoid React's "setState
+  // during render" warning.
+  if (isTimesheetMode && (isTimesheetError || !timesheet) && !isTimesheetLoading) {
+    return <SubmissionNotFoundRedirect navigate={navigate} />;
+  }
+
+  if (isEmailMode && (isEmailError || !storedEmail)) {
+    return (
+      <div className="mx-auto mt-12 max-w-xl rounded-xl border border-border bg-card p-6">
+        <p className="text-lg font-semibold text-foreground">Email not found</p>
+        <p className="mt-2 text-sm text-muted-foreground">The selected email may have been deleted or is no longer available.</p>
+        <button type="button" onClick={() => navigate('/ingestion/inbox')} className="action-button mt-4">
+          Back to inbox
+        </button>
+      </div>
+    );
+  }
+
+  const openLineItemModal = (lineItem?: IngestionLineItem) => {
+    if (lineItem) {
+      setEditingLineItem(lineItem);
+      setLineItemForm({
+        work_date: lineItem.work_date,
+        hours: String(lineItem.hours),
+        description: lineItem.description ?? '',
+        project_code: lineItem.project_code ?? '',
+        project_id: lineItem.project_id ? String(lineItem.project_id) : '',
+      });
+    } else {
+      setEditingLineItem(null);
+      setLineItemForm(emptyLineItem());
+    }
+    setLineItemModalOpen(true);
+  };
+
+  // "+ Add client" confirm: cascade for real domains, plain create for personal.
+  const handleAddClientConfirm = async (
+    payload: { name: string; existing: { id: number; name: string } | null },
+  ) => {
+    try {
+      let createdId: number | null = null;
+      if (payload.existing) {
+        // Reviewer picked an existing client out of the popover's fuzzy
+        // match. No create call needed; just bind it on this timesheet.
+        createdId = payload.existing.id;
+      } else if (senderDomain && !senderDomainIsPersonal) {
+        const result = await createClientFromDomain.mutateAsync({
+          name: payload.name,
+          domain: senderDomain,
+        });
+        createdId = result.client.id;
+      } else {
+        const created = await createClient.mutateAsync({ name: payload.name });
+        createdId = created.id;
+      }
+      if (createdId != null) {
+        // Route through the cascade handler so the newly-created
+        // client persists across every editable sibling week and the
+        // sibling caches refresh, instead of sitting in local form
+        // state until the reviewer clicks Approve. Without this the
+        // "create new client" path was inconsistent with the picker:
+        // selecting an existing client cascaded; creating a new one
+        // didn't.
+        await handleClientPickerChange(String(createdId));
+      }
+      setAddClientAnchor(null);
+    } catch {
+      // Generic error surface; leave the popover open so the reviewer
+      // sees the failure context. Could be 409 (domain already mapped)
+      // or a duplicate-name conflict; in both cases keeping the popover
+      // open lets them adjust without losing input.
+    }
+  };
+
+  const handleSaveSummary = async () => {
+    if (!timesheet) return;
+    await updateTimesheet.mutateAsync({ id: timesheet.id, data: {
+      employee_id: summaryForm.employee_id ? Number(summaryForm.employee_id) : null,
+      client_id: summaryForm.client_id ? Number(summaryForm.client_id) : null,
+      extracted_supervisor_name: summaryForm.extracted_supervisor_name.trim() || null,
+      period_start: summaryForm.period_start || null,
+      period_end: summaryForm.period_end || null,
+      total_hours: summaryForm.total_hours || null,
+      internal_notes: summaryForm.internal_notes || null,
+    } });
+  };
+
+  // Auto-save the reviewer's client decision and cascade it to every
+  // editable sibling week (same employee, same email). The reviewer's
+  // client pick is the final decision per the role contract — it should
+  // persist immediately, not be a draft that resets on refresh. Already-
+  // approved or already-rejected siblings are skipped (their state is
+  // frozen). Updates fire in parallel; per-sibling errors are swallowed
+  // so one stale sibling doesn't block the others.
+  //
+  // After all cascades commit we explicitly invalidate every targeted
+  // sibling's detail cache so navigating to another pill doesn't show
+  // stale data — the mutation hook's onSuccess invalidates only the
+  // single id it was called with, which TanStack runs per-mutation,
+  // but in practice we've seen detail caches not refresh fast enough
+  // when several mutateAsync calls fan out at once.
+  const handleClientPickerChange = async (value: string) => {
+    if (!timesheet) return;
+    setSummaryForm((c) => ({ ...c, client_id: value }));
+    const clientId = value ? Number(value) : null;
+    const clientObj = clientId != null
+      ? (clients as { id: number; name: string }[]).find((c) => c.id === clientId)
+      : null;
+    const targetIds = new Set<number>([timesheet.id]);
+    for (const sibling of siblings) {
+      if (sibling.status === 'approved' || sibling.status === 'rejected') continue;
+      targetIds.add(sibling.id);
+    }
+
+    // Optimistically write the new client into every sibling detail
+    // cache BEFORE awaiting the network round-trip. Without this, when
+    // the reviewer clicks another pill, TanStack serves the stale
+    // cached detail (with the old client_id), the form-reseed effect
+    // runs, summaryForm.client_id snaps to the stale value, and only
+    // a moment later does the refetch arrive — by which point the
+    // user has already concluded the cascade "didn't work."
+    //
+    // We also write the resolved client name so the rest of the UI
+    // (e.g. anywhere reading timesheet.client_name) stays consistent
+    // until the refetch confirms the same shape.
+    for (const id of targetIds) {
+      queryClient.setQueryData<Record<string, unknown> | undefined>(
+        ['ingestion', 'timesheet', id],
+        (prev) => prev ? { ...prev, client_id: clientId, client_name: clientObj?.name ?? null } : prev,
+      );
+    }
+
+    await Promise.all(
+      [...targetIds].map((id) =>
+        updateTimesheet.mutateAsync({ id, data: { client_id: clientId } }).catch(() => null),
+      ),
+    );
+    // Belt-and-suspenders: invalidate every sibling's detail cache key
+    // and the list query so pill clicks render the cascade result.
+    for (const id of targetIds) {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', id] });
+    }
+    queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+  };
+
+  const handleSaveLineItem = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!timesheet) return;
+    const payload = toLineItemPayload(lineItemForm);
+    if (editingLineItem) await updateLineItem.mutateAsync({ timesheetId: timesheet.id, itemId: editingLineItem.id, data: payload });
+    else if (payload.work_date && payload.hours) await addLineItem.mutateAsync({ timesheetId: timesheet.id, data: payload as Required<Pick<IngestionLineItemPayload, 'work_date' | 'hours'>> & IngestionLineItemPayload });
+    setLineItemModalOpen(false);
+  };
+
+  const handleDeleteLineItem = async (lineItem: IngestionLineItem) => {
+    if (!timesheet || !window.confirm(`Delete line item for ${lineItem.work_date}?`)) return;
+    await deleteLineItem.mutateAsync({ timesheetId: timesheet.id, itemId: lineItem.id });
+  };
+
+  const handleApprove = async () => {
+    if (!timesheet) return;
+    const employeeIdForApproval = summaryForm.employee_id ? Number(summaryForm.employee_id) : (timesheet.employee_id ?? null);
+    const clientIdForApproval = summaryForm.client_id ? Number(summaryForm.client_id) : (timesheet.client_id ?? null);
+
+    if (!employeeIdForApproval) {
+      window.alert('Select an employee before approving weeks.');
+      return;
+    }
+
+    const siblingIds = siblings
+      .filter((item) => item.status !== 'approved' && item.status !== 'rejected')
+      .map((item) => item.id);
+    const targetIds = siblingIds.length ? siblingIds : [timesheet.id];
+
+    // Persist assignment for the currently edited week if it changed.
+    const hasAssignmentChanges =
+      (timesheet.employee_id ?? null) !== employeeIdForApproval ||
+      (timesheet.client_id ?? null) !== clientIdForApproval;
+    if (hasAssignmentChanges) {
+      await updateTimesheet.mutateAsync({
+        id: timesheet.id,
+        data: {
+          employee_id: employeeIdForApproval,
+          client_id: clientIdForApproval,
+        },
+      });
+    }
+
+    let successCount = 0;
+    const failures: string[] = [];
+
+    for (const id of targetIds) {
+      try {
+        // Keep assignment aligned across sibling weeks before approval.
+        await updateTimesheet.mutateAsync({
+          id,
+          data: {
+            employee_id: employeeIdForApproval,
+            client_id: clientIdForApproval,
+          },
+        });
+        const result = await approveTimesheet.mutateAsync({ id, comment: reviewComment || undefined });
+        successCount += 1;
+        if (result?.overlapping_entries_count > 0) {
+          failures.push(`Week #${id}: Approved, but ${result.overlapping_entries_count} date(s) already had existing time entries (${result.overlapping_dates?.join(', ')}). Check for duplicates.`);
+        }
+      } catch (error: unknown) {
+        const detail =
+          typeof error === 'object' && error !== null && 'response' in error
+            ? ((error as { response?: { data?: { detail?: string } } }).response?.data?.detail || 'Approval failed')
+            : 'Approval failed';
+        failures.push(`Week #${id}: ${detail}`);
+      }
+    }
+
+    if (successCount === 0 && failures.length > 0) {
+      window.alert(failures.join('\n'));
+      return;
+    }
+
+    navigate('/ingestion/inbox', {
+      state: {
+        banner: failures.length
+          ? `Approved ${successCount} week(s). ${failures.length} failed.`
+          : targetIds.length > 1
+          ? `Approved ${targetIds.length} weeks successfully.`
+          : `Approved week #${timesheet.id}. Time entries were created successfully.`,
+      },
+    });
+  };
+
+  const handleReject = async () => {
+    if (!timesheet || !rejectReason.trim()) return;
+    await rejectTimesheet.mutateAsync({ id: timesheet.id, reason: rejectReason, comment: reviewComment || undefined });
+    setRejectPopoverAnchor(null);
+    setRejectReason('');
+  };
+
+  const handleHold = async () => {
+    if (!timesheet || !holdReason.trim()) return;
+    // The Hold endpoint takes an optional `comment` field; the popover
+    // requires a non-empty reason and we send it as that comment so it
+    // shows up in the audit log alongside who paused the review.
+    await holdTimesheet.mutateAsync({ id: timesheet.id, comment: holdReason.trim() });
+    setHoldPopoverAnchor(null);
+    setHoldReason('');
+  };
+
+  // Bulk line-item ops fire N concurrent single-item PATCH/reject calls.
+  const toggleLineItemSelection = (itemId: number) => {
+    setSelectedLineItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
+
+  const selectAllSelectableLineItems = () => {
+    if (!timesheet) return;
+    const next = new Set<number>();
+    for (const item of timesheet.line_items) {
+      if (!item.is_rejected) next.add(item.id);
+    }
+    setSelectedLineItemIds(next);
+  };
+
+  const clearLineItemSelection = () => {
+    setSelectedLineItemIds(new Set());
+    setBulkProjectId('');
+    setBulkExcludeReason('');
+  };
+
+  const handleBulkAssignProject = async () => {
+    if (!timesheet || !bulkProjectId || selectedLineItemIds.size === 0) return;
+    const projectIdNum = Number(bulkProjectId);
+    if (!Number.isFinite(projectIdNum)) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selectedLineItemIds];
+      await Promise.all(
+        ids.map((itemId) =>
+          updateLineItem.mutateAsync({
+            timesheetId: timesheet.id,
+            itemId,
+            data: { project_id: projectIdNum },
+          })
+        )
+      );
+      clearLineItemSelection();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkExclude = async () => {
+    if (!timesheet || !bulkExcludeReason.trim() || selectedLineItemIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selectedLineItemIds];
+      await Promise.all(
+        ids.map((itemId) =>
+          rejectLineItem.mutateAsync({
+            timesheetId: timesheet.id,
+            itemId,
+            reason: bulkExcludeReason.trim(),
+          })
+        )
+      );
+      clearLineItemSelection();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleRejectLineItem = async (itemId: number) => {
+    if (!timesheet || !lineItemRejectReason.trim()) return;
+    await rejectLineItem.mutateAsync({ timesheetId: timesheet.id, itemId, reason: lineItemRejectReason });
+    setRejectingLineItemId(null);
+    setLineItemRejectReason('');
+  };
+
+  const handleUnrejectLineItem = async (itemId: number) => {
+    if (!timesheet) return;
+    await unrejectLineItem.mutateAsync({ timesheetId: timesheet.id, itemId });
+  };
+
+  const handleRevertRejection = async () => {
+    if (!timesheet) return;
+    await revertTimesheetRejection.mutateAsync({ id: timesheet.id });
+  };
+
+  const handleDraftComment = async () => {
+    if (!timesheet) return;
+    const result = await draftComment.mutateAsync({ id: timesheet.id, seedText: reviewComment });
+    setReviewComment(result.draft);
+  };
+
+  const handleReprocessEmail = async (attachmentIds?: number[]) => {
+    if (!emailContext?.id) return;
+    const response = await reprocessEmail.mutateAsync({ emailId: emailContext.id, attachmentIds });
+    setReprocessJobId(response.job_id);
+  };
+
+  return (
+    <div className="-m-6 flex h-[calc(100vh-64px)] flex-col overflow-hidden">
+      {/* ── Top bar ─────────────────────────────────────────────────── */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-[var(--bg-surface)] px-6 py-3">
+        <button type="button" onClick={() => navigate('/ingestion/inbox')} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Back to inbox
+        </button>
+        <div className="ml-1 min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="truncate text-[15px] font-semibold text-foreground">
+              {emailContext?.subject || 'No subject'}
+            </span>
+            <span className="text-sm text-muted-foreground">
+              from {emailContext?.sender_name || emailContext?.sender_email || 'Unknown'}
+              {emailContext?.forwarded_from_email && (
+                <span className="ml-1.5 inline-flex items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 text-xs font-medium text-sky-700">
+                  Forwarded · originally from {emailContext.forwarded_from_name || emailContext.forwarded_from_email}
+                </span>
+              )}
+            </span>
+          </div>
+        </div>
+        {timesheet
+          ? <Badge tone={timesheet.status === 'approved' ? 'success' : timesheet.status === 'rejected' ? 'danger' : 'info'}>{timesheet.status}</Badge>
+          : <Badge tone="warning">{renderReason(storedEmail?.skip_reason)}</Badge>}
+        {timesheet?.extracted_data?.extraction_confidence != null && (() => {
+          const score = Number(timesheet.extracted_data.extraction_confidence);
+          const uncertain = Array.isArray(timesheet.extracted_data.uncertain_fields)
+            ? timesheet.extracted_data.uncertain_fields
+            : [];
+          const hasUncertain = uncertain.length > 0;
+          const tone = hasUncertain
+            ? 'bg-amber-50 text-amber-700'
+            : score >= 0.8 ? 'bg-emerald-50 text-emerald-700'
+            : score >= 0.5 ? 'bg-amber-50 text-amber-700'
+            : 'bg-red-50 text-red-700';
+          const tooltip = hasUncertain
+            ? `How confident the system was when reading this timesheet. Fields to verify: ${uncertain.join(', ')}.`
+            : 'How confident the system was when reading this timesheet. Always check the values against the source document before approving.';
+          return (
+            <span
+              className={`text-xs px-2 py-0.5 rounded ${tone}`}
+              title={tooltip}
+            >
+              Confidence: {(score * 100).toFixed(0)}%
+              {hasUncertain && ` · ${uncertain.length} to verify`}
+            </span>
+          );
+        })()}
+        {isReprocessing && (
+          <div className="flex items-center gap-2">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+            <span className="text-xs text-primary font-medium">
+              {reprocessStatus?.status === 'queued' ? 'Queued...' : `Trying again... ${Math.round(Number(reprocessStatus?.progress ?? 0))}%`}
+            </span>
+            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${Number(reprocessStatus?.progress ?? 0)}%` }} />
+            </div>
+          </div>
+        )}
+        {reprocessDone && (
+          <span className={`text-xs font-medium ${reprocessStatus?.status === 'complete' ? 'text-sky-600' : 'text-destructive'}`}>
+            {reprocessStatus?.status === 'complete' ? 'Done.' : 'Failed. Please try again.'}
+          </span>
+        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Reprocess: icon-only dropdown with two scopes. */}
+          <div ref={reprocessMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setReprocessMenuOpen((v) => !v)}
+              disabled={reprocessEmail.isPending || isReprocessing}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+              aria-label="Try again"
+              aria-haspopup="menu"
+              aria-expanded={reprocessMenuOpen}
+              title="Try this timesheet or the whole email again"
+            >
+              <RefreshCw className={`h-4 w-4 ${isReprocessing ? 'animate-spin' : ''}`} />
+            </button>
+            {reprocessMenuOpen && (
+              <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-lg border border-border/60 bg-popover p-1 shadow-lg" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReprocessMenuOpen(false);
+                    if (linkedAttachment) {
+                      void handleReprocessEmail([linkedAttachment.id]);
+                    } else {
+                      void handleReprocessEmail();
+                    }
+                  }}
+                  className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-50"
+                  disabled={reprocessEmail.isPending || isReprocessing}
+                  role="menuitem"
+                >
+                  <div className="font-medium text-foreground">Try this timesheet again</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Re-runs LLM extraction on the linked attachment only.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReprocessMenuOpen(false);
+                    void handleReprocessEmail();
+                  }}
+                  className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-50"
+                  disabled={reprocessEmail.isPending || isReprocessing}
+                  role="menuitem"
+                >
+                  <div className="font-medium text-foreground">Try the whole email again</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Re-fetches and re-extracts all attachments from this email.
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {timesheet?.status === 'rejected' && (
+            <button type="button" onClick={handleRevertRejection} className="action-button-secondary" disabled={revertTimesheetRejection.isPending}>
+              <RefreshCw className="mr-1.5 h-4 w-4" /> {revertTimesheetRejection.isPending ? 'Reverting...' : 'Revert Rejection'}
+            </button>
+          )}
+          {isActionable && (
+            <div className="relative">
+              <button type="button" onClick={() => setShowApproveConfirm((v) => !v)} className="action-button" disabled={approveTimesheet.isPending}>
+                <Check className="mr-1.5 h-4 w-4" /> {approveTimesheet.isPending ? 'Approving...' : 'Approve'}
+              </button>
+              {showApproveConfirm && timesheet && (() => {
+                const lineCount = timesheet.line_items.length;
+                const totalHoursNum = timesheet.total_hours != null ? Number(timesheet.total_hours) : null;
+                const summary = lineCount > 0
+                  ? `Create ${lineCount} time ${lineCount === 1 ? 'entry' : 'entries'}?`
+                  : totalHoursNum && totalHoursNum > 0
+                    ? `Only ${totalHoursNum} total hours, no daily breakdown. Approve anyway?`
+                    : 'Nothing to create. Approve anyway?';
+                return (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-max max-w-[560px] rounded-lg border border-primary/30 bg-popover p-3 shadow-lg">
+                    <p className="whitespace-nowrap text-sm text-foreground">{summary}</p>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button type="button" className="action-button-secondary" onClick={() => setShowApproveConfirm(false)}>Cancel</button>
+                      <button type="button" className="action-button" disabled={approveTimesheet.isPending} onClick={handleApprove}>
+                        {approveTimesheet.isPending ? 'Approving...' : 'Confirm'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Two-panel body ──────────────────────────────────────────── */}
+      <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden">
+        {/* LEFT – email reader (single scrollable column) */}
+        <div className="overflow-y-auto border-r border-border/60" style={{ flex: `0 0 ${leftPct}%`, minWidth: 0 }}>
+          <div className="px-8 py-6">
+            {/* Email header */}
+            <div className="mb-4 flex items-start justify-between gap-4 border-b border-border/60 pb-4 text-sm">
+              <div className="flex-1 space-y-1.5 min-w-0">
+                <p><span className="w-16 inline-block text-muted-foreground">From</span> <span className="text-foreground">{emailContext?.sender_name ? `${emailContext.sender_name} <${emailContext.sender_email}>` : emailContext?.sender_email || '--'}</span></p>
+                {emailContext?.forwarded_from_email && (
+                  <p><span className="w-16 inline-block text-muted-foreground">Originally from</span> <span className="text-foreground">{emailContext.forwarded_from_name ? `${emailContext.forwarded_from_name} <${emailContext.forwarded_from_email}>` : emailContext.forwarded_from_email}</span></p>
+                )}
+                <p><span className="w-16 inline-block text-muted-foreground">Date</span> <span className="text-foreground">{formatDateTime(emailContext?.received_at)}</span></p>
+              </div>
+              {selectedAttachment && (
+                <button
+                  type="button"
+                  onClick={scrollToAttachment}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                  title="Jump to the attached file below"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                  Go to attachment
+                </button>
+              )}
+            </div>
+
+            {/* Body text */}
+            <div className="mb-5 whitespace-pre-wrap text-sm text-foreground leading-relaxed">
+              {emailContext?.body_text || <span className="italic text-muted-foreground">No plain-text body saved.</span>}
+            </div>
+
+            {/* Attachments */}
+            {!!emailContext?.attachments?.length && (
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Attachments</p>
+                <div className="space-y-3">
+                  {emailContext.attachments.filter((att) => !timesheet || att.id === timesheet.attachment_id || !timesheet.attachment_id).map((att) => {
+                    const isLinked = att.id === timesheet?.attachment_id;
+                    const isSelected = att.id === selectedAttachmentId;
+                    return (
+                      <button
+                        key={att.id}
+                        type="button"
+                        onClick={() => setSelectedAttachmentId(isSelected ? null : att.id)}
+                        className={`flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left transition ${isSelected ? 'border-primary/40 bg-[var(--accent-light)]' : 'border-border/60 bg-muted/20 hover:border-primary/30 hover:bg-muted/40'}`}
+                      >
+                        <Paperclip className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-foreground">{att.filename}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {att.extraction_method && <Badge tone="info">{att.extraction_method}</Badge>}
+                            <Badge tone="outline">{att.extraction_status}</Badge>
+                            {isLinked && <Badge tone="success">linked to this record</Badge>}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Attachment preview — inline below email content, scrollable as one unit */}
+          {selectedAttachment && (
+            <div ref={attachmentPreviewRef} className="border-t border-border/60">
+              <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-6 py-2.5">
+                <p className="font-medium text-foreground">{selectedAttachment.filename}</p>
+                <Badge tone="outline">{selectedAttachment.extraction_status}</Badge>
+                {selectedAttachment.extraction_method && <Badge tone="info">{selectedAttachment.extraction_method}</Badge>}
+                {selectedAttachment.rendered_html && (
+                  <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 cursor-pointer"
+                      checked={showFullSheet}
+                      onChange={(e) => setShowFullSheet(e.target.checked)}
+                    />
+                    Show full sheet{fullSheetLoading && showFullSheet ? '…' : ''}
+                  </label>
+                )}
+              </div>
+              <div>
+                {attachmentLoadError
+                  ? <div className="px-6 py-10 text-sm text-[var(--danger)]">{attachmentLoadError}</div>
+                  : selectedAttachmentType === 'pdf' && attachmentUrl
+                    ? <iframe src={attachmentUrl} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} />
+                    : selectedAttachmentType === 'image' && attachmentUrl
+                      ? <div className="flex items-center justify-center p-4"><img src={attachmentUrl} alt={selectedAttachment.filename} className="max-w-full rounded-2xl object-contain" /></div>
+                      : selectedAttachment.rendered_html
+                        ? <iframe srcDoc={showFullSheet && fullSheetHtml ? fullSheetHtml : selectedAttachment.rendered_html} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} sandbox="" />
+                        : selectedAttachment.spreadsheet_preview
+                          ? <SpreadsheetPreviewTable preview={selectedAttachment.spreadsheet_preview} />
+                          : selectedAttachment.raw_extracted_text
+                            ? <pre className="whitespace-pre overflow-x-auto px-5 py-5 font-mono text-sm text-muted-foreground">{selectedAttachment.raw_extracted_text}</pre>
+                            : <div className="px-6 py-10 text-sm text-muted-foreground">Preview unavailable for this attachment.</div>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Splitter */}
+        <div
+          className="group relative flex w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border/40 transition hover:bg-primary/30 active:bg-primary/50"
+          onMouseDown={(e) => { e.preventDefault(); isDragging.current = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; }}
+        >
+          <div className="h-8 w-0.5 rounded-full bg-border group-hover:bg-primary/60 transition" />
+        </div>
+
+        {/* RIGHT – review panel */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-6 py-6">
+          {/* Week tabs */}
+          {siblings.length > 1 && (() => {
+            const handleDismissPill = async (
+              event: React.MouseEvent,
+              sibling: typeof siblings[number],
+            ) => {
+              event.stopPropagation();
+              const periodLabel = sibling.period_start && sibling.period_end
+                ? `${new Date(sibling.period_start).toLocaleDateString()} – ${new Date(sibling.period_end).toLocaleDateString()}`
+                : `#${sibling.id}`;
+              if (!window.confirm(
+                `Remove the timesheet for ${periodLabel} from this email's pills?\n\n` +
+                'It stays in the system as a rejected duplicate for audit but will no longer show up here.',
+              )) return;
+              try {
+                await rejectTimesheet.mutateAsync({
+                  id: sibling.id,
+                  reason: 'Duplicate submission',
+                  comment: undefined,
+                });
+                queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+                queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', sibling.id] });
+              } catch (err) {
+                window.alert((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                  ?? 'Could not remove this pill. Please try again.');
+              }
+            };
+            return (
+            <div className="mb-5">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                {siblings.length} timesheets from this email
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {siblings.map((s) => {
+                  const isActive = s.id === timesheet?.id;
+                  const label = s.period_start && s.period_end
+                    ? `${new Date(s.period_start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(s.period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                    : `#${s.id}`;
+                  // R8: status dot per tab so the reviewer sees the issue
+                  // distribution before clicking. Hover the tab to see why.
+                  const anomalyCount = Array.isArray(s.llm_anomalies) ? s.llm_anomalies.length : 0;
+                  let dotClass = 'bg-sky-500';
+                  let dotTitle = 'Ready to review';
+                  if (s.status === 'approved') {
+                    dotClass = 'bg-emerald-500'; dotTitle = 'Approved';
+                  } else if (s.status === 'rejected') {
+                    dotClass = 'bg-red-500'; dotTitle = 'Rejected';
+                  } else if (s.status === 'on_hold') {
+                    dotClass = 'bg-slate-400'; dotTitle = 'On hold';
+                  } else if (anomalyCount > 0) {
+                    dotClass = 'bg-amber-500';
+                    dotTitle = `${anomalyCount} anomaly${anomalyCount === 1 ? '' : 'ies'} flagged`;
+                  }
+                  return (
+                    <span
+                      key={s.id}
+                      className={`group/pill inline-flex items-center gap-2 rounded-full pl-3 ${isActive ? 'pr-3 bg-primary text-primary-foreground' : 'pr-1 border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/30 hover:text-foreground'} text-xs font-medium transition`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/ingestion/review/${s.id}`)}
+                        title={dotTitle}
+                        className="inline-flex items-center gap-2 py-1.5"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass} ${isActive ? 'opacity-90' : ''}`}
+                        />
+                        {label}
+                      </button>
+                      {!isActive && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDismissPill(e, s)}
+                          disabled={rejectTimesheet.isPending}
+                          title="Remove this pill"
+                          aria-label={`Remove ${label}`}
+                          className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground/60 transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+            );
+          })()}
+
+          {/* Rejection reason banner */}
+          {timesheet?.status === 'rejected' && timesheet.rejection_reason && (
+            <div className="mb-5 rounded-md bg-[var(--danger-light)] border border-[var(--danger)]/20 px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.12em] text-[var(--danger)] font-medium mb-1">
+                Rejection Reason
+              </p>
+              <p className="text-sm text-[var(--text-primary)]">
+                {timesheet.rejection_reason}
+              </p>
+            </div>
+          )}
+
+          {/* Assignment */}
+          {timesheet ? (
+            <div className="space-y-5">
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Assignment</p>
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between gap-3">
+                      <label className="block text-sm font-medium text-foreground">Client</label>
+                      <button
+                        type="button"
+                        onClick={(event) => setAddClientAnchor(event.currentTarget)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary transition hover:opacity-80"
+                        aria-label="Add a new client"
+                        title="Open the document to find the client name, then create it here"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add client
+                      </button>
+                    </div>
+                    <select className="field-input" value={summaryForm.client_id} onChange={(e) => handleClientPickerChange(e.target.value)}>
+                      <option value="">Select client</option>
+                      {clients.map((client: { id: number; name: string }) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                    </select>
+                    {extractedClientHint && !extractedClientMatchesExisting && !summaryForm.client_id && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+                        <p className="text-xs text-muted-foreground">
+                          Found in document. Client: <span className="font-medium text-foreground">{extractedClientHint}</span> (not in your client list).
+                        </p>
+                        <button
+                          type="button"
+                          disabled={createClient.isPending}
+                          onClick={async () => {
+                            try {
+                              const created = await createClient.mutateAsync({ name: extractedClientHint });
+                              // Cascade across siblings + persist immediately
+                              // rather than parking the choice in local form
+                              // state until Approve fires.
+                              await handleClientPickerChange(String(created.id));
+                            } catch {
+                              // Surface via generic error handling; leave the form as-is.
+                            }
+                          }}
+                          className="text-xs font-medium text-primary hover:underline disabled:opacity-60"
+                        >
+                          {createClient.isPending ? 'Creating…' : `Create "${extractedClientHint}"`}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Employee</label>
+                    <select
+                      className="field-input"
+                      value={employeeSelectValue}
+                      onChange={(e) => setSummaryForm((c) => ({ ...c, employee_id: e.target.value === '__extracted__' ? '' : e.target.value }))}
+                    >
+                      <option value="">Select employee</option>
+                      {showExtractedEmployeeOption && (
+                        <option value="__extracted__">From document: {extractedEmployeeDisplayName || extractedEmployeeHint} (not in system)</option>
+                      )}
+                      {users.map((user) => <option key={user.id} value={user.id}>{cleanEmployeeNameForDisplay(user.full_name) || user.full_name}</option>)}
+                    </select>
+                    {extractedEmployeeHint && (
+                      <p className="mt-1.5 text-xs text-muted-foreground">Found in document: <span className="font-medium text-foreground">{extractedEmployeeDisplayName || extractedEmployeeHint}</span></p>
+                    )}
+                    <ChainCandidatesPanel
+                      timesheetId={timesheet?.id ?? null}
+                      rawSuggestions={timesheet?.llm_match_suggestions ?? null}
+                      currentEmployeeId={timesheet?.employee_id ?? null}
+                      onAssign={async (payload) => {
+                        if (!timesheet) return;
+                        await assignChainCandidate.mutateAsync({ id: timesheet.id, data: payload });
+                      }}
+                      isAssigning={assignChainCandidate.isPending}
+                    />
+                  </div>
+                </div>
+
+                {/* Supervisor: free-form (typically a client contact).
+                    Only shown when one was actually extracted from the
+                    source timesheet — hiding the field entirely when
+                    nothing was extracted keeps the assignment block
+                    focused on fields that have real signal. */}
+                {Boolean((timesheet?.extracted_supervisor_name ?? '').trim()) && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
+                    <input
+                      type="text"
+                      className="field-input"
+                      value={summaryForm.extracted_supervisor_name}
+                      onChange={(e) => setSummaryForm((c) => ({ ...c, extracted_supervisor_name: e.target.value }))}
+                      placeholder="Name from the timesheet"
+                    />
+                    {timesheet?.extracted_supervisor_name
+                      && timesheet.extracted_supervisor_name !== summaryForm.extracted_supervisor_name
+                      && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Found in the document: <span className="font-medium text-foreground">{timesheet.extracted_supervisor_name}</span>. Saved with your approval.
+                        </p>
+                      )}
+                  </div>
+                )}
+              </div>
+
+              {/* Week & Hours */}
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Week &amp; Hours</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week Start</label>
+                    <input type="date" className="field-input" value={summaryForm.period_start} onChange={(e) => setSummaryForm((c) => ({ ...c, period_start: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week End</label>
+                    <input type="date" className="field-input" value={summaryForm.period_end} onChange={(e) => setSummaryForm((c) => ({ ...c, period_end: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Total Hours</label>
+                    <input className="field-input" value={summaryForm.total_hours} onChange={(e) => setSummaryForm((c) => ({ ...c, total_hours: e.target.value }))} />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-foreground">Reviewer notes</label>
+                <textarea className="field-textarea" rows={3} value={summaryForm.internal_notes} onChange={(e) => setSummaryForm((c) => ({ ...c, internal_notes: e.target.value }))} />
+              </div>
+
+              <div className="flex items-center justify-between">
+                {timesheet?.created_at ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    Processed by system · {formatDateTime(timesheet.created_at)}
+                  </p>
+                ) : <span />}
+                <button type="button" onClick={handleSaveSummary} className="action-button" disabled={updateTimesheet.isPending}>
+                  <Save className="mr-1.5 h-4 w-4" /> {updateTimesheet.isPending ? 'Saving...' : 'Save Summary'}
+                </button>
+              </div>
+
+              {/* Line Items */}
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Line Items</p>
+                  <div className="flex items-center gap-3">
+                    {isActionable && timesheet.line_items.length > 0 && (() => {
+                      const selectableCount = timesheet.line_items.filter((i) => !i.is_rejected).length;
+                      const allSelected = selectableCount > 0 && selectedLineItemIds.size === selectableCount;
+                      return (
+                        <button
+                          type="button"
+                          onClick={allSelected ? clearLineItemSelection : selectAllSelectableLineItems}
+                          className="text-xs text-primary transition hover:opacity-75"
+                        >
+                          {allSelected ? 'Clear selection' : `Select all (${selectableCount})`}
+                        </button>
+                      );
+                    })()}
+                    {isActionable && (
+                      <button type="button" onClick={() => openLineItemModal()} className="inline-flex items-center gap-1 text-xs text-primary transition hover:opacity-75">
+                        <Plus className="h-3.5 w-3.5" /> Add
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Bulk action toolbar; fires per-item PATCH/reject in parallel. */}
+                {isActionable && selectedLineItemIds.size > 0 && (
+                  <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-foreground">
+                        {selectedLineItemIds.size} line {selectedLineItemIds.size === 1 ? 'item' : 'items'} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearLineItemSelection}
+                        disabled={bulkBusy}
+                        className="text-xs text-muted-foreground transition hover:text-foreground"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-stretch gap-2">
+                      <select
+                        className="field-input h-8 flex-1 min-w-[180px] text-sm"
+                        value={bulkProjectId}
+                        onChange={(e) => setBulkProjectId(e.target.value)}
+                        disabled={bulkBusy}
+                      >
+                        <option value="">Assign project…</option>
+                        {projects.map((project: { id: number; name: string }) => (
+                          <option key={project.id} value={project.id}>{project.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleBulkAssignProject}
+                        disabled={!bulkProjectId || bulkBusy}
+                        className="action-button h-8 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {bulkBusy ? 'Assigning…' : `Assign to ${selectedLineItemIds.size}`}
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-stretch gap-2">
+                      <input
+                        className="field-input h-8 flex-1 min-w-[180px] text-sm"
+                        placeholder="Exclusion reason (required to exclude)"
+                        value={bulkExcludeReason}
+                        onChange={(e) => setBulkExcludeReason(e.target.value)}
+                        disabled={bulkBusy}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleBulkExclude}
+                        disabled={!bulkExcludeReason.trim() || bulkBusy}
+                        className="h-8 rounded border border-[var(--danger)]/30 px-3 text-sm text-[var(--danger)] transition hover:bg-[var(--danger-light)] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {bulkBusy ? 'Excluding…' : `Exclude ${selectedLineItemIds.size}`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {timesheet.line_items.length === 0
+                  ? <p className="text-sm text-muted-foreground">No line items yet.</p>
+                  : (
+                    <div className="space-y-2">
+                      {timesheet.line_items.map((lineItem) => {
+                        const isSelected = selectedLineItemIds.has(lineItem.id);
+                        const canSelect = isActionable && !lineItem.is_rejected;
+                        return (
+                        <div
+                          key={lineItem.id}
+                          className={`group rounded-lg border transition ${
+                            lineItem.is_rejected
+                              ? 'border-[var(--danger)]/30 bg-[var(--danger-light)]/40'
+                              : isSelected
+                                ? 'border-primary/40 bg-primary/5'
+                                : 'border-border/60 bg-muted/20 hover:bg-muted/40'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2 px-3 py-2.5">
+                            {/* Checkbox column. Excluded rows can't be
+                                selected (re-excluding them is a no-op).
+                                Restore them first if you need to act. */}
+                            <div className="flex h-5 shrink-0 items-center pt-0.5">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-border accent-primary disabled:opacity-40"
+                                checked={isSelected}
+                                disabled={!canSelect}
+                                onChange={() => toggleLineItemSelection(lineItem.id)}
+                                aria-label={canSelect ? `Select line item ${lineItem.id}` : 'Excluded; cannot be selected'}
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`font-mono text-sm font-medium ${lineItem.is_rejected ? 'line-through text-muted-foreground' : 'text-foreground'}`}>{format(new Date(lineItem.work_date + 'T00:00:00'), 'MMM d, yyyy (EEE)')}</span>
+                                <span className={`font-mono text-sm ${lineItem.is_rejected ? 'line-through text-muted-foreground' : 'text-foreground'}`}>{Number(lineItem.hours).toFixed(1)}h</span>
+                                {lineItem.is_rejected
+                                  ? <Badge tone="danger">Excluded</Badge>
+                                  : <Badge tone={lineItem.project_id ? 'info' : 'warning'}>{lineItem.project_id ? `Project #${lineItem.project_id}` : 'Needs project'}</Badge>}
+                                {lineItem.is_corrected && !lineItem.is_rejected && <Badge tone="outline">Corrected</Badge>}
+                                {lineItem.is_corrected && !lineItem.is_rejected && lineItem.original_value && (
+                                  <span className="text-xs text-muted-foreground ml-2">
+                                    (was: {Number(lineItem.original_value.hours).toFixed(1)}h on {String(lineItem.original_value.work_date)})
+                                  </span>
+                                )}
+                              </div>
+                              <p className={`mt-0.5 truncate text-xs ${lineItem.is_rejected ? 'line-through text-muted-foreground' : 'text-muted-foreground'}`}>{lineItem.description || 'No description'} · Code {lineItem.project_code || '--'}</p>
+                              {lineItem.is_rejected && lineItem.rejection_reason && (
+                                <p className="mt-1 text-xs text-[var(--danger)]">Reason: {lineItem.rejection_reason}</p>
+                              )}
+                              {rejectingLineItemId === lineItem.id && (
+                                <div className="mt-2 flex gap-2">
+                                  <input
+                                    className="field-input h-7 flex-1 text-xs"
+                                    value={lineItemRejectReason}
+                                    onChange={(e) => setLineItemRejectReason(e.target.value)}
+                                    placeholder="Rejection reason (required)"
+                                    autoFocus
+                                  />
+                                  <button type="button" onClick={() => handleRejectLineItem(lineItem.id)} disabled={!lineItemRejectReason.trim() || rejectLineItem.isPending} className="action-button h-7 px-2 text-xs">Confirm</button>
+                                  <button type="button" onClick={() => { setRejectingLineItemId(null); setLineItemRejectReason(''); }} className="action-button-secondary h-7 px-2 text-xs">Cancel</button>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
+                              {isActionable && !lineItem.is_rejected && (
+                                <>
+                                  <button type="button" onClick={() => openLineItemModal(lineItem)} className="action-button-secondary h-7 px-2 text-xs">Edit</button>
+                                  <button type="button" onClick={() => handleDeleteLineItem(lineItem)} className="action-button-secondary h-7 px-2 text-xs"><Trash2 className="h-3.5 w-3.5" /></button>
+                                  <button type="button" onClick={() => { setRejectingLineItemId(lineItem.id); setLineItemRejectReason(''); }} className="h-7 px-2 text-xs rounded border border-[var(--danger)]/30 text-[var(--danger)] hover:bg-[var(--danger-light)] transition">Exclude</button>
+                                </>
+                              )}
+                              {lineItem.is_rejected && (
+                                <button type="button" onClick={() => handleUnrejectLineItem(lineItem.id)} disabled={unrejectLineItem.isPending} className="h-7 px-2 text-xs rounded border border-border/60 text-foreground hover:bg-muted/40 transition">Restore</button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                {!!timesheet.line_items.length && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Project assignment must be resolved on every line item before approval can create real time entries.
+                  </p>
+                )}
+              </div>
+
+              {/* Issues to review */}
+              {!!timesheet.llm_anomalies?.length && (
+                <div>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Issues to review</p>
+                  <div className="space-y-2">
+                    {timesheet.llm_anomalies.map((anomaly, index) => (
+                      <div key={index} className="rounded-xl border border-[var(--warning)]/25 bg-[var(--warning-light)] px-3 py-2.5 text-sm text-[var(--warning)]">
+                        <span className="font-semibold">{(anomaly.type as string) || 'Anomaly'}:</span>{' '}
+                        <span className="text-[var(--text-primary)]">{(anomaly.description as string) || 'Check this item.'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Reviewer Actions */}
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Reviewer Actions</p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Comment</label>
+                    <textarea className="field-textarea" rows={3} value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} />
+                  </div>
+                  <div className="grid gap-2">
+                    <button type="button" onClick={handleDraftComment} className="action-button-secondary" disabled={draftComment.isPending}>
+                      <Bot className="mr-1.5 h-4 w-4" /> {draftComment.isPending ? 'Drafting...' : 'Draft AI Comment'}
+                    </button>
+                    {isActionable && <>
+                      <button
+                        type="button"
+                        onClick={(e) => setHoldPopoverAnchor(e.currentTarget)}
+                        className="action-button-secondary"
+                        disabled={holdTimesheet.isPending}
+                      >
+                        <PauseCircle className="mr-1.5 h-4 w-4" />
+                        {holdTimesheet.isPending ? 'Holding...' : 'Place On Hold'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => setRejectPopoverAnchor(e.currentTarget)}
+                        className="action-button-secondary"
+                        disabled={rejectTimesheet.isPending}
+                      >
+                        <XCircle className="mr-1.5 h-4 w-4" /> Reject Submission
+                      </button>
+                    </>}
+                  </div>
+                </div>
+              </div>
+
+              {/* Activity log */}
+              {!!timesheet.audit_log?.length && (
+                <div>
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Activity log</p>
+                  <div className="space-y-2">
+                    {timesheet.audit_log.map((entry) => (
+                      <div key={entry.id} className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm font-medium text-foreground">{entry.action.replace(/_/g, ' ')}</p>
+                          <p className="text-xs text-muted-foreground">{formatDateTime(entry.created_at)}</p>
+                        </div>
+                        {entry.comment && <p className="mt-1 text-xs text-muted-foreground">{entry.comment}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Diagnostic view (email-only mode) */
+            <div className="space-y-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Diagnostic Summary</p>
+              <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 space-y-2 text-sm">
+                <p className="text-muted-foreground">Mailbox: <span className="text-foreground">{storedEmail?.mailbox_label || '--'}</span></p>
+                <p className="text-muted-foreground">Classifier intent: <span className="text-foreground">{storedEmail?.classification_intent || 'unknown'}</span></p>
+                <p className="text-muted-foreground">Skip reason: <span className="text-foreground">{renderReason(storedEmail?.skip_reason)}</span></p>
+              </div>
+              {storedEmail?.skip_detail && <p className="text-sm text-muted-foreground">{storedEmail.skip_detail}</p>}
+              {!!storedEmail?.llm_classification?.reasoning && (
+                <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                  {String(storedEmail.llm_classification.reasoning)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {timesheet && <Modal open={lineItemModalOpen} onClose={() => setLineItemModalOpen(false)} title={editingLineItem ? 'Edit Line Item' : 'Add Line Item'} description="Project assignment can be by code, direct project id, or both.">
+        <form onSubmit={handleSaveLineItem} className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><label className="mb-2 block text-sm font-medium text-foreground">Work Date</label><input type="date" className="field-input" value={lineItemForm.work_date} onChange={(e) => setLineItemForm((c) => ({ ...c, work_date: e.target.value }))} required /></div>
+            <div><label className="mb-2 block text-sm font-medium text-foreground">Hours</label><input className="field-input" value={lineItemForm.hours} onChange={(e) => setLineItemForm((c) => ({ ...c, hours: e.target.value }))} required /></div>
+          </div>
+          <div><label className="mb-2 block text-sm font-medium text-foreground">Description</label><textarea className="field-textarea" rows={3} value={lineItemForm.description} onChange={(e) => setLineItemForm((c) => ({ ...c, description: e.target.value }))} /></div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><label className="mb-2 block text-sm font-medium text-foreground">Project Code</label><input className="field-input" value={lineItemForm.project_code} onChange={(e) => setLineItemForm((c) => ({ ...c, project_code: e.target.value }))} /></div>
+            <div><label className="mb-2 block text-sm font-medium text-foreground">Project</label><select className="field-input" value={lineItemForm.project_id} onChange={(e) => setLineItemForm((c) => ({ ...c, project_id: e.target.value }))}><option value="">No direct project</option>{projects.map((project: { id: number; name: string }) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={() => setLineItemModalOpen(false)} className="action-button-secondary">Cancel</button>
+            <button type="submit" className="action-button" disabled={addLineItem.isPending || updateLineItem.isPending}>{addLineItem.isPending || updateLineItem.isPending ? 'Saving...' : editingLineItem ? 'Save Line Item' : 'Add Line Item'}</button>
+          </div>
+        </form>
+      </Modal>}
+
+      <CreateClientFromDomainPopover
+        open={addClientAnchor != null}
+        anchorEl={addClientAnchor}
+        // Pass the domain only when it'll actually map (non-personal).
+        // The personal-domain branch in the popover renders a copy
+        // explaining that no domain mapping is added.
+        domain={senderDomain && !senderDomainIsPersonal ? senderDomain : ''}
+        cascadeCount={0}
+        existingClients={clients as Array<{ id: number; name: string }>}
+        initialValue={addClientInitialValue}
+        isSubmitting={createClientFromDomain.isPending || createClient.isPending}
+        onConfirm={handleAddClientConfirm}
+        onClose={() => setAddClientAnchor(null)}
+      />
+
+      <ReasonPopover
+        open={rejectPopoverAnchor != null}
+        anchorEl={rejectPopoverAnchor}
+        title="Reject submission"
+        description="Reason will be visible to the submitter and saved on the audit log."
+        placeholder="e.g. Hours exceed contract limit"
+        reason={rejectReason}
+        setReason={setRejectReason}
+        confirmLabel="Reject"
+        confirmTone="danger"
+        isSubmitting={rejectTimesheet.isPending}
+        onConfirm={handleReject}
+        onClose={() => setRejectPopoverAnchor(null)}
+      />
+
+      <ReasonPopover
+        open={holdPopoverAnchor != null}
+        anchorEl={holdPopoverAnchor}
+        title="Place on hold"
+        description="What's the holdup? Visible to other reviewers in the inbox."
+        placeholder="e.g. Waiting on client confirmation"
+        reason={holdReason}
+        setReason={setHoldReason}
+        confirmLabel="Place on hold"
+        confirmTone="primary"
+        isSubmitting={holdTimesheet.isPending}
+        onConfirm={handleHold}
+        onClose={() => setHoldPopoverAnchor(null)}
+      />
+    </div>
+  );
+};
