@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from app.seed_setting_definitions import CATALOG
 
-revision = "061_resync_setting_definitions_metadata"
+revision = "061_resync_setting_metadata"
 down_revision = "060_time_entry_start_end_time"
 branch_labels = None
 depends_on = None
