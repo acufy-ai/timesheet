@@ -14,7 +14,7 @@ The following has already been done on the Lightsail host:
 - Two databases on `ldb.acufy.ai`:
   - `timesheet_ldev` (per-tenant data + legacy shared)
   - `acufy_control_ldev` (control plane)
-- Role `timesheet_user_ldev` owns both DBs (password `__DB_PASSWORD__`)
+- Role `timesheet_user_ldev` owns both DBs (password stored in local `.env.ldev`)
 - `pg_hba.conf` has two entries permitting that role from any host
 - Backup of `pg_hba.conf` at `/var/lib/pgsql/data/pg_hba.conf.bak.<ts>`
 
