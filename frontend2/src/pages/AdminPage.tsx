@@ -3970,16 +3970,19 @@ export const AdminPage: React.FC = () => {
       )}
 
       {selectedUserDetails && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-          <div className="bg-card rounded-xl shadow-2xl w-full max-w-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4 py-6">
+          {/* max-h + flex-col so the modal frame caps to the viewport
+              and the body scrolls instead of pushing the header off
+              the top when a user has lots of project access rows. */}
+          <div className="bg-card rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
               <h2 className="text-lg font-bold">User Details</h2>
               <button onClick={() => setSelectedUserDetails(null)} className="p-1.5 rounded hover:bg-muted">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-5">
+            <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-muted-foreground">Full Name</p>
@@ -4160,7 +4163,7 @@ export const AdminPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="px-6 pb-6 flex flex-wrap items-center gap-2">
+            <div className="px-6 py-4 border-t flex flex-wrap items-center gap-2 flex-shrink-0">
               {canEditUser(selectedUserDetails) && (
                 <button
                   onClick={() => {
