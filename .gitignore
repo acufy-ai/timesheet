@@ -65,4 +65,5 @@ audit/
 
 # Lightsail ldev deploy: real env values and tarred images stay local
 deploy-ldev/.env.ldev
+deploy-ldev/.env.ldev.bak.*
 deploy-ldev/images/

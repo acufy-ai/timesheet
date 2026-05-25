@@ -19,6 +19,7 @@ param(
     [string]$RemoteDir = '/home/ec2-user/timesheet-ldev',
     [switch]$SkipBuild,
     [switch]$SkipScp,
+    [switch]$SkipEnv,
     [switch]$BackendOnly,
     [switch]$FrontendOnly
 )
@@ -175,7 +176,28 @@ if (-not $SkipScp) {
             Invoke-Native "scp nginx $($_.Name)" { & scp @scpArgs $localConf $remoteConf }
         }
     }
-    Invoke-Native 'scp env'      { & scp @scpArgs $EnvFile "${sshTarget}:${RemoteDir}/.env" }
+    # The local .env.ldev is the source of truth for ldev env values.
+    # Each deploy copies it over the host's /home/ec2-user/timesheet-ldev/.env
+    # so direct edits on the host get clobbered on the next deploy.
+    # Two safety valves:
+    #   1) -SkipEnv: opt-in flag for hotfixes where you want to ship a
+    #      new image but NOT touch env (e.g. shipping a code fix while
+    #      a separate env-rotation change is in flight on the host).
+    #   2) __REPLACE_ME__ guard: refuse to ship a template-state file
+    #      over a working host file. If the local file still has any
+    #      placeholders left, the deploy aborts before scp.
+    if ($SkipEnv) {
+        Write-Host "==> -SkipEnv: leaving host .env untouched" -ForegroundColor Yellow
+    } else {
+        $envBody = Get-Content $EnvFile -Raw
+        if ($envBody -match '__REPLACE_ME__') {
+            Write-Host "ERROR: $EnvFile still contains __REPLACE_ME__ placeholders." -ForegroundColor Red
+            Write-Host "Refusing to ship a template-state file over the live host .env." -ForegroundColor Red
+            Write-Host "Fill in the missing values, or pass -SkipEnv to deploy code-only." -ForegroundColor Yellow
+            exit 1
+        }
+        Invoke-Native 'scp env'      { & scp @scpArgs $EnvFile "${sshTarget}:${RemoteDir}/.env" }
+    }
 
     if (-not $FrontendOnly) {
         Write-Host "==> Copying backend tar (this can take a minute)" -ForegroundColor Cyan

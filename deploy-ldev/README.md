@@ -86,6 +86,38 @@ docker compose exec backend python -m app.seed
 Just re-run `build-and-ship.ps1`. Containers are restarted with `up -d`.
 Migrations run at backend startup (`alembic upgrade head`).
 
+## Env file: local is the source of truth
+
+Every deploy copies your **local** `deploy-ldev/.env.ldev` over the
+host's `/home/ec2-user/timesheet-ldev/.env`. The host file is a
+build artifact, not a place to edit. **Never edit the host `.env`
+directly** — your changes will be clobbered on the next deploy.
+
+### When you rotate a credential
+
+The three-step sequence, in order, every time:
+
+1. Rotate the upstream credential (e.g. on `ldb.acufy.ai` via dbadmin,
+   or on the OpenAI / Auth0 / SMTP provider).
+2. Update `deploy-ldev/.env.ldev` locally with the new value. This is
+   gitignored, so the secret never reaches git.
+3. Run `build-and-ship.ps1`. The script ships the updated `.env.ldev`
+   to the host as `.env` and restarts containers.
+
+If you skip step 2 and just rotate + redeploy, the deploy will push
+the *old* value back over the host and the containers will fail to
+authenticate against the upstream.
+
+### Safety valves
+
+- `-SkipEnv`: opt-in flag for the rare hotfix where you want to ship
+  a new image but NOT touch env. Useful only when an env rotation is
+  intentionally in flight on the host and you don't want the deploy
+  to overwrite it. Default is to always ship the env.
+- `__REPLACE_ME__` guard: the script refuses to ship a `.env.ldev`
+  that still contains template placeholders. Prevents accidentally
+  clobbering a working host file with a half-filled template.
+
 ## Rollback
 
 Tar files from the previous deploy stay on the host under
