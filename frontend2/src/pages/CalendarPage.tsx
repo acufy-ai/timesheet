@@ -89,7 +89,9 @@ export const CalendarPage: React.FC = () => {
   const calendarDays = eachDayOfInterval({ start: gridStart, end: gridEnd });
 
   const normalizedEntries: CalendarEntry[] = useMemo(() => {
-    const normalizedTimeEntries: CalendarEntry[] = (timeEntries || []).map((entry: TimeEntry) => ({
+    const safeTimeEntries = Array.isArray(timeEntries) ? timeEntries : [];
+    const safeTimeOff = Array.isArray(timeOffEntries) ? timeOffEntries : [];
+    const normalizedTimeEntries: CalendarEntry[] = safeTimeEntries.map((entry: TimeEntry) => ({
       id: entry.id,
       date: entry.entry_date,
       hours: entry.hours,
@@ -98,7 +100,7 @@ export const CalendarPage: React.FC = () => {
       entryType: 'TIMESHEET',
     }));
 
-    const normalizedTimeOffEntries: CalendarEntry[] = (timeOffEntries || []).map((entry: TimeOffRequest) => ({
+    const normalizedTimeOffEntries: CalendarEntry[] = safeTimeOff.map((entry: TimeOffRequest) => ({
       id: entry.id,
       date: entry.request_date,
       hours: entry.hours,
@@ -111,10 +113,11 @@ export const CalendarPage: React.FC = () => {
   }, [timeEntries, timeOffEntries]);
 
   const dailySummaries = useMemo(() => {
+    const safeHolidays = Array.isArray(holidays) ? holidays : [];
     return calendarDays.map((day): DaySummary => {
       const dateStr = format(day, 'yyyy-MM-dd');
       const dayEntries = normalizedEntries.filter((entry: CalendarEntry) => isSameDay(parseISO(entry.date), day));
-      const dayHolidays = (holidays || []).filter((h) => h.date === dateStr);
+      const dayHolidays = safeHolidays.filter((h) => h.date === dateStr);
       const workHours = dayEntries
         .filter((entry: CalendarEntry) => entry.entryType === 'TIMESHEET')
         .reduce((sum: number, entry: CalendarEntry) => sum + getHours(entry.hours), 0);
@@ -213,7 +216,10 @@ export const CalendarPage: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-7 gap-2 mb-2 text-sm font-medium text-muted-foreground">
-          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label) => (
+          {(weekStartsOn === 1
+            ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+            : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+          ).map((label) => (
             <div key={label} className="px-2 py-1 text-center">
               {label}
             </div>

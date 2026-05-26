@@ -769,10 +769,37 @@ export const useUpdateMyPreferences = () => {
   return useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       usersAPI.updateMyPreferences(data).then((res) => res.data),
+    onMutate: async (patch) => {
+      // Optimistic update: write the new keys into cache immediately so
+      // controlled components (e.g. HolidayCountryFilter's <select>) flip
+      // to the new value without waiting on the network. The server
+      // response in onSuccess will replace this with the canonical
+      // merged dict.
+      await queryClient.cancelQueries({ queryKey: ['users', 'me', 'preferences'] });
+      const previous = queryClient.getQueryData<Record<string, unknown>>([
+        'users', 'me', 'preferences',
+      ]);
+      const next = { ...(previous || {}) };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null || v === undefined) delete next[k];
+        else next[k] = v;
+      }
+      queryClient.setQueryData(['users', 'me', 'preferences'], next);
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous !== undefined) {
+        queryClient.setQueryData(['users', 'me', 'preferences'], ctx.previous);
+      }
+    },
     onSuccess: (preferences) => {
-      // Optimistically write the server's merged dict into cache so
-      // subsequent reads don't need a round-trip.
+      // Authoritative merge from server overwrites the optimistic write.
       queryClient.setQueryData(['users', 'me', 'preferences'], preferences);
+      // Any query whose params depend on a preference (e.g. holidays
+      // filtered by holiday_calendar_country) needs a re-fetch with the
+      // new param. Cheaper than threading invalidations through every
+      // consumer.
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
     },
   });
 };
