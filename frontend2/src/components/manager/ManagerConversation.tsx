@@ -73,9 +73,11 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
     );
   } else {
     if (critical.length > 0) {
-      // Render each follow-up name as a clickable link so the
-      // manager can drill straight into that person's approvals
-      // queue. Colored, not highlighted: no background fill.
+      // Repeatedly-late employees haven't submitted, so the
+      // /approvals queue is empty for them. Route to My Team instead
+      // where the manager can see who's late and nudge them
+      // directly. (Approvals is for reviewing submitted work, not
+      // chasing un-submitted work.)
       const linkable = critical.slice(0, 2);
       fragments.push(
         <span key="crit">
@@ -83,7 +85,7 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
             <React.Fragment key={m.user_id}>
               <button
                 type="button"
-                onClick={() => navigate(`/approvals?user_id=${m.user_id}`)}
+                onClick={() => navigate(`/user-management?user_id=${m.user_id}`)}
                 className="convo-link"
               >
                 {m.full_name.split(' ')[0]}
@@ -101,13 +103,14 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
       );
     }
     if (behind.length > 0) {
-      // Make the "N others" count clickable too, leading to the
-      // approvals queue scoped to the team's pending entries.
+      // Same as the critical case: "behind" means haven't logged all
+      // days yet, so nothing to approve. Route to My Team to find
+      // who and follow up directly.
       fragments.push(
         <span key="behind">
           <button
             type="button"
-            onClick={() => navigate('/approvals')}
+            onClick={() => navigate('/user-management')}
             className="convo-link"
           >
             {behind.length} {behind.length === 1 ? 'other' : 'others'}
@@ -187,7 +190,10 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
   if (behind.length > 0) {
     actions.push({
       label: `Send reminder (${behind.length})`,
-      onClick: () => navigate('/approvals'),
+      // My Team is the surface where the manager can see and nudge
+      // direct reports; /approvals is for reviewing submitted work
+      // which "behind" people haven't done yet.
+      onClick: () => navigate('/user-management'),
     });
   }
   if (critical.length > 0) {
@@ -195,7 +201,7 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
       // Button copy mirrors the paragraph: avoid "critical", say what
       // the manager will actually do (open the follow-up list).
       label: `Open follow-ups (${critical.length})`,
-      onClick: () => navigate('/approvals'),
+      onClick: () => navigate('/user-management'),
     });
   }
   if (actions.length === 0) {
