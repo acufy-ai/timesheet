@@ -63,14 +63,15 @@ export const AddHolidayModal: React.FC<Props> = ({ isOpen, onClose, prefillDate 
 
   // When suggestions arrive, default-select all of them.
   useEffect(() => {
-    if (suggestions.data) {
-      setSelectedDates(new Set(suggestions.data.holidays.map((h) => h.date)));
+    const list = Array.isArray(suggestions.data?.holidays) ? suggestions.data!.holidays : [];
+    if (list.length > 0) {
+      setSelectedDates(new Set(list.map((h) => h.date)));
     }
   }, [suggestions.data]);
 
   const selectedCount = selectedDates.size;
   const sortedSuggestions = useMemo(
-    () => suggestions.data?.holidays ?? [],
+    () => (Array.isArray(suggestions.data?.holidays) ? suggestions.data!.holidays : []),
     [suggestions.data],
   );
 
@@ -88,8 +89,8 @@ export const AddHolidayModal: React.FC<Props> = ({ isOpen, onClose, prefillDate 
   };
 
   const handleImport = async () => {
-    if (!suggestions.data) return;
-    const picks = suggestions.data.holidays.filter((h) => selectedDates.has(h.date));
+    const list = Array.isArray(suggestions.data?.holidays) ? suggestions.data!.holidays : [];
+    const picks = list.filter((h) => selectedDates.has(h.date));
     if (picks.length === 0) return;
     try {
       await bulkMutation.mutateAsync(
