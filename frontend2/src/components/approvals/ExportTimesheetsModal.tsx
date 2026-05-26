@@ -76,17 +76,45 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
   // race that can swallow inner-button clicks at the gap between
   // React's synthetic-event delegation and a document-level listener.
 
-  const employeesWithEntries = useMemo(() => {
+  // Picker enumerates BOTH real users (by employee_id) AND name-only
+  // inbox rows (where the sender email didn't match a workspace user).
+  // External contractors who fwd timesheets often don't have a User row;
+  // the table renders them by name, and the picker has to match. We
+  // emit synthetic User-shaped entries with negative ids so the
+  // selection set stays Set<number>; the negative id maps back to the
+  // canonical name when CSV/PDF filtering runs below.
+  const { employeesWithEntries, syntheticNameById } = useMemo(() => {
     const userById = new Map<number, User>(users.map((u) => [u.id, u]));
-    const ids = new Set<number>();
-    for (const e of entries) ids.add(e.user_id);
+    const idsReal = new Set<number>();
+    const nameOnlyRows = new Map<string, IngestionTimesheetSummary>();
+    for (const e of entries) idsReal.add(e.user_id);
     for (const ts of ingestionSummaries) {
-      if (ts.employee_id) ids.add(ts.employee_id);
+      if (ts.employee_id) {
+        idsReal.add(ts.employee_id);
+      } else {
+        const name = (ts.employee_name ?? ts.extracted_employee_name ?? '').trim();
+        if (name && !nameOnlyRows.has(name)) nameOnlyRows.set(name, ts);
+      }
     }
-    return Array.from(ids)
+    const realUsers = Array.from(idsReal)
       .map((id) => userById.get(id))
-      .filter((u): u is User => Boolean(u))
-      .sort((a, b) => a.full_name.localeCompare(b.full_name));
+      .filter((u): u is User => Boolean(u));
+    // Stable negative ids: -1, -2, ... in alphabetical order of name.
+    // CSV/PDF filters use the syntheticNameById map below to translate.
+    const syntheticNameById = new Map<number, string>();
+    const syntheticUsers: User[] = [];
+    let nextSynth = -1;
+    Array.from(nameOnlyRows.keys()).sort().forEach((name) => {
+      const id = nextSynth--;
+      syntheticNameById.set(id, name);
+      // Cast through unknown to dodge the strict User type; only
+      // `id` and `full_name` are read downstream in this modal.
+      syntheticUsers.push({ id, full_name: name } as unknown as User);
+    });
+    const combined = [...realUsers, ...syntheticUsers].sort((a, b) =>
+      a.full_name.localeCompare(b.full_name),
+    );
+    return { employeesWithEntries: combined, syntheticNameById };
   }, [entries, ingestionSummaries, users]);
 
   const filteredEmployees = useMemo(() => {
@@ -123,13 +151,23 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
   // ─── Export implementations ────────────────────────────────────
 
   const runCsv = (employeeIds: number[]) => {
+    // Split selection into real ids and synthetic (negative) ids that
+    // stand in for unbound inbox rows. Synthetic ids translate back
+    // to canonical names via syntheticNameById; we then match
+    // ingestion rows by name when employee_id is null.
+    const realIds = employeeIds.filter((id) => id > 0);
+    const synthNames = new Set(
+      employeeIds.filter((id) => id < 0).map((id) => syntheticNameById.get(id)).filter((n): n is string => Boolean(n))
+    );
     const scopedEntries = employeeIds.length
-      ? entries.filter((e) => employeeIds.includes(e.user_id))
+      ? entries.filter((e) => realIds.includes(e.user_id))
       : entries;
     const scopedIngestion = employeeIds.length
-      ? ingestionSummaries.filter(
-          (ts) => ts.employee_id !== null && ts.employee_id !== undefined && employeeIds.includes(ts.employee_id),
-        )
+      ? ingestionSummaries.filter((ts) => {
+          if (ts.employee_id != null) return realIds.includes(ts.employee_id);
+          const name = (ts.employee_name ?? ts.extracted_employee_name ?? '').trim();
+          return name && synthNames.has(name);
+        })
       : ingestionSummaries;
     if (scopedEntries.length === 0 && scopedIngestion.length === 0) return;
 
@@ -239,11 +277,22 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
       entriesByEmployee.set(e.user_id, list);
     }
     const ingestionByEmployee = new Map<number, IngestionTimesheetSummary[]>();
+    // Same name-only fallback as the picker: bucket inbox rows by the
+    // user's name when employee_id is null so we can produce a PDF
+    // for unbound external contractors.
+    const ingestionByName = new Map<string, IngestionTimesheetSummary[]>();
     for (const ts of ingestionSummaries) {
-      if (!ts.employee_id) continue;
-      const list = ingestionByEmployee.get(ts.employee_id) ?? [];
-      list.push(ts);
-      ingestionByEmployee.set(ts.employee_id, list);
+      if (ts.employee_id) {
+        const list = ingestionByEmployee.get(ts.employee_id) ?? [];
+        list.push(ts);
+        ingestionByEmployee.set(ts.employee_id, list);
+      } else {
+        const name = (ts.employee_name ?? ts.extracted_employee_name ?? '').trim();
+        if (!name) continue;
+        const list = ingestionByName.get(name) ?? [];
+        list.push(ts);
+        ingestionByName.set(name, list);
+      }
     }
     const clientNameById = new Map<number, string>(clients.map((c) => [c.id, c.name]));
     const clientByProjectId = new Map<number, string>();
@@ -254,10 +303,22 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
 
     const reports: { employee: User; blob: Blob }[] = [];
     for (const id of employeeIds) {
-      const employee = userById.get(id);
+      // Resolve real user, or synthesise a minimal User-shape from
+      // the synthetic-id-to-name map for unbound inbox rows.
+      let employee: User | undefined = userById.get(id);
+      let empIngestion: IngestionTimesheetSummary[] = [];
+      let empEntries: TimeEntry[] = [];
+      if (employee) {
+        empEntries = entriesByEmployee.get(id) ?? [];
+        empIngestion = ingestionByEmployee.get(id) ?? [];
+      } else if (id < 0) {
+        const name = syntheticNameById.get(id);
+        if (!name) continue;
+        empIngestion = ingestionByName.get(name) ?? [];
+        if (empIngestion.length === 0) continue;
+        employee = { id, full_name: name } as unknown as User;
+      }
       if (!employee) continue;
-      const empEntries = entriesByEmployee.get(id) ?? [];
-      const empIngestion = ingestionByEmployee.get(id) ?? [];
       if (empEntries.length === 0 && empIngestion.length === 0) continue;
       const manager = employee.manager_id ? userById.get(employee.manager_id) : null;
       const supervisorNames = empIngestion

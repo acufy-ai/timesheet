@@ -883,7 +883,7 @@ export const InboxPage: React.FC = () => {
           {canSeeTeamTimesheets && (
             <button
               type="button"
-              onClick={() => navigate('/user-management?tab=timesheets')}
+              onClick={() => navigate('/approvals?tab=approved')}
               className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm hover:bg-muted transition"
               title="Open the Approved Timesheets tab"
             >
