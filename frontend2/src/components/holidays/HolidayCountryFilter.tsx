@@ -25,8 +25,11 @@ export const HolidayCountryFilter: React.FC<Props> = ({ onChange }) => {
 
   // Don't render anything until there's something to choose from.
   // A tenant with no imported public-holiday rows (only manual
-  // org-wide adds) doesn't need a country filter.
-  if (!countries || countries.length === 0) return null;
+  // org-wide adds) doesn't need a country filter. Array guard also
+  // protects against an error-body landing in cache (e.g. 401/403
+  // returning a non-array payload).
+  const safeCountries = Array.isArray(countries) ? countries : [];
+  if (safeCountries.length === 0) return null;
 
   const handleChange = (value: string) => {
     const next = value || null;
@@ -44,7 +47,7 @@ export const HolidayCountryFilter: React.FC<Props> = ({ onChange }) => {
         className="px-3 py-1.5 rounded-lg border border-border bg-card text-sm focus:ring-1 focus:ring-primary focus:border-primary"
       >
         <option value="">All locations</option>
-        {countries.map((code) => (
+        {safeCountries.map((code) => (
           <option key={code} value={code}>{code}</option>
         ))}
       </select>
