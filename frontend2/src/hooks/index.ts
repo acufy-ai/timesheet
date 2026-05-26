@@ -33,6 +33,7 @@ export {
   useUpdateProject,
   useDashboardSummary,
   useTimeOffRequests,
+  useTimeOffUsageSummary,
   useTimeOffRequest,
   useCreateTimeOffRequest,
   useUpdateTimeOffRequest,

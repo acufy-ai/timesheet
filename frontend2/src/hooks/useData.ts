@@ -616,6 +616,16 @@ export const useTimeOffRequests = (params?: TimeOffListParams) => {
   });
 };
 
+/** Per-leave-type approved-days totals for the caller in the given year
+ *  (default: current). Backs the "Time Off Taken" dashboard widget. */
+export const useTimeOffUsageSummary = (year?: number) => {
+  return useQuery({
+    queryKey: ['timeoff', 'usage-summary', year ?? 'current'],
+    queryFn: () => timeOffAPI.usageSummary(year).then((res) => res.data),
+    staleTime: 60_000,
+  });
+};
+
 export const useTimeOffRequest = (id: number) => {
   return useQuery({
     queryKey: ['timeoff', id],

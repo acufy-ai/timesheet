@@ -464,6 +464,18 @@ class TimeOffRequestUpdate(BaseModel):
     reason: Optional[str] = None
 
 
+class TimeOffUsageSummaryRow(BaseModel):
+    """One row per leave type for the caller's dashboard widget.
+    ``hours_taken`` is the source of truth; ``days_taken`` is the
+    widget's display value (hours / 8).
+    """
+    leave_type: str
+    label: str
+    color: str
+    hours_taken: float
+    days_taken: float
+
+
 class LeaveTypeCreate(BaseModel):
     code: Optional[str] = Field(None, min_length=1, max_length=50)
     label: str = Field(min_length=1, max_length=100)

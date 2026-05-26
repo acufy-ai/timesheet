@@ -23,6 +23,7 @@ from app.schemas import (
     TimeOffRequestUpdate,
     TimeOffRequestWithUser,
     TimeOffSubmitRequest,
+    TimeOffUsageSummaryRow,
 )
 
 router = APIRouter(prefix="/time-off", tags=["time-off"])
@@ -56,6 +57,87 @@ async def get_my_time_off(
         skip=skip,
         limit=limit,
     )
+
+
+@router.get("/usage-summary", response_model=list[TimeOffUsageSummaryRow])
+async def get_my_time_off_usage_summary(
+    year: Optional[int] = Query(
+        None,
+        ge=1970,
+        le=2100,
+        description="Calendar year to summarize. Defaults to the current year.",
+    ),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sum of APPROVED time-off hours/days the caller has taken in the
+    given calendar year, grouped by leave type. The dashboard's "Time
+    Off Taken" widget reads this. Defined before ``/{request_id}`` so
+    the path matcher doesn't shadow ``usage-summary`` as a numeric id."""
+    from datetime import date as _date
+    from decimal import Decimal
+    from sqlalchemy import func
+    from app.models.leave_type import LeaveType
+    from app.models.time_off_request import TimeOffRequest
+
+    target_year = year or _date.today().year
+    year_start = _date(target_year, 1, 1)
+    year_end = _date(target_year, 12, 31)
+
+    # Aggregate approved hours per leave_type code for this user in the year.
+    agg = await db.execute(
+        select(
+            TimeOffRequest.leave_type,
+            func.coalesce(func.sum(TimeOffRequest.hours), 0).label("total_hours"),
+        )
+        .where(TimeOffRequest.user_id == current_user.id)
+        .where(TimeOffRequest.status == TimeOffStatus.APPROVED)
+        .where(TimeOffRequest.request_date >= year_start)
+        .where(TimeOffRequest.request_date <= year_end)
+        .group_by(TimeOffRequest.leave_type)
+    )
+    totals_by_code = {row[0]: Decimal(row[1]) for row in agg.all()}
+
+    # Fetch the tenant's active leave types so the widget can show every
+    # configured type (even those with 0 days taken) with its label/color.
+    if current_user.tenant_id is None:
+        return []
+    lt_result = await db.execute(
+        select(LeaveType)
+        .where(LeaveType.tenant_id == current_user.tenant_id)
+        .where(LeaveType.is_active.is_(True))
+        .order_by(LeaveType.label.asc())
+    )
+    leave_types = list(lt_result.scalars().all())
+
+    # 1 day == 8 hours (matches the rest of the app's day/hour conversion).
+    HOURS_PER_DAY = Decimal("8")
+    rows: list[dict] = []
+    seen_codes: set[str] = set()
+    for lt in leave_types:
+        hours = totals_by_code.get(lt.code, Decimal("0"))
+        rows.append({
+            "leave_type": lt.code,
+            "label": lt.label,
+            "color": lt.color,
+            "hours_taken": float(hours),
+            "days_taken": float((hours / HOURS_PER_DAY).quantize(Decimal("0.01"))),
+        })
+        seen_codes.add(lt.code)
+    # Surface any code present in approved requests but missing from the
+    # active leave-types table (deleted/renamed types). Don't lose the hours.
+    for code, hours in totals_by_code.items():
+        if code in seen_codes:
+            continue
+        rows.append({
+            "leave_type": code,
+            "label": code,
+            "color": "#6b7280",
+            "hours_taken": float(hours),
+            "days_taken": float((hours / HOURS_PER_DAY).quantize(Decimal("0.01"))),
+        })
+
+    return rows
 
 
 @router.get("/{request_id}", response_model=TimeOffRequestWithUser)

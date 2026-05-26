@@ -614,7 +614,20 @@ export const timeOffAPI = {
   delete: (id: number) => apiClient.delete(`/time-off/${id}`),
 
   submit: (request_ids: number[]) => apiClient.post<TimeOffRequest[]>('/time-off/submit', { request_ids }),
+
+  usageSummary: (year?: number) =>
+    apiClient.get<TimeOffUsageSummaryRow[]>('/time-off/usage-summary', {
+      params: year ? { year } : undefined,
+    }),
 };
+
+export interface TimeOffUsageSummaryRow {
+  leave_type: string;
+  label: string;
+  color: string;
+  hours_taken: number;
+  days_taken: number;
+}
 
 export const timeOffApprovalsAPI = {
   pending: (params?: {

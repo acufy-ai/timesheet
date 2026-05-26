@@ -245,12 +245,7 @@ const EmployeeWidgetGrid: React.FC<{
         );
       case 'timeoff':
         return (
-          <TimeOffBalanceWidget
-            annual={12}
-            sick={6}
-            wfh={24}
-            onRemove={() => toggleWidget('timeoff')}
-          />
+          <TimeOffBalanceWidget onRemove={() => toggleWidget('timeoff')} />
         );
       default:
         return null;

@@ -31,7 +31,7 @@ export const WIDGET_REGISTRY: WidgetDef[] = [
   { key: 'barchart', label: 'Daily Breakdown', description: 'Bar chart of daily hours', defaultSpan: 8, defaultVisible: true, group: 'projects' },
   { key: 'activity', label: 'Top Activities', description: 'Most tracked tasks ranked', defaultSpan: 4, defaultVisible: true, group: 'projects' },
   { key: 'projects', label: 'Projects Breakdown', description: 'Hours & share per project', defaultSpan: 4, defaultVisible: true, group: 'projects' },
-  { key: 'timeoff', label: 'Time Off Balance', description: 'Leave days remaining', defaultSpan: 4, defaultVisible: true, group: 'leave' },
+  { key: 'timeoff', label: 'Time Off Taken', description: 'Approved leave days taken this year', defaultSpan: 4, defaultVisible: true, group: 'leave' },
 ];
 
 export type WidgetVisibility = Record<WidgetKey, boolean>;
