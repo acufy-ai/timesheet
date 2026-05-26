@@ -1047,40 +1047,106 @@ export const AdminPage: React.FC = () => {
         : (approvedIngestionTimesheets as IngestionTimesheetSummary[]);
     if (scopedEntries.length === 0 && scopedIngestion.length === 0) return;
 
-    const header = ['Employee', 'Project', 'Task', 'Date', 'Hours', 'Status'];
+    // Wider column shape so inbox-approved external work surfaces its
+    // Client + Supervisor + Approved-by separately from Project (often
+    // blank for inbox rows). Matches the ApprovalsPage CSV exactly so
+    // an admin gets the same shape regardless of which surface they
+    // export from.
+    const header = [
+      'Employee',
+      'Source',
+      'Client',
+      'Project',
+      'Task',
+      'Date',
+      'Hours',
+      'Supervisor',
+      'Approved by',
+      'Status',
+    ];
     const escape = (value: unknown) => {
       const s = value == null ? '' : String(value);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const entryRows = scopedEntries.map((entry) => [
-      entry.user?.full_name ?? '',
-      entry.project?.name ?? '',
-      entry.task?.name ?? '',
-      entry.entry_date,
-      Number(entry.hours),
-      entry.status,
-    ]);
-    // For ingestion summary rows we surface the client in the Project
-    // column (prefixed) so the CSV stays single-schema while still
-    // identifying the inbox-approved source for the reader.
+    const clientNameById = new Map<number, string>(
+      (clientsList ?? []).map((c: Client) => [c.id, c.name] as [number, string]),
+    );
+    const projectClientById = new Map<number, string>();
+    for (const p of (projects ?? [])) {
+      const cn = clientNameById.get(p.client_id);
+      if (cn) projectClientById.set(p.id, cn);
+    }
     const userById = new Map<number, User>((users ?? []).map((u) => [u.id, u]));
+    // Lookup map for inbox-derived TimeEntry rows. Use the unfiltered
+    // approved-ingestion set so a materialized entry whose source PDF
+    // falls outside the current date filter still gets its inbox
+    // metadata (client, supervisor) attached to the CSV row.
+    const inboxByTimesheetId = new Map<string, IngestionTimesheetSummary>();
+    (approvedIngestionTimesheetsUnfiltered as IngestionTimesheetSummary[]).forEach((ts) =>
+      inboxByTimesheetId.set(String(ts.id), ts),
+    );
+    const entryRows = scopedEntries.map((entry) => {
+      const inboxLink = entry.ingestion_timesheet_id
+        ? inboxByTimesheetId.get(String(entry.ingestion_timesheet_id))
+        : null;
+      const isInboxDerived = Boolean(inboxLink);
+      const inboxClientName = inboxLink
+        ? (inboxLink.client_name || inboxLink.extracted_client_name || '')
+        : '';
+      return [
+        entry.user?.full_name ?? '',
+        isInboxDerived ? 'Inbox' : 'Internal',
+        isInboxDerived ? inboxClientName : (projectClientById.get(entry.project_id) ?? ''),
+        // Project blank for inbox-derived entries (external work has no
+        // internal project label); internal entries surface the project.
+        isInboxDerived ? '' : (entry.project?.name ?? ''),
+        entry.task?.name ?? '',
+        entry.entry_date,
+        Number(entry.hours),
+        isInboxDerived ? (inboxLink?.extracted_supervisor_name ?? '') : '',
+        entry.approved_by_name ?? (entry.approved_by ? userById.get(entry.approved_by)?.full_name ?? '' : ''),
+        entry.status,
+      ];
+    });
     const ingestionRows = scopedIngestion.map((ts) => {
       const employeeName =
         (ts.employee_id ? userById.get(ts.employee_id)?.full_name : null)
         ?? ts.employee_name
         ?? ts.extracted_employee_name
         ?? '';
-      const clientLabel = `(Inbox-approved) ${ts.client_name ?? 'Unspecified client'}`;
+      // Date emits the full period range so the row matches the table
+      // display "Apr 13 - Apr 19". Single-day periods collapse.
+      const periodLabel = (() => {
+        const s = ts.period_start ?? '';
+        const e = ts.period_end ?? '';
+        if (!s) return '';
+        if (!e || e === s) return s;
+        return `${s} - ${e}`;
+      })();
       return [
         employeeName,
-        clientLabel,
+        'Inbox',
+        ts.client_name ?? '',
+        '', // Project: empty for inbox rows until a project gets attached
         '',
-        ts.period_start ?? '',
+        periodLabel,
         Number(ts.total_hours ?? 0),
+        ts.extracted_supervisor_name ?? '',
+        ts.reviewer_name ?? '',
         'APPROVED',
       ];
     });
-    const csv = [header, ...entryRows, ...ingestionRows].map((row) => row.map(escape).join(',')).join('\n');
+    // Trailing total row so an admin gets the sum without re-running
+    // SUM() in Excel. Leave non-numeric columns blank, sum hours across
+    // both row types.
+    const totalHours = [...entryRows, ...ingestionRows].reduce(
+      (sum, row) => sum + (Number(row[6]) || 0),
+      0,
+    );
+    const totalRow = ['Total', '', '', '', '', '', totalHours, '', '', ''];
+    const csv = [header, ...entryRows, ...ingestionRows, totalRow]
+      .map((row) => row.map(escape).join(','))
+      .join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

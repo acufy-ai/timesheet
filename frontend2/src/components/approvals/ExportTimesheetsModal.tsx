@@ -299,7 +299,16 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
         'APPROVED',
       ];
     });
-    const csv = [header, ...entryRows, ...ingestionRows].map((row) => row.map(escape).join(',')).join('\n');
+    // Trailing total row: sum hours so the admin sees the grand total
+    // without re-running SUM() in Excel. Hours column is index 6.
+    const totalHours = [...entryRows, ...ingestionRows].reduce(
+      (sum, row) => sum + (Number(row[6]) || 0),
+      0,
+    );
+    const totalRow = ['Total', '', '', '', '', '', totalHours, '', '', ''];
+    const csv = [header, ...entryRows, ...ingestionRows, totalRow]
+      .map((row) => row.map(escape).join(','))
+      .join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
