@@ -76,18 +76,14 @@ docker compose ps
 You should see `timesheet-api-1`, `timesheet-frontend-1`,
 `timesheet-worker-1`, and `timesheet-redis-1` all `Up`.
 
-The `worker` container runs the arq background job consumer. You need
-it for:
+All four containers are required. Don't skip any:
 
-- Email ingestion (the "Fetch Emails" button in the inbox kicks off a
-  worker job; without the worker, the job queues in Redis with no
-  consumer and the UI shows progress stuck at 0-5%).
-- Scheduled reminders.
-- Any other cron-driven background work.
-
-If you're only testing UI/login flows and don't care about email
-ingestion, you can omit `worker` from the `up` command. Add it back
-later with the same command when you need it.
+- `redis` — backs the arq job queue and platform-admin refresh tokens.
+- `api` — the FastAPI backend.
+- `worker` — the arq job consumer. Without it, "Fetch Emails" and
+  scheduled reminders queue up but never run, and the UI shows
+  progress stuck at 0-5%.
+- `frontend` — the React app.
 
 ### 4. Log in
 
@@ -109,7 +105,7 @@ another environment.
 After the one-time setup, you only need:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up -d redis api frontend
+docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up -d redis api worker frontend
 ```
 
 To follow logs while developing:
