@@ -21,7 +21,7 @@ Postgres, you don't run migrations, you don't run the seed script.
 ### 1. Clone the repo
 
 ```bash
-git clone git@github.com:ymallavarapu7/timesheet.git
+git clone git@github.com:acufy-ai/timesheet.git
 cd timesheet
 ```
 
