@@ -564,7 +564,8 @@ async def login(
                     entity_type="user",
                     entity_id=user.id,
                     summary=f"Failed login attempt for {user.email} (attempt {user.failed_login_attempts}){' (account locked)' if locked else ''}.",
-                    route="/auth/login",
+                    route="/user-management",
+                    route_params={"userId": user.id},
                     metadata={"attempt": user.failed_login_attempts, "locked": locked},
                     severity="warning" if not locked else "critical",
                 )])
@@ -583,7 +584,8 @@ async def login(
                 entity_type="user",
                 entity_id=user.id,
                 summary=f"Failed login attempt for {user.email} (attempt {user.failed_login_attempts}){' (account locked)' if locked else ''}.",
-                route="/auth/login",
+                route="/user-management",
+                route_params={"userId": user.id},
                 metadata={"attempt": user.failed_login_attempts, "locked": locked},
                 severity="warning" if not locked else "critical",
             )])
