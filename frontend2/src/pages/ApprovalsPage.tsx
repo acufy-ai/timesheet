@@ -6,7 +6,8 @@
 // parked for the follow-up extraction PR rather than ripped out in
 // the same diff so the History tab + Time Off tab keep their
 // existing wiring untouched.
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { format, parseISO, startOfWeek } from 'date-fns';
 import { ArrowDown, ArrowUp, CheckCircle, ChevronDown, ChevronRight, Clock, XCircle } from 'lucide-react';
 
@@ -99,7 +100,31 @@ export const ApprovalsPage: React.FC = () => {
   // a single PTO request resolves to a single decision).
   const [timeOffHistoryStatusFilter, setTimeOffHistoryStatusFilter] = useState<'' | 'APPROVED' | 'REJECTED'>('');
   const [expandedHistoryKeys, setExpandedHistoryKeys] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<'timesheets' | 'time-off' | 'approved'>('timesheets');
+  // Seed from ?tab= so deep-links from the Inbox shortcut (or any
+  // other surface that passes /approvals?tab=approved) land on the
+  // right sub-tab instead of always defaulting to Timesheets.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = ((): 'timesheets' | 'time-off' | 'approved' => {
+    const raw = searchParams.get('tab');
+    if (raw === 'approved' || raw === 'time-off' || raw === 'timesheets') return raw;
+    return 'timesheets';
+  })();
+  const [activeTab, setActiveTab] = useState<'timesheets' | 'time-off' | 'approved'>(tabFromUrl);
+  // Mirror state back to the URL so reload / share / back-button stay
+  // on the selected tab. Removes ?tab=timesheets (the default) to keep
+  // the URL clean.
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (activeTab === 'timesheets') {
+      next.delete('tab');
+    } else {
+      next.set('tab', activeTab);
+    }
+    const a = next.toString();
+    const b = searchParams.toString();
+    if (a !== b) setSearchParams(next, { replace: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
   const [rejectingTimeOffId, setRejectingTimeOffId] = useState<number | null>(null);
   const [timeOffRejectReason, setTimeOffRejectReason] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
