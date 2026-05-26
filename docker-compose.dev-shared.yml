@@ -1,0 +1,31 @@
+# Override that points the api/worker at the shared dev DB on
+# ldb.acufy.ai instead of a local Postgres container. Use:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up api frontend
+#
+# - The api/worker get DATABASE_URL + CONTROL_DATABASE_URL from
+#   backend/.env (which should point at ldb.acufy.ai when using the
+#   shared DB; see backend/DEV_SHARED_DB.md).
+# - The `db` service is still defined by the base compose file but no
+#   service depends on it here. Don't `docker compose up db`.
+# - Redis stays available locally (some flows need it).
+# - Frontend is published on the FRONTEND_PORT from `.env`, default 5181
+#   for the sandbox to avoid colliding with the developer's normal 5176
+#   Vite session.
+#
+# Tip: set FRONTEND_PORT=5181 in your `.env` or `BACKEND_PORT=8000` if
+# you want non-defaults; the base compose reads those.
+
+services:
+  api:
+    depends_on:
+      redis:
+        condition: service_healthy
+    # No `db` dependency — the api will use the DATABASE_URL from
+    # backend/.env and connect out to ldb.acufy.ai. If that URL is
+    # missing or wrong, startup fails clearly.
+
+  worker:
+    depends_on:
+      redis:
+        condition: service_healthy

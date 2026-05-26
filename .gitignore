@@ -1,8 +1,8 @@
-# Secrets
+# Secrets — match every .env variant by default. Add explicit
+# exceptions below if you ever want a .env.example etc. committed.
 .env
-.env.local
-.env.production
-.env.*.local
+.env.*
+*.env
 
 # OS
 .DS_Store
