@@ -61,7 +61,7 @@ All three files are gitignored, so you can't accidentally commit them.
 From the repo root:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up --build -d redis api frontend
+docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up --build -d redis api worker frontend
 ```
 
 First time: 3-5 minutes (pip install + npm install run inside the
@@ -73,8 +73,21 @@ When that finishes:
 docker compose ps
 ```
 
-You should see `timesheet-api-1`, `timesheet-frontend-1`, and
-`timesheet-redis-1` all `Up`.
+You should see `timesheet-api-1`, `timesheet-frontend-1`,
+`timesheet-worker-1`, and `timesheet-redis-1` all `Up`.
+
+The `worker` container runs the arq background job consumer. You need
+it for:
+
+- Email ingestion (the "Fetch Emails" button in the inbox kicks off a
+  worker job; without the worker, the job queues in Redis with no
+  consumer and the UI shows progress stuck at 0-5%).
+- Scheduled reminders.
+- Any other cron-driven background work.
+
+If you're only testing UI/login flows and don't care about email
+ingestion, you can omit `worker` from the `up` command. Add it back
+later with the same command when you need it.
 
 ### 4. Log in
 
@@ -172,6 +185,20 @@ from another environment (ldev, prod) don't transfer.
 **Port 5181 already in use:**
 Change `FRONTEND_PORT` in the root `.env` to something free
 (5182, 5300, whatever), then `docker compose ... up -d --force-recreate frontend`.
+
+**"Fetch Emails" button is stuck at 0-5% forever:**
+The worker container isn't running. Background jobs are queued in
+Redis but nothing consumes them. Start it with
+`docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up -d worker`
+and click Fetch again.
+
+**Inbox / Mailboxes page won't load — 403 on `/mailboxes`:**
+The mailboxes endpoint requires the `ADMIN` role. If you're logged in
+as a user whose active role is MANAGER (even if they also hold ADMIN),
+click the "Switch to Admin" pill in the top bar — that opens a new tab
+with an ADMIN session where the mailbox page works. Conversely, the
+Inbox review surface is MANAGER-only; admins are excluded from it.
+Users with both roles switch between the two as needed.
 
 ## When things go sideways
 
