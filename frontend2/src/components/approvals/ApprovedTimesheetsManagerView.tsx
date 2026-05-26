@@ -51,10 +51,23 @@ export const ApprovedTimesheetsManagerView: React.FC = () => {
   const scope: 'mine' | 'workspace' = isAdmin ? 'workspace' : 'mine';
 
   // ── Filters ──────────────────────────────────────────────────
+  // Default the date range to the current month so first-load shows
+  // the freshest approvals. Users with no manual filter expect "what
+  // got approved this month", not the whole tenant history.
+  const monthDefaults = useMemo(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-indexed
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const start = `${y}-${pad(m + 1)}-01`;
+    const endOfMonthDate = new Date(y, m + 1, 0).getDate();
+    const end = `${y}-${pad(m + 1)}-${pad(endOfMonthDate)}`;
+    return { start, end };
+  }, []);
   const [employeeIds, setEmployeeIds] = useState<number[]>([]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
+  const [startDate, setStartDate] = useState<string>(monthDefaults.start);
+  const [endDate, setEndDate] = useState<string>(monthDefaults.end);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('APPROVED');
 
   // ── Supporting data ──────────────────────────────────────────
@@ -537,6 +550,10 @@ export const ApprovedTimesheetsManagerView: React.FC = () => {
         onClose={() => setExportOpen(false)}
         entries={filteredInternal}
         ingestionSummaries={filteredInbox}
+        // Full inbox set (including materialised PDFs that filteredInbox
+        // excludes) so the CSV/PDF can correctly label per-day
+        // materialised entries as inbox-derived.
+        ingestionLookup={inboxSummaries}
         users={usersAll}
         projects={projectsAll}
         clients={clientsAll}

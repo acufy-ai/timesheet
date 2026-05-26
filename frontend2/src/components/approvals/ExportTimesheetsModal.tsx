@@ -30,8 +30,16 @@ interface Props {
   onClose: () => void;
   /** All time entries currently visible in the consumer's table. */
   entries: TimeEntry[];
-  /** Approved inbox-PDF summaries (already filtered by the consumer's scope). */
+  /** Inbox-PDF summaries the consumer wants surfaced as standalone
+   *  rows (i.e. unmaterialised PDFs). Typically excludes
+   *  ``time_entries_created=true`` to avoid double-counting. */
   ingestionSummaries: IngestionTimesheetSummary[];
+  /** All inbox summaries in scope, including materialised ones. Used
+   *  ONLY as a lookup map so the CSV/PDF can tag materialised
+   *  per-day entries as inbox-derived (Source=Inbox, Client column,
+   *  Supervisor extraction, blank Project). Defaults to
+   *  ``ingestionSummaries`` for backward compatibility. */
+  ingestionLookup?: IngestionTimesheetSummary[];
   /** All users — used to resolve employee_id → User for the picker. */
   users: User[];
   /** All projects — used by the PDF generator to label client/project. */
@@ -48,6 +56,7 @@ interface Props {
 
 export const ExportTimesheetsModal: React.FC<Props> = ({
   open,
+  ingestionLookup,
   onClose,
   entries,
   ingestionSummaries,
@@ -70,6 +79,14 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
     setSelection(new Set(initialEmployeeIds));
     setSearch('');
   }, [open, initialEmployeeIds]);
+
+  // Inbox-lookup map: tags materialised per-day entries as
+  // inbox-derived in the CSV/PDF (Source=Inbox, blank Project, swap
+  // in extracted Client / Supervisor). Caller may pass a wider
+  // ``ingestionLookup`` that includes ``time_entries_created=true``
+  // rows that the rollup excluded; without that, the CSV labels
+  // those entries as "Internal" by mistake.
+  const inboxLookupSource = ingestionLookup ?? ingestionSummaries;
 
   // Outside-click dismissal handled at the JSX layer via overlay
   // onClick + dialog stopPropagation. Avoids the native-mousedown
@@ -221,7 +238,7 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
     }
     const userById = new Map<number, User>(users.map((u) => [u.id, u]));
     const inboxByTimesheetId = new Map<string, IngestionTimesheetSummary>();
-    ingestionSummaries.forEach((ts) => inboxByTimesheetId.set(String(ts.id), ts));
+    inboxLookupSource.forEach((ts) => inboxByTimesheetId.set(String(ts.id), ts));
     const entryRows = scopedEntries.map((entry) => {
       const inboxLink = entry.ingestion_timesheet_id
         ? inboxByTimesheetId.get(String(entry.ingestion_timesheet_id))
