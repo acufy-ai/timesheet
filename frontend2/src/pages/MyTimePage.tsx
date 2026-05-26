@@ -641,66 +641,64 @@ export const MyTimePage: React.FC = () => {
     }
   };
 
-  const handleNlApplyEntry = (entry: NonNullable<typeof nlResult>['entries'][number]) => {
+  // Quick Entry persists parsed entries directly via /timeentries. The
+  // page used to stage them into a parent-owned grid, but the editor was
+  // moved to <WeekEditor /> (which has its own state) so the staged rows
+  // were never reachable. Direct persistence is also the clearer UX: you
+  // describe, you save.
+  const persistNlEntry = async (entry: NonNullable<typeof nlResult>['entries'][number]) => {
     if (entry.error || !entry.project_id || !entry.hours) return;
+    await createMutation.mutateAsync({
+      project_id: entry.project_id,
+      task_id: entry.task_id || null,
+      entry_date: entry.entry_date,
+      hours: entry.hours,
+      description: entry.description || 'Worked on project tasks',
+      notes: entry.notes?.trim() || null,
+      is_billable: entry.is_billable,
+    });
+  };
 
-    // Find the date key for the grid
-    const dateKey = entry.entry_date;
-
-    // Navigate the grid to the week containing this entry date
-    const entryDate = parseISO(dateKey);
-    const entryWeekStart = startOfWeek(entryDate, { weekStartsOn });
-    const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn });
-    if (entryWeekStart.getTime() !== currentWeekStart.getTime()) {
-      setWeekAnchorDate(entryDate);
-    }
-
-    // Check if this project/task already has a row in the grid
-    const existingRowIdx = gridRows.findIndex(
-      (r) => r.projectId === entry.project_id && r.taskId === (entry.task_id || 0),
-    );
-
-    if (existingRowIdx >= 0) {
-      // Update existing row's hours for this date. If the user typed notes on
-      // the preview, carry them over — otherwise keep whatever the row had.
-      setGridRows((rows) =>
-        rows.map((r, idx) =>
-          idx === existingRowIdx
-            ? {
-                ...r,
-                hours: { ...r.hours, [dateKey]: String(entry.hours) },
-                description: entry.description || r.description,
-                notes: entry.notes ? entry.notes : r.notes,
-              }
-            : r,
-        ),
-      );
-    } else {
-      // Add a new row
-      const newId = Math.max(...gridRows.map((r) => r.id), 0) + 1;
-      setGridRows((rows) => [
-        ...rows,
-        {
-          id: newId,
-          projectId: entry.project_id!,
-          taskId: entry.task_id || 0,
-          hours: { [dateKey]: String(entry.hours) },
-          description: entry.description || '',
-          notes: entry.notes || '',
-          isBillable: entry.is_billable,
-        },
-      ]);
+  const handleNlApplyEntry = async (entry: NonNullable<typeof nlResult>['entries'][number]) => {
+    if (entry.error || !entry.project_id || !entry.hours) return;
+    try {
+      await persistNlEntry(entry);
+      // Jump the editor to the week of the entry so the user sees the new row.
+      const entryDate = parseISO(entry.entry_date);
+      const entryWeekStart = startOfWeek(entryDate, { weekStartsOn });
+      const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn });
+      if (entryWeekStart.getTime() !== currentWeekStart.getTime()) {
+        setWeekAnchorDate(entryDate);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['timeentries'] });
+      showStatus('success', 'Saved.');
+    } catch {
+      showStatus('error', 'Could not save the entry. Please try again.');
     }
   };
 
-  const handleNlApplyAll = () => {
+  const handleNlApplyAll = async () => {
     if (!nlResult) return;
     const validEntries = nlResult.entries.filter((e) => !e.error && e.project_id && e.hours);
-    for (const entry of validEntries) {
-      handleNlApplyEntry(entry);
+    if (validEntries.length === 0) return;
+    const results = await Promise.allSettled(validEntries.map((e) => persistNlEntry(e)));
+    const failures = results.filter((r) => r.status === 'rejected').length;
+    await queryClient.invalidateQueries({ queryKey: ['timeentries'] });
+    if (failures === 0) {
+      // Anchor the week view to the latest applied entry so the user sees the save.
+      const last = validEntries[validEntries.length - 1];
+      const entryDate = parseISO(last.entry_date);
+      const entryWeekStart = startOfWeek(entryDate, { weekStartsOn });
+      const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn });
+      if (entryWeekStart.getTime() !== currentWeekStart.getTime()) {
+        setWeekAnchorDate(entryDate);
+      }
+      setNlInput('');
+      setNlResult(null);
+      showStatus('success', validEntries.length === 1 ? 'Entry saved.' : `${validEntries.length} entries saved.`);
+    } else {
+      showStatus('error', `${failures} of ${validEntries.length} entries failed. The successful ones are saved.`);
     }
-    setNlInput('');
-    setNlResult(null);
   };
 
   /** Patch a single parsed entry in ``nlResult`` by index. The preview card
