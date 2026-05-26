@@ -989,16 +989,25 @@ export const AdminPage: React.FC = () => {
   // /ingestion/timesheets is gated to reviewers and explicitly excludes
   // ADMIN, so calling that path from this admin-scoped tab returns 403
   // and the table loses summary-only timesheets.
-  const { data: approvedIngestionTimesheetsUnfiltered = [] } = useQuery({
-    queryKey: ['team-timesheets-ingestion-no-entries', tsStartDate, tsEndDate],
+  // Full approved-ingestion set (including those that materialized into
+  // TimeEntry rows). The TABLE filters this down to summary-only rows so
+  // materialized timesheets aren't double-rendered, but the CSV/PDF
+  // lookup needs the full set so a materialized TimeEntry can join back
+  // to its source PDF for Client / Supervisor / Source = "Inbox".
+  const { data: approvedIngestionAll = [] } = useQuery({
+    queryKey: ['team-timesheets-ingestion-all', tsStartDate, tsEndDate],
     queryFn: () =>
-      adminAPI.listApprovedIngestionTimesheets().then((r) =>
-        (r.data as IngestionTimesheetSummary[]).filter(
-          (ts) => !ts.time_entries_created && ts.total_hours,
-        ),
+      adminAPI.listApprovedIngestionTimesheets().then(
+        (r) => (r.data as IngestionTimesheetSummary[]),
       ),
     enabled: activeTab === 'timesheets' && (!tsStatus || tsStatus === 'APPROVED'),
   });
+  const approvedIngestionTimesheetsUnfiltered = React.useMemo(
+    () => (approvedIngestionAll as IngestionTimesheetSummary[]).filter(
+      (ts) => !ts.time_entries_created && ts.total_hours,
+    ),
+    [approvedIngestionAll],
+  );
 
   // Client-side multi-employee filter. Empty selection = show all.
   const employeeIdSet = React.useMemo(() => new Set(tsEmployeeIds), [tsEmployeeIds]);
@@ -1077,12 +1086,14 @@ export const AdminPage: React.FC = () => {
       if (cn) projectClientById.set(p.id, cn);
     }
     const userById = new Map<number, User>((users ?? []).map((u) => [u.id, u]));
-    // Lookup map for inbox-derived TimeEntry rows. Use the unfiltered
-    // approved-ingestion set so a materialized entry whose source PDF
-    // falls outside the current date filter still gets its inbox
-    // metadata (client, supervisor) attached to the CSV row.
+    // Lookup map for inbox-derived TimeEntry rows. Use the FULL
+    // approved-ingestion set (including materialized ones) so a
+    // TimeEntry whose source PDF already produced day-by-day entries
+    // can still join back to find its client / supervisor. The
+    // *table* uses the filtered "summary-only" set to avoid double-
+    // render; the CSV needs the join, hence the full set here.
     const inboxByTimesheetId = new Map<string, IngestionTimesheetSummary>();
-    (approvedIngestionTimesheetsUnfiltered as IngestionTimesheetSummary[]).forEach((ts) =>
+    (approvedIngestionAll as IngestionTimesheetSummary[]).forEach((ts) =>
       inboxByTimesheetId.set(String(ts.id), ts),
     );
     const entryRows = scopedEntries.map((entry) => {
