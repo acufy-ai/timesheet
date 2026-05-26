@@ -175,8 +175,14 @@ export const LoginPage: React.FC = () => {
             />
 
             <div className="relative">
-              <h1 className="text-balance text-[clamp(22px,3.4vw,34px)] font-bold leading-[1.1] -tracking-[0.025em] text-foreground">
-                Welcome to <span className="em-serif">Acufy AI</span>
+              {/* Heading uses the Syne brand display face (applied
+                  globally to h1) at 800 weight for the wordmark feel
+                  shown in the marketing logo. */}
+              <h1
+                className="text-balance text-[clamp(22px,3.4vw,34px)] leading-[1.1] -tracking-[0.025em] text-foreground"
+                style={{ fontFamily: "'Syne', 'Space Grotesk', system-ui, sans-serif", fontWeight: 800 }}
+              >
+                Sign In
               </h1>
 
               {flashMessage && (
