@@ -329,6 +329,17 @@ html {
     .em-serif { animation: none; }
   }
 
+  /* em-serif-plain: Instrument Serif italic accent without the gradient
+     shimmer. Use when you want the brand-flavored typography but the
+     surrounding color (e.g. white on the top nav tenant label) should
+     stay intact. */
+  .em-serif-plain {
+    font-family: 'Instrument Serif', ui-serif, serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
   /* mono micro-label: tracked-out JetBrains Mono eyebrow text. Use
      above section titles and on status pills. */
   .mono-label {

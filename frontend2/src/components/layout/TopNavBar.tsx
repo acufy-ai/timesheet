@@ -355,7 +355,7 @@ export const TopNavBar: React.FC = () => {
           <div className="flex items-center gap-2">
             {/* Tenant / organization name */}
             {tenant?.name && (
-              <span className="hidden whitespace-nowrap text-sm font-medium text-foreground md:inline-block">
+              <span className="em-serif-plain hidden whitespace-nowrap text-sm font-medium text-foreground md:inline-block">
                 {tenant.name}
               </span>
             )}
