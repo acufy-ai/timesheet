@@ -188,6 +188,19 @@ export const ApprovedTimesheetsManagerView: React.FC = () => {
         if (e.entry_date > existing.maxDate) existing.maxDate = e.entry_date;
         existing.statuses.add(e.status);
         existing.entries.push(e);
+        // Track unique source PDFs as we fold subsequent entries into
+        // the row. The "Days" column for inbox-derived rows renders
+        // PDF count, so this must stay accurate even when 5 days roll
+        // up under one PDF or 10 days roll up under 2 PDFs.
+        if (isInboxDerived && inboxLink) {
+          const alreadyTracked = existing.ingestionSummaries.some(
+            (s) => String(s.id) === String(inboxLink.id),
+          );
+          if (!alreadyTracked) {
+            existing.ingestionSummaries.push(inboxLink);
+            existing.pdfCount = (existing.pdfCount ?? 0) + 1;
+          }
+        }
       } else {
         map.set(key, {
           key,
@@ -198,6 +211,10 @@ export const ApprovedTimesheetsManagerView: React.FC = () => {
           maxDate: e.entry_date,
           days: 1,
           hours,
+          // ``pdfCount`` only meaningful for inbox-derived rows; the
+          // "Days" column reads it for ``kind: 'inbox'`` and falls
+          // back to ``days`` for ``kind: 'internal'``.
+          pdfCount: isInboxDerived ? 1 : undefined,
           statuses: new Set([e.status]),
           entries: [e],
           ingestionSummaries: inboxLink ? [inboxLink] : [],

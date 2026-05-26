@@ -76,18 +76,28 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
   // race that can swallow inner-button clicks at the gap between
   // React's synthetic-event delegation and a document-level listener.
 
-  // Picker enumerates BOTH real users (by employee_id) AND name-only
-  // inbox rows (where the sender email didn't match a workspace user).
-  // External contractors who fwd timesheets often don't have a User row;
-  // the table renders them by name, and the picker has to match. We
-  // emit synthetic User-shaped entries with negative ids so the
-  // selection set stays Set<number>; the negative id maps back to the
-  // canonical name when CSV/PDF filtering runs below.
-  const { employeesWithEntries, syntheticNameById } = useMemo(() => {
+  // Picker enumerates real users (by employee_id) PLUS name-only inbox
+  // rows (sender email didn't match a workspace user). Managers acting
+  // on their own inbox-reviewed PDFs are another case: their own
+  // user_id won't be in the manager-scoped useUsers() list, so we also
+  // hydrate from entry.user.full_name when available. Synthetic
+  // (negative) ids stand in for both — they translate back via
+  // syntheticNameById when CSV/PDF filtering runs below.
+  const { employeesWithEntries, syntheticNameById, realIdToFullName } = useMemo(() => {
     const userById = new Map<number, User>(users.map((u) => [u.id, u]));
     const idsReal = new Set<number>();
     const nameOnlyRows = new Map<string, IngestionTimesheetSummary>();
-    for (const e of entries) idsReal.add(e.user_id);
+    // Backfill: if a TimeEntry's user isn't in the users list (manager
+    // viewing their own time entries, for example), remember the
+    // user_id → full_name mapping so we can still build a picker row.
+    const realIdToFullName = new Map<number, string>();
+    for (const e of entries) {
+      idsReal.add(e.user_id);
+      const fullName = e.user?.full_name;
+      if (fullName && !userById.has(e.user_id)) {
+        realIdToFullName.set(e.user_id, fullName);
+      }
+    }
     for (const ts of ingestionSummaries) {
       if (ts.employee_id) {
         idsReal.add(ts.employee_id);
@@ -96,8 +106,16 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
         if (name && !nameOnlyRows.has(name)) nameOnlyRows.set(name, ts);
       }
     }
-    const realUsers = Array.from(idsReal)
-      .map((id) => userById.get(id))
+    const realUsers: User[] = Array.from(idsReal)
+      .map((id) => {
+        const u = userById.get(id);
+        if (u) return u;
+        const name = realIdToFullName.get(id);
+        if (!name) return null;
+        // Hydrate a minimal User from the entry-side full_name when
+        // the scoped /users response didn't include this row.
+        return { id, full_name: name } as unknown as User;
+      })
       .filter((u): u is User => Boolean(u));
     // Stable negative ids: -1, -2, ... in alphabetical order of name.
     // CSV/PDF filters use the syntheticNameById map below to translate.
@@ -107,14 +125,12 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
     Array.from(nameOnlyRows.keys()).sort().forEach((name) => {
       const id = nextSynth--;
       syntheticNameById.set(id, name);
-      // Cast through unknown to dodge the strict User type; only
-      // `id` and `full_name` are read downstream in this modal.
       syntheticUsers.push({ id, full_name: name } as unknown as User);
     });
     const combined = [...realUsers, ...syntheticUsers].sort((a, b) =>
       a.full_name.localeCompare(b.full_name),
     );
-    return { employeesWithEntries: combined, syntheticNameById };
+    return { employeesWithEntries: combined, syntheticNameById, realIdToFullName };
   }, [entries, ingestionSummaries, users]);
 
   const filteredEmployees = useMemo(() => {
@@ -322,6 +338,17 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
       if (employee) {
         empEntries = entriesByEmployee.get(id) ?? [];
         empIngestion = ingestionByEmployee.get(id) ?? [];
+      } else if (id > 0) {
+        // Real id but scoped /users response didn't include this user
+        // (e.g. manager viewing entries for users outside their tree
+        // that came in through inbox-reviewer scope). Hydrate from
+        // the entry-side full_name map and use the same buckets.
+        const fallbackName = realIdToFullName.get(id);
+        if (!fallbackName) continue;
+        empEntries = entriesByEmployee.get(id) ?? [];
+        empIngestion = ingestionByEmployee.get(id) ?? [];
+        if (empEntries.length === 0 && empIngestion.length === 0) continue;
+        employee = { id, full_name: fallbackName } as unknown as User;
       } else if (id < 0) {
         const name = syntheticNameById.get(id);
         if (!name) continue;
