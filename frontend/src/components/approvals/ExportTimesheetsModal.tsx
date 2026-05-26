@@ -242,13 +242,24 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
       // sometimes set on the IngestionTimesheet but isn't reliably
       // populated; leave blank when absent so the user sees a clean
       // signal instead of a fake placeholder.
+      //
+      // Date column emits the full period range (period_start -
+      // period_end) matching the in-table display "Apr 13 - Apr 19".
+      // Single-day periods collapse to just that one date.
+      const periodLabel = (() => {
+        const s = ts.period_start ?? '';
+        const e = ts.period_end ?? '';
+        if (!s) return '';
+        if (!e || e === s) return s;
+        return `${s} - ${e}`;
+      })();
       return [
         employeeName,
         'Inbox',
         ts.client_name ?? '',
-        '', // Project — empty for inbox rows until a project gets attached
+        '', // Project: empty for inbox rows until a project gets attached
         '',
-        ts.period_start ?? '',
+        periodLabel,
         Number(ts.total_hours ?? 0),
         ts.extracted_supervisor_name ?? '',
         ts.reviewer_name ?? '',

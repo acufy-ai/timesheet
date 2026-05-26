@@ -133,11 +133,17 @@ async def get_all_timesheets(
     if current_user.role not in allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    # Managers only see their reporting tree's entries
+    # Managers only see their reporting tree's entries, PLUS entries
+    # that were materialised from inbox PDFs the manager personally
+    # reviewed (e.g. an admin acting in MANAGER role approving a fwd'd
+    # contractor timesheet). Without the reviewer-side union, the
+    # manager's /approvals?tab=approved view shows nothing for PDFs
+    # they just approved when the employee isn't in their direct tree.
     effective_user_id = user_id
     scoped_user_ids: list[int] | None = None
     if current_user.role == UserRole.MANAGER and not user_id:
-        # Get full descendant tree
+        from app.models.ingestion_timesheet import IngestionTimesheet
+        # Get full descendant tree.
         descendant_ids: set[int] = set()
         frontier: set[int] = {current_user.id}
         while frontier:
@@ -149,6 +155,13 @@ async def get_all_timesheets(
             next_frontier = children - descendant_ids
             descendant_ids.update(next_frontier)
             frontier = next_frontier
+        # Union in employees whose inbox PDFs this manager reviewed.
+        reviewer_employee_rows = (await db.execute(
+            sa_select(IngestionTimesheet.employee_id)
+            .where(IngestionTimesheet.reviewer_id == current_user.id)
+            .where(IngestionTimesheet.employee_id.is_not(None))
+        )).scalars().all()
+        descendant_ids.update(int(uid) for uid in reviewer_employee_rows if uid is not None)
         scoped_user_ids = list(descendant_ids) if descendant_ids else []
 
     if scoped_user_ids is not None and not scoped_user_ids:
