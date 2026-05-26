@@ -133,6 +133,7 @@ def _build_prompt(context_json: str, today_str: str, today_weekday: str, yesterd
 3. If you cannot confidently identify a specific task, set "task_id": null and "error": "Could not determine task. Please specify which task."
 4. If hours or a time range are not provided, set "hours": null and "error": "Please specify hours worked or a time range."
 5. Calculate hours from time ranges (e.g., "9 AM to 3 PM" = 6 hours). Round to 2 decimal places.
+5a. When the user gives an EXPLICIT time range (e.g. "8:00 AM to 9:30 AM", "from 9 to 5", "9am-12pm"), also return "start_time" and "end_time" as 24-hour "HH:MM" strings. If only a duration is mentioned (e.g. "3 hours yesterday"), leave both null.
 8. If the input describes MULTIPLE time entries, return all of them.
 9. If the same task name exists in multiple projects and the user didn't specify the project, list all matching options in "alternatives" and set project_id to null.
 10. Extract a description from the work mentioned (what the user did), not the raw input.
@@ -148,6 +149,8 @@ def _build_prompt(context_json: str, today_str: str, today_weekday: str, yesterd
       "task_name": "<matched name>",
       "client_name": "<derived from project>",
       "entry_date": "<YYYY-MM-DD>",
+      "start_time": "<HH:MM 24h or null>",
+      "end_time": "<HH:MM 24h or null>",
       "hours": <number or null>,
       "description": "<work description>",
       "is_billable": <bool>,
@@ -267,6 +270,29 @@ async def parse_natural_language_entry(
         else:
             entry_date = today_str
 
+        # Normalize start/end time strings (accept "HH:MM" or "HH:MM:SS";
+        # drop the value silently if malformed — the entry is still valid
+        # without them, since "hours" is the source of truth).
+        def _norm_clock(v: Any) -> str | None:
+            if not v or not isinstance(v, str):
+                return None
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                from datetime import time as _t
+                parts = v.split(":")
+                hh = int(parts[0])
+                mm = int(parts[1]) if len(parts) > 1 else 0
+                ss = int(parts[2]) if len(parts) > 2 else 0
+                _t(hh, mm, ss)
+                return f"{hh:02d}:{mm:02d}:{ss:02d}"
+            except (ValueError, IndexError):
+                return None
+
+        start_time_str = _norm_clock(entry.get("start_time"))
+        end_time_str = _norm_clock(entry.get("end_time"))
+
         validated_entry = {
             "project_id": pid,
             "project_name": entry.get("project_name", ""),
@@ -275,6 +301,8 @@ async def parse_natural_language_entry(
             "client_name": entry.get("client_name", ""),
             "client_id": entry.get("client_id"),
             "entry_date": entry_date,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
             "hours": round(hours, 2) if hours else None,
             "description": entry.get("description", ""),
             "is_billable": entry.get("is_billable", True),

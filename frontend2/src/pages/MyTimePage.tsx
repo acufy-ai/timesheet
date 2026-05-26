@@ -211,6 +211,8 @@ export const MyTimePage: React.FC = () => {
       client_name: string;
       client_id: number | null;
       entry_date: string;
+      start_time: string | null;
+      end_time: string | null;
       hours: number | null;
       description: string;
       /** Private notes — never populated by the LLM, only by user edits in the preview. */
@@ -631,10 +633,17 @@ export const MyTimePage: React.FC = () => {
         return;
       }
       // Seed an empty `notes` field on each parsed entry so the preview form
-      // has a place to store user-authored notes.
+      // has a place to store user-authored notes. Default start/end to null
+      // for entries where the LLM didn't extract a time range.
+      type NlEntry = NonNullable<typeof nlResult>['entries'][number];
       setNlResult({
         ...result,
-        entries: result.entries.map((e) => ({ ...e, notes: '' })),
+        entries: (result.entries as unknown as Array<Record<string, unknown>>).map((e) => ({
+          ...(e as unknown as NlEntry),
+          start_time: (e.start_time as string | null | undefined) ?? null,
+          end_time: (e.end_time as string | null | undefined) ?? null,
+          notes: '',
+        })),
       });
     } catch {
       setNlResult({ entries: [], error: 'Failed to parse. Please try again.' });
@@ -652,6 +661,8 @@ export const MyTimePage: React.FC = () => {
       project_id: entry.project_id,
       task_id: entry.task_id || null,
       entry_date: entry.entry_date,
+      start_time: entry.start_time || null,
+      end_time: entry.end_time || null,
       hours: entry.hours,
       description: entry.description || 'Worked on project tasks',
       notes: entry.notes?.trim() || null,
