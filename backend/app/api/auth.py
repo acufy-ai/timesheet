@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.schemas import LoginRequest, TokenResponse, UserResponse, UserCreate, ChangePasswordRequest, PasswordChangeResponse, RefreshRequest, VerifyEmailRequest, VerifyEmailResponse, ResendVerificationRequest, MessageResponse, RoleSwitchRequest, RoleHandoffIssueResponse, RoleHandoffExchangeRequest, SetPasswordRequest, SetPasswordResponse, InvitationStatusResponse, ForgotPasswordRequest
@@ -435,7 +435,49 @@ async def login(
         )).scalar_one_or_none()
 
     if pa_row is not None:
-        if not verify_password(login_request.password, pa_row.hashed_password):
+        # If this PA has been migrated to Auth0 (auth0_sub set), the
+        # password they typed is in Auth0's DB, not in our bcrypt
+        # column. Try Auth0 first; fall back to bcrypt only if Auth0
+        # is unconfigured / unreachable. Pre-migration PAs (auth0_sub
+        # NULL) skip Auth0 and go straight to bcrypt — the Custom-
+        # Database lazy-migration imports them on first login.
+        pa_auth0_token = None
+        if settings.auth0_enabled and pa_row.auth0_sub:
+            try:
+                pa_auth0_token = await auth0_password_grant(
+                    login_request.email, login_request.password,
+                )
+            except Auth0PasswordError as exc:
+                # Same fallback policy as the tenant path: only quietly
+                # fall through on bad-creds-shaped errors. Network /
+                # config failures bubble up.
+                if exc.code not in {"invalid_grant", "access_denied", "too_many_attempts", None}:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid email or password",
+                    )
+                pa_auth0_token = None
+
+        if pa_auth0_token is not None:
+            # Auth0 accepted the credentials. Verify the token and
+            # confirm it actually belongs to this PA before issuing
+            # our JWT (defence against email-substitution attacks).
+            try:
+                userinfo = await verify_auth0_token(pa_auth0_token)
+            except Auth0VerificationError:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Auth0 verification failed",
+                )
+            auth0_email = (userinfo.get("email") or "").strip().lower()
+            if auth0_email != login_request.email.strip().lower():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Auth0 token email does not match login email",
+                )
+            # Auth0 said yes — fall through to the existing PA JWT
+            # issuance below by short-circuiting the bcrypt verify.
+        elif not verify_password(login_request.password, pa_row.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
@@ -1570,3 +1612,217 @@ async def exchange_role_handoff(
         "token_type": "bearer",
         "user": target,
     }
+
+
+# Schemas for the Auth0 lazy-migration endpoints below. These are tiny
+# request/response shapes private to this module; not worth promoting
+# to ``app.schemas`` since no other code references them.
+from pydantic import BaseModel  # noqa: E402  — bottom-of-file imports are fine here
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Auth0 Custom-Database lazy-migration endpoints (Platform Admin scope)
+#
+# Auth0's Custom Database connection runs two server-side scripts —
+# ``login`` and ``getUser`` — when an unknown email tries to log in.
+# Both scripts make a single HTTPS POST to our backend; we verify the
+# credentials against ``platform_admins.hashed_password`` and return
+# the profile if it matches. Auth0 then imports the user into its own
+# DB connection (using the plaintext password the user just typed) and
+# fires a Post-Login Action that calls ``/auth/auth0-link-pa`` so we
+# can write back the ``auth0_sub``.
+#
+# These endpoints are NOT user-facing. They're authenticated by a
+# shared secret in the ``X-Auth0-DB-Secret`` header, set in
+# ``settings.auth0_db_action_secret`` and configured on the Auth0
+# scripts. Returns 401 on missing/bad secret.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _Auth0DbVerifyRequest(BaseModel):
+    email: str
+    password: str
+
+
+class _Auth0DbVerifyResponse(BaseModel):
+    user_id: str
+    email: str
+    email_verified: bool
+    name: str
+    # Auth0 stores arbitrary metadata. We tag PAs so the Action that
+    # fires after migration can detect "this is a PA, route to /auth/
+    # auth0-link-pa" instead of the tenant-user link endpoint.
+    app_metadata: dict
+
+
+class _Auth0DbGetUserRequest(BaseModel):
+    email: str
+
+
+class _Auth0LinkPaRequest(BaseModel):
+    email: str
+    auth0_sub: str
+
+
+def _require_auth0_db_secret(x_auth0_db_secret: str | None) -> None:
+    expected = settings.auth0_db_action_secret
+    if not expected:
+        # No secret configured = endpoint disabled. Safer than letting
+        # the call through when we forgot to set the secret on deploy.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth0 DB action endpoint not configured",
+        )
+    # Constant-time comparison so a timing attack can't lift the secret
+    # byte-by-byte. ``hmac.compare_digest`` works on equal-length
+    # strings; pad first to neutralise length-leak.
+    import hmac
+    a = (x_auth0_db_secret or "").encode("utf-8")
+    b = expected.encode("utf-8")
+    if len(a) != len(b) or not hmac.compare_digest(a, b):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Auth0 DB action secret",
+        )
+
+
+@router.post("/auth0-db/verify-pa", response_model=_Auth0DbVerifyResponse)
+async def auth0_db_verify_pa(
+    body: _Auth0DbVerifyRequest,
+    x_auth0_db_secret: str | None = Header(default=None, alias="X-Auth0-DB-Secret"),
+) -> dict:
+    """Auth0 Custom-Database ``login`` script calls this with the email
+    and password the user just typed. We check against
+    ``platform_admins.hashed_password``; on match we return the profile,
+    on miss we 401 (Auth0 maps that to ``WrongUsernameOrPassword``).
+
+    This is the lazy-migration hinge: after the first successful call,
+    Auth0 imports the PA into its own DB connection with that plaintext
+    password and subsequent logins don't hit this endpoint anymore.
+    """
+    _require_auth0_db_secret(x_auth0_db_secret)
+
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import PlatformAdmin
+
+    email = body.email.strip().lower()
+    async with AsyncControlSessionLocal() as control_db:
+        pa_row = (await control_db.execute(
+            select(PlatformAdmin).where(PlatformAdmin.email == email)
+        )).scalar_one_or_none()
+
+    if pa_row is None or not pa_row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Wrong username or password",
+        )
+    if not verify_password(body.password, pa_row.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Wrong username or password",
+        )
+
+    # ``user_id`` here is the value Auth0 stores as its internal id for
+    # the connection. We use the PA's primary key prefixed with ``pa-``
+    # so it's namespaced away from tenant-user ids.
+    return {
+        "user_id": f"pa-{pa_row.id}",
+        "email": pa_row.email,
+        "email_verified": pa_row.email_verified,
+        "name": pa_row.full_name,
+        "app_metadata": {
+            "realm": "platform",
+            "platform_admin_id": pa_row.id,
+        },
+    }
+
+
+@router.post("/auth0-db/get-user-pa", response_model=_Auth0DbVerifyResponse)
+async def auth0_db_get_user_pa(
+    body: _Auth0DbGetUserRequest,
+    x_auth0_db_secret: str | None = Header(default=None, alias="X-Auth0-DB-Secret"),
+) -> dict:
+    """Auth0 Custom-Database ``getUser`` script calls this to ask
+    "does a PA with this email exist?" — used by Auth0's password-
+    reset flow so an unmigrated PA can still trigger 'forgot password'
+    and recover even without remembering their bcrypt password.
+
+    Returns the same shape as ``verify_pa`` but does NOT require a
+    password (the password-reset flow doesn't have one yet).
+    """
+    _require_auth0_db_secret(x_auth0_db_secret)
+
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import PlatformAdmin
+
+    email = body.email.strip().lower()
+    async with AsyncControlSessionLocal() as control_db:
+        pa_row = (await control_db.execute(
+            select(PlatformAdmin).where(PlatformAdmin.email == email)
+        )).scalar_one_or_none()
+
+    if pa_row is None or not pa_row.is_active:
+        # Auth0 maps 404 to "user not found"; the reset email then
+        # silently no-ops, which is the right behaviour for unknown
+        # emails (no enumeration).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    return {
+        "user_id": f"pa-{pa_row.id}",
+        "email": pa_row.email,
+        "email_verified": pa_row.email_verified,
+        "name": pa_row.full_name,
+        "app_metadata": {
+            "realm": "platform",
+            "platform_admin_id": pa_row.id,
+        },
+    }
+
+
+@router.post("/auth0-link-pa")
+async def auth0_link_pa(
+    body: _Auth0LinkPaRequest,
+    x_auth0_db_secret: str | None = Header(default=None, alias="X-Auth0-DB-Secret"),
+) -> dict:
+    """Auth0 Post-Login Action calls this after a PA successfully
+    authenticates via Auth0 (either fresh import or steady-state). We
+    write the ``auth0_sub`` back to the PA row so our ``/auth/login``
+    PA branch can recognise the Auth0 token on subsequent logins.
+
+    Idempotent: if ``auth0_sub`` is already set and matches, this is a
+    no-op. If it's set to a different value, we reject — that signals
+    something is wrong (e.g. an Auth0 user got created twice for the
+    same email).
+    """
+    _require_auth0_db_secret(x_auth0_db_secret)
+
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import PlatformAdmin
+
+    email = body.email.strip().lower()
+    async with AsyncControlSessionLocal() as control_db:
+        pa_row = (await control_db.execute(
+            select(PlatformAdmin).where(PlatformAdmin.email == email)
+        )).scalar_one_or_none()
+
+        if pa_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Platform admin not found",
+            )
+
+        if pa_row.auth0_sub and pa_row.auth0_sub != body.auth0_sub:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Platform admin is already linked to a different Auth0 identity",
+            )
+
+        if pa_row.auth0_sub != body.auth0_sub:
+            pa_row.auth0_sub = body.auth0_sub
+            control_db.add(pa_row)
+            await control_db.commit()
+
+    return {"linked": True, "platform_admin_id": pa_row.id}

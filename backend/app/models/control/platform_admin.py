@@ -16,6 +16,8 @@ because:
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +51,15 @@ class PlatformAdmin(ControlBase, TimestampMixin):
     )
     email_verified: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
+    )
+    # Auth0 identifier (e.g. ``auth0|abc123…``) once this PA has been
+    # migrated to Auth0 via the Custom Database lazy-migration flow.
+    # NULL means the PA still authenticates via bcrypt against
+    # ``hashed_password``. After the first successful Auth0 login,
+    # the Post-Login Action writes the Auth0 ``sub`` here and from then
+    # on the PA is authenticated against Auth0 directly.
+    auth0_sub: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
     )
 
     def __repr__(self) -> str:

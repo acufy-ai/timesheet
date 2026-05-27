@@ -67,6 +67,7 @@ ENV_FIELD_MAP = {
     "auth0_connection_id": "AUTH0_CONNECTION_ID",
     "auth0_mgmt_client_id": "AUTH0_MGMT_CLIENT_ID",
     "auth0_mgmt_client_secret": "AUTH0_MGMT_CLIENT_SECRET",
+    "auth0_db_action_secret": "AUTH0_DB_ACTION_SECRET",
 }
 
 
@@ -384,6 +385,15 @@ class Settings(BaseModel):
     auth0_mgmt_client_secret: str = Field(
         default="",
         description="Client secret of the Auth0 Machine-to-Machine app."
+    )
+    auth0_db_action_secret: str = Field(
+        default="",
+        description=(
+            "Shared secret that Auth0 Custom-Database scripts and Post-Login "
+            "Actions send to our backend so we can authenticate inbound "
+            "requests as 'from Auth0' (since they come from Auth0's IPs, "
+            "not a logged-in user). Used by the PA lazy-migration flow."
+        ),
     )
 
     @property
