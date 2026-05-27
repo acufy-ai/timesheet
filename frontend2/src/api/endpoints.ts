@@ -168,8 +168,12 @@ export const usersAPI = {
       tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
     ),
   
-  update: (id: number, data: Partial<User>) =>
-    apiClient.put<User>(`/users/${id}`, data),
+  update: (id: number, data: Partial<User>, tenantSlug?: string) =>
+    apiClient.put<User>(
+      `/users/${id}`,
+      data,
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
 
   meProfile: () =>
     apiClient.get<UserProfile>('/users/me/profile'),
@@ -208,21 +212,49 @@ export const usersAPI = {
     );
   },
 
-  delete: (id: number) =>
-    apiClient.delete(`/users/${id}`),
-  bulkDelete: (userIds: number[]) =>
-    apiClient.post<{ deleted: number }>('/users/bulk-delete', { user_ids: userIds }),
-  resetPassword: (id: number, newPassword: string) =>
-    apiClient.post<{ message: string }>(`/users/${id}/reset-password`, { new_password: newPassword }),
-  resendVerification: (id: number) =>
-    apiClient.post<{ message: string }>(`/users/${id}/resend-verification`, {}),
-  resendInvite: (id: number) =>
-    apiClient.post<{ message: string }>(`/users/${id}/resend-invite`, {}),
+  // ``tenantSlug`` mirrors the create/list variants: platform-admin
+  // callers don't carry a tenant in their JWT, so the backend's
+  // ``get_tenant_db`` dep can't route the DELETE to the right tenant
+  // DB without an X-Tenant-Slug header. Tenant-admin callers leave it
+  // undefined; their tenant comes from the JWT claim.
+  delete: (id: number, tenantSlug?: string) =>
+    apiClient.delete(
+      `/users/${id}`,
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
+  bulkDelete: (userIds: number[], tenantSlug?: string) =>
+    apiClient.post<{ deleted: number }>(
+      '/users/bulk-delete',
+      { user_ids: userIds },
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
+  resetPassword: (id: number, newPassword: string, tenantSlug?: string) =>
+    apiClient.post<{ message: string }>(
+      `/users/${id}/reset-password`,
+      { new_password: newPassword },
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
+  resendVerification: (id: number, tenantSlug?: string) =>
+    apiClient.post<{ message: string }>(
+      `/users/${id}/resend-verification`,
+      {},
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
+  resendInvite: (id: number, tenantSlug?: string) =>
+    apiClient.post<{ message: string }>(
+      `/users/${id}/resend-invite`,
+      {},
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
   // Unified Send invite: backend dispatches Auth0 vs legacy verification
   // path based on whether the user has an auth0_sub. Prefer this over
   // resendVerification / resendInvite in new UI.
-  sendInvite: (id: number) =>
-    apiClient.post<{ message: string }>(`/users/${id}/send-invite`, {}),
+  sendInvite: (id: number, tenantSlug?: string) =>
+    apiClient.post<{ message: string }>(
+      `/users/${id}/send-invite`,
+      {},
+      tenantSlug ? { headers: { 'X-Tenant-Slug': tenantSlug } } : undefined,
+    ),
 
   listEmailAliases: (id: number) =>
     apiClient.get<EmailAlias[]>(`/users/${id}/email-aliases`),

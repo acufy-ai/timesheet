@@ -866,7 +866,8 @@ export const useCreateUser = () => {
 export const useUpdateUser = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Parameters<typeof usersAPI.update>[1] }) => usersAPI.update(id, data).then((res) => res.data),
+    mutationFn: ({ id, data, tenantSlug }: { id: number; data: Parameters<typeof usersAPI.update>[1]; tenantSlug?: string }) =>
+      usersAPI.update(id, data, tenantSlug).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -875,10 +876,17 @@ export const useUpdateUser = () => {
   });
 };
 
+// Accepts either `id` or `{ id, tenantSlug }`. Platform-admin callers
+// must pass tenantSlug so the request carries X-Tenant-Slug and the
+// backend can route the DELETE to the right tenant DB; tenant-admin
+// callers can pass just the id (their tenant comes from the JWT).
 export const useDeleteUser = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => usersAPI.delete(id),
+    mutationFn: (arg: number | { id: number; tenantSlug?: string }) => {
+      if (typeof arg === 'number') return usersAPI.delete(arg);
+      return usersAPI.delete(arg.id, arg.tenantSlug);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -889,20 +897,26 @@ export const useDeleteUser = () => {
 
 export const useResetUserPassword = () => {
   return useMutation({
-    mutationFn: ({ id, newPassword }: { id: number; newPassword: string }) =>
-      usersAPI.resetPassword(id, newPassword).then(res => res.data),
+    mutationFn: ({ id, newPassword, tenantSlug }: { id: number; newPassword: string; tenantSlug?: string }) =>
+      usersAPI.resetPassword(id, newPassword, tenantSlug).then(res => res.data),
   });
 };
 
 export const useResendVerification = () => {
   return useMutation({
-    mutationFn: (id: number) => usersAPI.resendVerification(id).then(res => res.data),
+    mutationFn: (arg: number | { id: number; tenantSlug?: string }) => {
+      if (typeof arg === 'number') return usersAPI.resendVerification(arg).then(res => res.data);
+      return usersAPI.resendVerification(arg.id, arg.tenantSlug).then(res => res.data);
+    },
   });
 };
 
 export const useResendInvite = () => {
   return useMutation({
-    mutationFn: (id: number) => usersAPI.resendInvite(id).then(res => res.data),
+    mutationFn: (arg: number | { id: number; tenantSlug?: string }) => {
+      if (typeof arg === 'number') return usersAPI.resendInvite(arg).then(res => res.data);
+      return usersAPI.resendInvite(arg.id, arg.tenantSlug).then(res => res.data);
+    },
   });
 };
 
@@ -911,14 +925,20 @@ export const useResendInvite = () => {
 // above.
 export const useSendInvite = () => {
   return useMutation({
-    mutationFn: (id: number) => usersAPI.sendInvite(id).then(res => res.data),
+    mutationFn: (arg: number | { id: number; tenantSlug?: string }) => {
+      if (typeof arg === 'number') return usersAPI.sendInvite(arg).then(res => res.data);
+      return usersAPI.sendInvite(arg.id, arg.tenantSlug).then(res => res.data);
+    },
   });
 };
 
 export const useBulkDeleteUsers = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (userIds: number[]) => usersAPI.bulkDelete(userIds).then(res => res.data),
+    mutationFn: (arg: number[] | { userIds: number[]; tenantSlug?: string }) => {
+      if (Array.isArray(arg)) return usersAPI.bulkDelete(arg).then(res => res.data);
+      return usersAPI.bulkDelete(arg.userIds, arg.tenantSlug).then(res => res.data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });

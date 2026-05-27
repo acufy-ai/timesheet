@@ -984,6 +984,7 @@ const AdminsTab: React.FC<{ tenant: Tenant }> = ({ tenant }) => {
       {activeAdmin && (
         <AdminSlideOver
           admin={activeAdmin}
+          tenantSlug={tenant.slug}
           onClose={() => setActiveAdmin(null)}
         />
       )}
@@ -1144,11 +1145,16 @@ const AddAdminModal: React.FC<AddAdminModalProps> = ({ tenant, onClose }) => {
 
 interface AdminSlideOverProps {
   admin: User;
+  // Platform-admin callers must include the tenant slug so DELETE /users/:id
+  // carries an X-Tenant-Slug header. Without it, the backend's tenant-db
+  // dep rejects PA requests because PA tokens have no tenant claim.
+  tenantSlug: string;
   onClose: () => void;
 }
 
 const AdminSlideOver: React.FC<AdminSlideOverProps> = ({
   admin,
+  tenantSlug,
   onClose,
 }) => {
   const [fullName, setFullName] = useState(admin.full_name);
@@ -1207,6 +1213,7 @@ const AdminSlideOver: React.FC<AdminSlideOverProps> = ({
           username: username.trim().toLowerCase(),
           is_active: isActive,
         },
+        tenantSlug,
       });
       flashToast('Saved');
     } catch (err) {
@@ -1221,7 +1228,7 @@ const AdminSlideOver: React.FC<AdminSlideOverProps> = ({
       return;
     }
     try {
-      await resetPassword.mutateAsync({ id: admin.id, newPassword: resetPw });
+      await resetPassword.mutateAsync({ id: admin.id, newPassword: resetPw, tenantSlug });
       setResetPw('');
       flashToast('Password reset');
     } catch (err) {
@@ -1232,7 +1239,7 @@ const AdminSlideOver: React.FC<AdminSlideOverProps> = ({
   const handleResendInvite = async () => {
     setError(null);
     try {
-      await sendInvite.mutateAsync(admin.id);
+      await sendInvite.mutateAsync({ id: admin.id, tenantSlug });
       flashToast('Invite sent');
     } catch (err) {
       setError(apiError(err));
@@ -1246,7 +1253,7 @@ const AdminSlideOver: React.FC<AdminSlideOverProps> = ({
     }
     setError(null);
     try {
-      await deleteUser.mutateAsync(admin.id);
+      await deleteUser.mutateAsync({ id: admin.id, tenantSlug });
       setPendingDelete(false);
       onClose();
     } catch (err) {
