@@ -1233,7 +1233,7 @@ async def list_review_timesheets(
     employee_id: int | None = Query(None),
     email_id: int | None = Query(None),
     search: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),

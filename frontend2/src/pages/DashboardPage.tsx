@@ -500,7 +500,7 @@ export const DashboardPage: React.FC = () => {
   // fetch it when the user is an admin. Managers and reviewers still
   // need it for their own tiles.
   const { data: pendingTimesheets = [] } = useIngestionTimesheets(
-    { status_filter: 'pending', limit: 200 },
+    { status_filter: 'pending', limit: 1000 },
     canReview && ingestionEnabled && !isAdminView,
   );
   // Match the inbox's grouped count: a multi-week email forwarded by

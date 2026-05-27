@@ -504,15 +504,20 @@ export const InboxPage: React.FC = () => {
   // what the LLM dropped so a misclassified timesheet doesn't disappear
   // silently. The Skipped tab handles promote/confirm actions.
   const { data: skippedOverview, isLoading: skippedLoading } = useSkippedEmails(50, true, true);
+  // Cap raised from 200 to 1000 so the inbox doesn't silently truncate
+  // older rows once a tenant accumulates more than a couple of hundred
+  // timesheets. Proper pagination is the longer-term fix; this is the
+  // immediate unblock. Backend cap (`/ingestion/timesheets?limit=`)
+  // raised to match.
   const { data: allTimesheets = [], isLoading: countsLoading } = useIngestionTimesheets(
-    { limit: 200 },
+    { limit: 1000 },
     true,
   );
   const { data: timesheets = [], isLoading } = useIngestionTimesheets({
     status_filter: statusFilter || undefined,
     client_id: clientId ? Number(clientId) : undefined,
     search: search.trim() || undefined,
-    limit: 200,
+    limit: 1000,
   });
 
   const isPageLoading = isLoading || countsLoading || skippedLoading;
