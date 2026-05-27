@@ -1741,6 +1741,11 @@ async def auth0_db_verify_pa(
         "app_metadata": {
             "realm": "platform",
             "platform_admin_id": pa_row.id,
+            # Tells the shared Post-Login Action which backend URL to
+            # call when writing auth0_sub back. Empty if the env
+            # didn't set BACKEND_PUBLIC_URL — Action falls back to
+            # its hard-coded default.
+            "backend_url": settings.backend_public_url,
         },
     }
 
@@ -1786,6 +1791,11 @@ async def auth0_db_get_user_pa(
         "app_metadata": {
             "realm": "platform",
             "platform_admin_id": pa_row.id,
+            # Tells the shared Post-Login Action which backend URL to
+            # call when writing auth0_sub back. Empty if the env
+            # didn't set BACKEND_PUBLIC_URL — Action falls back to
+            # its hard-coded default.
+            "backend_url": settings.backend_public_url,
         },
     }
 

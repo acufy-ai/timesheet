@@ -69,6 +69,7 @@ ENV_FIELD_MAP = {
     "auth0_mgmt_client_secret": "AUTH0_MGMT_CLIENT_SECRET",
     "auth0_db_action_secret": "AUTH0_DB_ACTION_SECRET",
     "auth0_pa_connection": "AUTH0_PA_CONNECTION",
+    "backend_public_url": "BACKEND_PUBLIC_URL",
 }
 
 
@@ -403,6 +404,18 @@ class Settings(BaseModel):
             "platform admins (e.g. 'acufy-platform-admins'). Empty "
             "means Auth0-for-PA is disabled and PAs continue to "
             "authenticate via bcrypt only."
+        ),
+    )
+    backend_public_url: str = Field(
+        default="",
+        description=(
+            "Publicly-reachable base URL of THIS backend. Surfaced in "
+            "PA Auth0 verify/get-user responses so the shared Post-"
+            "Login Action knows where to call back when multiple "
+            "environments share one Auth0 tenant (e.g. ldev = "
+            "'https://user.webilent.tm.ldev.acufy.ai', prod = "
+            "'https://acufy.ai/api'). Empty means the Action falls "
+            "back to its hard-coded URL."
         ),
     )
 
