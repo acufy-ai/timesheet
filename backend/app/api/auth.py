@@ -1857,13 +1857,21 @@ async def auth0_link_pa(
                 detail="Platform admin not found",
             )
 
-        if pa_row.auth0_sub and pa_row.auth0_sub != body.auth0_sub:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Platform admin is already linked to a different Auth0 identity",
-            )
-
+        # If the stored auth0_sub differs from what Auth0 just sent us,
+        # overwrite it. The most common reason for divergence is a
+        # one-time housekeeping event: an Auth0 user got deleted and
+        # the lazy-migration created a fresh one (different sub).
+        # Treating that as an error (409) blocks the heal. Since the
+        # link endpoint is already authenticated by the shared secret
+        # (only Auth0 can call it), trusting whatever Auth0 sends is
+        # safe and the self-healing path is the right default.
         if pa_row.auth0_sub != body.auth0_sub:
+            import logging as _logging
+            if pa_row.auth0_sub:
+                _logging.getLogger(__name__).info(
+                    "PA Auth0 sub re-link: pa_id=%s old=%r new=%r",
+                    pa_row.id, pa_row.auth0_sub, body.auth0_sub,
+                )
             pa_row.auth0_sub = body.auth0_sub
             control_db.add(pa_row)
             await control_db.commit()
