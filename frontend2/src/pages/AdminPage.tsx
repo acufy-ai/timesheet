@@ -34,6 +34,17 @@ const extractErrorMessage = (err: unknown): string => {
   return 'An error occurred';
 };
 
+// Format hours as a fixed-precision string. Summing fractional hours
+// in JavaScript yields floating-point garbage (e.g. 152.0 turning into
+// 151.99999999999994); rounding at display time stops that bleeding
+// into the UI. Two decimals matches the tenant-side time-entry shape.
+const fmtHrs = (n: number | string): string => {
+  const num = typeof n === 'string' ? parseFloat(n) : n;
+  if (!Number.isFinite(num)) return '0.00';
+  return num.toFixed(2);
+};
+
+
 type UserMutationPayload = {
   full_name: string;
   // Email is optional in the patch — omit the key entirely to leave
@@ -2418,7 +2429,7 @@ export const AdminPage: React.FC = () => {
                                     ? `${row.ingestionSummaries.length} ${row.ingestionSummaries.length === 1 ? 'submission' : 'submissions'}`
                                     : row.entries.length}
                                 </td>
-                                <td className="px-4 py-2.5 text-foreground font-medium">{row.totalHours}h</td>
+                                <td className="px-4 py-2.5 text-foreground font-medium">{fmtHrs(row.totalHours)}h</td>
                                 <td className="px-4 py-2.5">
                                   <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                                     status === 'APPROVED' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :
@@ -2533,7 +2544,7 @@ export const AdminPage: React.FC = () => {
                                                 </p>
                                               </div>
                                               <div className="flex items-center gap-3 flex-shrink-0">
-                                                <span className="text-sm font-medium text-foreground">{w.totalHours}h</span>
+                                                <span className="text-sm font-medium text-foreground">{fmtHrs(w.totalHours)}h</span>
                                                 <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                                                   APPROVED
                                                 </span>
@@ -2555,7 +2566,7 @@ export const AdminPage: React.FC = () => {
                                           <p className="text-sm font-medium text-foreground">
                                             Week of {format(activeIngWeek.start, 'MMM d')} – {format(activeIngWeek.end, 'MMM d, yyyy')}
                                             <span className="text-muted-foreground font-normal">
-                                              {' · '}{activeIngWeek.totalHours}h · {activeIngWeek.summaries.length} {activeIngWeek.summaries.length === 1 ? 'submission' : 'submissions'}
+                                              {' · '}{fmtHrs(activeIngWeek.totalHours)}h · {activeIngWeek.summaries.length} {activeIngWeek.summaries.length === 1 ? 'submission' : 'submissions'}
                                             </span>
                                           </p>
                                           {activeIngWeek.summaries.map((ts) => {
@@ -2586,7 +2597,7 @@ export const AdminPage: React.FC = () => {
                                                   </div>
                                                   <div className="flex items-center gap-3 flex-shrink-0">
                                                     <span className="text-sm font-medium text-foreground">
-                                                      {Number(ts.total_hours ?? 0)}h
+                                                      {fmtHrs(Number(ts.total_hours ?? 0))}h
                                                     </span>
                                                     <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                                                       APPROVED
@@ -2682,7 +2693,7 @@ export const AdminPage: React.FC = () => {
                                                   </p>
                                                 </div>
                                                 <div className="flex items-center gap-3 flex-shrink-0">
-                                                  <span className="text-sm font-medium text-foreground">{w.totalHours}h</span>
+                                                  <span className="text-sm font-medium text-foreground">{fmtHrs(w.totalHours)}h</span>
                                                   <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                                                     ws === 'APPROVED' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :
                                                     ws === 'SUBMITTED' ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400' :
@@ -2709,7 +2720,7 @@ export const AdminPage: React.FC = () => {
                                           </button>
                                           <p className="text-sm font-medium text-foreground">
                                             Week of {format(activeWeek.start, 'MMM d')} – {format(activeWeek.end, 'MMM d, yyyy')}
-                                            <span className="text-muted-foreground font-normal"> · {activeWeek.totalHours}h · {activeWeek.entries.length} entries</span>
+                                            <span className="text-muted-foreground font-normal"> · {fmtHrs(activeWeek.totalHours)}h · {activeWeek.entries.length} entries</span>
                                           </p>
                                           {activeWeek.entries.map((entry) => {
                                             const eStatus = entry.status;
@@ -2743,7 +2754,7 @@ export const AdminPage: React.FC = () => {
                                                   <div className="flex flex-col items-end gap-1 flex-shrink-0">
                                                     <div className="flex items-center gap-3">
                                                       <span className="text-sm font-medium text-foreground">
-                                                        {Number(entry.hours)}h
+                                                        {fmtHrs(Number(entry.hours))}h
                                                       </span>
                                                       <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                                                         eStatus === 'APPROVED' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :

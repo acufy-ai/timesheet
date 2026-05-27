@@ -711,7 +711,7 @@ const RowDrillIn: React.FC<{
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
                   <span className="text-sm font-medium text-foreground">
-                    {Number(ts.total_hours ?? 0)}h
+                    {Number(ts.total_hours ?? 0).toFixed(2)}h
                   </span>
                   <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                     APPROVED
