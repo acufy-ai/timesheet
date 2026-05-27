@@ -435,14 +435,20 @@ async def login(
         )).scalar_one_or_none()
 
     if pa_row is not None:
-        # If this PA has been migrated to Auth0 (auth0_sub set), the
-        # password they typed is in Auth0's DB, not in our bcrypt
-        # column. Try Auth0 first; fall back to bcrypt only if Auth0
-        # is unconfigured / unreachable. Pre-migration PAs (auth0_sub
-        # NULL) skip Auth0 and go straight to bcrypt — the Custom-
-        # Database lazy-migration imports them on first login.
+        # Try Auth0 first when configured. The first login per PA goes
+        # through Auth0's Custom-Database connection: Auth0 calls our
+        # /auth/auth0-db/verify-pa endpoint, which validates against
+        # our bcrypt hash. Auth0 imports the PA at that moment and the
+        # Post-Login Action writes auth0_sub back to our row. From the
+        # second login onwards, Auth0 already knows the PA and skips
+        # our verify endpoint entirely.
+        #
+        # We attempt Auth0 unconditionally (not gated on auth0_sub)
+        # because the bootstrap case has auth0_sub NULL but we still
+        # want Auth0 to take over. The bcrypt fallback below catches
+        # the rare cases where Auth0 is unreachable.
         pa_auth0_token = None
-        if settings.auth0_enabled and pa_row.auth0_sub:
+        if settings.auth0_enabled:
             try:
                 pa_auth0_token = await auth0_password_grant(
                     login_request.email, login_request.password,
