@@ -68,6 +68,7 @@ ENV_FIELD_MAP = {
     "auth0_mgmt_client_id": "AUTH0_MGMT_CLIENT_ID",
     "auth0_mgmt_client_secret": "AUTH0_MGMT_CLIENT_SECRET",
     "auth0_db_action_secret": "AUTH0_DB_ACTION_SECRET",
+    "auth0_pa_connection": "AUTH0_PA_CONNECTION",
 }
 
 
@@ -393,6 +394,15 @@ class Settings(BaseModel):
             "Actions send to our backend so we can authenticate inbound "
             "requests as 'from Auth0' (since they come from Auth0's IPs, "
             "not a logged-in user). Used by the PA lazy-migration flow."
+        ),
+    )
+    auth0_pa_connection: str = Field(
+        default="",
+        description=(
+            "Name of the Auth0 Custom-Database connection used for "
+            "platform admins (e.g. 'acufy-platform-admins'). Empty "
+            "means Auth0-for-PA is disabled and PAs continue to "
+            "authenticate via bcrypt only."
         ),
     )
 

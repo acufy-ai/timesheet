@@ -448,10 +448,12 @@ async def login(
         # want Auth0 to take over. The bcrypt fallback below catches
         # the rare cases where Auth0 is unreachable.
         pa_auth0_token = None
-        if settings.auth0_enabled:
+        if settings.auth0_enabled and settings.auth0_pa_connection:
             try:
                 pa_auth0_token = await auth0_password_grant(
-                    login_request.email, login_request.password,
+                    login_request.email,
+                    login_request.password,
+                    connection=settings.auth0_pa_connection,
                 )
             except Auth0PasswordError as exc:
                 # Same fallback policy as the tenant path: only quietly

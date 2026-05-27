@@ -177,7 +177,12 @@ class Auth0PasswordError(Exception):
         self.code = code
 
 
-async def auth0_password_grant(email: str, password: str) -> str:
+async def auth0_password_grant(
+    email: str,
+    password: str,
+    *,
+    connection: str | None = None,
+) -> str:
     """Exchange (email, password) for an Auth0 access token.
 
     Done server-side because Regular Web App clients are confidential
@@ -189,14 +194,21 @@ async def auth0_password_grant(email: str, password: str) -> str:
     Auth0-side rejection; the error's ``code`` is the Auth0 ``error``
     field (``invalid_grant``, ``access_denied``, ...) so the login
     handler can decide whether to fall back to bcrypt.
+
+    ``connection`` overrides the realm. Defaults to
+    ``settings.auth0_connection`` (the tenant-user connection). The
+    PA login path passes ``settings.auth0_pa_connection`` so
+    credentials are routed to the right Auth0 Custom-Database
+    connection (e.g. ``acufy-platform-admins``).
     """
     if not settings.auth0_enabled:
         raise Auth0PasswordError("Auth0 is not configured on the server")
 
+    realm = connection or settings.auth0_connection
     url = f"https://{settings.auth0_domain}/oauth/token"
     body = {
         "grant_type": "http://auth0.com/oauth/grant-type/password-realm",
-        "realm": settings.auth0_connection,
+        "realm": realm,
         "username": email,
         "password": password,
         "client_id": settings.auth0_client_id,
