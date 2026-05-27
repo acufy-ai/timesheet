@@ -70,6 +70,7 @@ ENV_FIELD_MAP = {
     "auth0_db_action_secret": "AUTH0_DB_ACTION_SECRET",
     "auth0_pa_connection": "AUTH0_PA_CONNECTION",
     "backend_public_url": "BACKEND_PUBLIC_URL",
+    "auth0_pa_user_id_prefix": "AUTH0_PA_USER_ID_PREFIX",
 }
 
 
@@ -416,6 +417,18 @@ class Settings(BaseModel):
             "'https://user.webilent.tm.ldev.acufy.ai', prod = "
             "'https://acufy.ai/api'). Empty means the Action falls "
             "back to its hard-coded URL."
+        ),
+    )
+    auth0_pa_user_id_prefix: str = Field(
+        default="",
+        description=(
+            "Environment-scoped prefix for the Auth0 PA user_id (e.g. "
+            "'ldev' / 'prod'). When set, verify-pa and get-user-pa "
+            "return 'prefix-pa-{id}' instead of just 'pa-{id}'. "
+            "Required when multiple environments share one Auth0 "
+            "tenant: ldev's PA #1 and prod's PA #1 would otherwise "
+            "collide under the same Auth0 user_id 'pa-1'. Empty "
+            "preserves the legacy 'pa-{id}' shape."
         ),
     )
 

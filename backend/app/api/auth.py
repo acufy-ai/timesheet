@@ -478,7 +478,15 @@ async def login(
                     detail="Auth0 verification failed",
                 )
             auth0_email = (userinfo.get("email") or "").strip().lower()
-            if auth0_email != login_request.email.strip().lower():
+            submitted_email = login_request.email.strip().lower()
+            if auth0_email != submitted_email:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "PA Auth0 token email mismatch: submitted=%r token=%r sub=%r",
+                    submitted_email,
+                    auth0_email,
+                    userinfo.get("sub"),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Auth0 token email does not match login email",
@@ -1672,6 +1680,23 @@ class _Auth0LinkPaRequest(BaseModel):
     auth0_sub: str
 
 
+def _pa_auth0_user_id(pa_id: int) -> str:
+    """Build the Auth0 ``user_id`` for a PA row, namespaced by environment.
+
+    Multiple environments may share one Auth0 tenant (ldev + prod, etc.).
+    Without an env prefix, ldev's PA #1 and prod's PA #1 collide under
+    the same Auth0 user_id ``pa-1``. The prefix (set via
+    ``AUTH0_PA_USER_ID_PREFIX``) keeps them distinct.
+
+    Empty prefix → legacy ``pa-{id}`` shape (for envs that don't share
+    the Auth0 tenant with anyone).
+    """
+    prefix = settings.auth0_pa_user_id_prefix.strip()
+    if prefix:
+        return f"{prefix}-pa-{pa_id}"
+    return f"pa-{pa_id}"
+
+
 def _require_auth0_db_secret(x_auth0_db_secret: str | None) -> None:
     expected = settings.auth0_db_action_secret
     if not expected:
@@ -1734,7 +1759,7 @@ async def auth0_db_verify_pa(
     # the connection. We use the PA's primary key prefixed with ``pa-``
     # so it's namespaced away from tenant-user ids.
     return {
-        "user_id": f"pa-{pa_row.id}",
+        "user_id": _pa_auth0_user_id(pa_row.id),
         "email": pa_row.email,
         "email_verified": pa_row.email_verified,
         "name": pa_row.full_name,
@@ -1784,7 +1809,7 @@ async def auth0_db_get_user_pa(
         )
 
     return {
-        "user_id": f"pa-{pa_row.id}",
+        "user_id": _pa_auth0_user_id(pa_row.id),
         "email": pa_row.email,
         "email_verified": pa_row.email_verified,
         "name": pa_row.full_name,
