@@ -157,15 +157,26 @@ export const useApprovalHistoryGrouped = (params?: { days_back?: number; status_
   });
 };
 
+// Approving/rejecting a timesheet changes both the pending-approval
+// queue and every aggregate view that summarises approved work. The
+// approved-timesheets manager view + the admin-portal timesheets tab
+// each cache their own queries, so we invalidate them explicitly to
+// stop the page rendering stale totals after the mutation lands.
+const invalidateApprovalSurfaces = (queryClient: ReturnType<typeof useQueryClient>) => {
+  queryClient.invalidateQueries({ queryKey: ['approvals'] });
+  queryClient.invalidateQueries({ queryKey: ['timeentries'] });
+  queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+  queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  queryClient.invalidateQueries({ queryKey: ['approved-timesheets'] });
+  queryClient.invalidateQueries({ queryKey: ['team-timesheets'] });
+  queryClient.invalidateQueries({ queryKey: ['team-timesheets-ingestion-all'] });
+};
+
 export const useApproveTimeEntry = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => approvalsAPI.approve(id).then(res => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    onSuccess: () => invalidateApprovalSurfaces(queryClient),
   });
 };
 
@@ -174,11 +185,7 @@ export const useRejectTimeEntry = () => {
   return useMutation({
     mutationFn: ({ id, reason }: { id: number; reason: string }) =>
       approvalsAPI.reject(id, reason).then(res => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    onSuccess: () => invalidateApprovalSurfaces(queryClient),
   });
 };
 
@@ -186,12 +193,7 @@ export const useApproveTimeEntryBatch = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (entryIds: number[]) => approvalsAPI.batchApprove(entryIds).then(res => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    onSuccess: () => invalidateApprovalSurfaces(queryClient),
   });
 };
 
@@ -200,12 +202,7 @@ export const useRejectTimeEntryBatch = () => {
   return useMutation({
     mutationFn: ({ entryIds, reason }: { entryIds: number[]; reason: string }) =>
       approvalsAPI.batchReject(entryIds, reason).then(res => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
+    onSuccess: () => invalidateApprovalSurfaces(queryClient),
   });
 };
 
@@ -1315,8 +1312,7 @@ export const useApproveIngestionTimesheet = () => {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', id] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
-      queryClient.invalidateQueries({ queryKey: ['timeentries'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      invalidateApprovalSurfaces(queryClient);
     },
   });
 };
@@ -1329,6 +1325,7 @@ export const useRejectIngestionTimesheet = () => {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', id] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      invalidateApprovalSurfaces(queryClient);
     },
   });
 };
