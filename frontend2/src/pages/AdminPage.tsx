@@ -1147,15 +1147,35 @@ export const AdminPage: React.FC = () => {
         'APPROVED',
       ];
     });
-    // Trailing total row so an admin gets the sum without re-running
-    // SUM() in Excel. Leave non-numeric columns blank, sum hours across
-    // both row types.
-    const totalHours = [...entryRows, ...ingestionRows].reduce(
-      (sum, row) => sum + (Number(row[6]) || 0),
-      0,
-    );
-    const totalRow = ['Total', '', '', '', '', '', totalHours, '', '', ''];
-    const csv = [header, ...entryRows, ...ingestionRows, totalRow]
+    // Group rows by employee + sort each group by date so an admin
+    // reading the CSV sees one contiguous block per person rather
+    // than two employees interleaved by date. Per-employee subtotal
+    // row at the end of each block. Grand total at the very end.
+    // Hours column is index 6 across both entry and ingestion shapes.
+    const allRows = [...entryRows, ...ingestionRows];
+    const groups = new Map<string, typeof allRows>();
+    for (const row of allRows) {
+      const employee = String(row[0] ?? '');
+      const existing = groups.get(employee);
+      if (existing) existing.push(row);
+      else groups.set(employee, [row]);
+    }
+    // Sort each group by Date (column 5) ascending. Date is either an
+    // ISO string (YYYY-MM-DD) or a period range "YYYY-MM-DD - YYYY-MM-DD";
+    // sorting on the leading date works for both.
+    const sortedEmployees = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+    const orderedRows: typeof allRows = [];
+    let grandTotal = 0;
+    for (const employee of sortedEmployees) {
+      const rows = groups.get(employee)!;
+      rows.sort((a, b) => String(a[5] ?? '').localeCompare(String(b[5] ?? '')));
+      orderedRows.push(...rows);
+      const subtotal = rows.reduce((sum, row) => sum + (Number(row[6]) || 0), 0);
+      grandTotal += subtotal;
+      orderedRows.push([`${employee} subtotal`, '', '', '', '', '', subtotal, '', '', '']);
+    }
+    const totalRow = ['Total', '', '', '', '', '', grandTotal, '', '', ''];
+    const csv = [header, ...orderedRows, totalRow]
       .map((row) => row.map(escape).join(','))
       .join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });

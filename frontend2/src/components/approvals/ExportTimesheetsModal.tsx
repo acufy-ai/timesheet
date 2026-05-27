@@ -299,14 +299,32 @@ export const ExportTimesheetsModal: React.FC<Props> = ({
         'APPROVED',
       ];
     });
-    // Trailing total row: sum hours so the admin sees the grand total
-    // without re-running SUM() in Excel. Hours column is index 6.
-    const totalHours = [...entryRows, ...ingestionRows].reduce(
-      (sum, row) => sum + (Number(row[6]) || 0),
-      0,
-    );
-    const totalRow = ['Total', '', '', '', '', '', totalHours, '', '', ''];
-    const csv = [header, ...entryRows, ...ingestionRows, totalRow]
+    // Group rows by employee + sort each group by date so an admin
+    // reading the CSV sees one contiguous block per person rather
+    // than two employees interleaved by date. Per-employee subtotal
+    // row at the end of each block. Grand total at the very end.
+    // Hours column is index 6 across both entry and ingestion shapes.
+    const allRows = [...entryRows, ...ingestionRows];
+    const groups = new Map<string, typeof allRows>();
+    for (const row of allRows) {
+      const employee = String(row[0] ?? '');
+      const existing = groups.get(employee);
+      if (existing) existing.push(row);
+      else groups.set(employee, [row]);
+    }
+    const sortedEmployees = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+    const orderedRows: typeof allRows = [];
+    let grandTotal = 0;
+    for (const employee of sortedEmployees) {
+      const rows = groups.get(employee)!;
+      rows.sort((a, b) => String(a[5] ?? '').localeCompare(String(b[5] ?? '')));
+      orderedRows.push(...rows);
+      const subtotal = rows.reduce((sum, row) => sum + (Number(row[6]) || 0), 0);
+      grandTotal += subtotal;
+      orderedRows.push([`${employee} subtotal`, '', '', '', '', '', subtotal, '', '', '']);
+    }
+    const totalRow = ['Total', '', '', '', '', '', grandTotal, '', '', ''];
+    const csv = [header, ...orderedRows, totalRow]
       .map((row) => row.map(escape).join(','))
       .join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
