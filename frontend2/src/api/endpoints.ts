@@ -100,8 +100,8 @@ export const authAPI = {
   refresh: (refreshToken: string) =>
     apiClient.post<TokenResponse>('/auth/refresh', { refresh_token: refreshToken }),
 
-  logout: (refreshToken: string) =>
-    apiClient.post('/auth/logout', { refresh_token: refreshToken }),
+  logout: (refreshToken?: string) =>
+    apiClient.post('/auth/logout', refreshToken ? { refresh_token: refreshToken } : {}),
 
   verifyEmail: (token: string) =>
     apiClient.post<MessageResponse & { email: string }>('/auth/verify-email', { token }),
@@ -908,6 +908,7 @@ export const mailboxesAPI = {
   delete: (id: number) => apiClient.delete(`/mailboxes/${id}`),
   test: (id: number) => apiClient.post<{ success: boolean; error: string | null; latency_ms: number; message_count: number }>(`/mailboxes/${id}/test`, {}),
   resetCursor: (id: number) => apiClient.post(`/mailboxes/${id}/reset-cursor`, {}),
+  tryAgain: (id: number) => apiClient.post<Mailbox>(`/mailboxes/${id}/try-again`, {}),
   oauthConnect: (provider: 'google' | 'microsoft') => apiClient.get<{ auth_url: string }>(`/mailboxes/oauth/connect/${provider}`),
 };
 
@@ -925,8 +926,11 @@ export const ingestionAPI = {
   getEmail: (emailId: number) => apiClient.get<StoredEmailDetail>(`/ingestion/emails/${emailId}`),
   deleteEmail: (emailId: number, refetch: boolean = false) =>
     apiClient.delete(`/ingestion/emails/${emailId}`, { params: refetch ? { refetch: true } : undefined }),
-  bulkDeleteEmails: (emailIds: number[]) =>
-    apiClient.post<{ deleted: number }>('/ingestion/emails/bulk-delete', { email_ids: emailIds }),
+  bulkDeleteEmails: (emailIds: number[], refetch: boolean = false) =>
+    apiClient.post<{ deleted: number; cursors_rewound: number }>(
+      '/ingestion/emails/bulk-delete',
+      { email_ids: emailIds, refetch },
+    ),
   bulkReprocess: (emailIds: number[]) =>
     apiClient.post<{ queued: number; message: string }>('/ingestion/fetch-emails/bulk-reprocess', { email_ids: emailIds }),
   reapplyMappings: () => apiClient.post<MappingReapplyResult>('/ingestion/timesheets/reapply-mappings', {}),

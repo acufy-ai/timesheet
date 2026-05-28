@@ -5,6 +5,7 @@ Called by arq when a reviewer triggers email ingestion or reprocessing.
 
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,9 +22,55 @@ logger = logging.getLogger(__name__)
 
 JOB_STATUS_TTL_SECONDS = 86400
 
+# Worst-case ingestion job is ~5-10 min (large mailbox, many attachments,
+# LLM extraction). 15 min gives margin without leaving a permanent lock if
+# the worker crashes mid-job without releasing.
+FETCH_LOCK_TTL_SECONDS = 900
+
+# A mailbox that has failed to fetch this many times in a row is
+# auto-disabled by the worker. 5 is loose enough that a single bad
+# afternoon won't trip it, tight enough that a permanently-broken
+# mailbox stops logging the same failure on every scheduled run.
+MAILBOX_AUTO_DISABLE_THRESHOLD = 5
+
 
 def _status_key(job_id: str) -> str:
     return f"ingestion:job-status:{job_id}"
+
+
+def _fetch_lock_key(tenant_id: int, mode: str) -> str:
+    # Lock is per (tenant, mode) so a fetch and a reprocess for the same
+    # tenant don't block each other — they touch different sets of rows.
+    return f"ingestion:fetch-lock:{tenant_id}:{mode}"
+
+
+async def _try_acquire_fetch_lock(redis, key: str, token: str) -> bool:
+    """SET NX EX — atomic acquire-or-fail with TTL. Returns True if we got it."""
+    if redis is None:
+        # Redis-less dev: skip locking. Single-worker dev environments
+        # don't have the concurrency the lock protects against.
+        return True
+    result = await redis.set(key, token, nx=True, ex=FETCH_LOCK_TTL_SECONDS)
+    return bool(result)
+
+
+async def _release_fetch_lock(redis, key: str, token: str) -> None:
+    """Release the lock only if our token still owns it. Uses a Lua CAS so a
+    slow job whose TTL has expired (and whose lock was re-acquired by
+    another worker) can't accidentally release the new owner's lock."""
+    if redis is None:
+        return
+    script = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) "
+        "else return 0 end"
+    )
+    try:
+        await redis.eval(script, 1, key, token)
+    except Exception as exc:
+        # Best-effort release; if Redis is unavailable at job end the
+        # lock will TTL out on its own.
+        logger.warning("Failed to release fetch lock %s: %s", key, exc)
 
 
 def _build_summary(tenant_id: int, mode: str) -> dict[str, Any]:
@@ -111,6 +158,62 @@ async def fetch_emails_for_tenant(
 
     job_id = ctx.get("job_id") or f"fetch_tenant_{tenant_id}"
     summary = _build_summary(tenant_id, mode)
+
+    # Per-(tenant, mode) lock prevents concurrent runs from double-ingesting
+    # the same emails when the scheduled timer and a manual UI trigger fire
+    # within seconds of each other. Non-blocking: if another worker holds
+    # the lock we record a skip and return immediately, so the duplicate
+    # job doesn't pile up retries in the arq queue.
+    redis = ctx.get("redis")
+    lock_key = _fetch_lock_key(tenant_id, mode)
+    lock_token = secrets.token_hex(16)
+    if not await _try_acquire_fetch_lock(redis, lock_key, lock_token):
+        logger.info(
+            "Skipping duplicate ingestion job for tenant=%s mode=%s; another worker holds the lock",
+            tenant_id, mode,
+        )
+        summary["errors"].append("Another ingestion run is already in progress for this tenant.")
+        summary["completed_at"] = datetime.now(timezone.utc).isoformat()
+        await _write_job_status(
+            ctx,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            mode=mode,
+            status="skipped",
+            progress=100,
+            message="Another ingestion run is already in progress for this tenant.",
+            result=summary,
+        )
+        return summary
+
+    try:
+        return await _fetch_emails_for_tenant_body(
+            ctx, tenant_id, mode, email_id, attachment_ids,
+            tenant_slug=tenant_slug,
+            job_id=job_id,
+            summary=summary,
+            open_session=_open_session,
+        )
+    finally:
+        await _release_fetch_lock(redis, lock_key, lock_token)
+
+
+async def _fetch_emails_for_tenant_body(
+    ctx: dict,
+    tenant_id: int,
+    mode: str,
+    email_id: int | None,
+    attachment_ids: list[int] | None,
+    *,
+    tenant_slug: str | None,
+    job_id: str,
+    summary: dict,
+    open_session,
+) -> dict:
+    """Inner body of fetch_emails_for_tenant. Extracted so the lock acquire/
+    release in the wrapper stays uncluttered and easy to audit."""
+    _open_session = open_session
+
     await _write_job_status(
         ctx,
         job_id=job_id,
@@ -157,7 +260,7 @@ async def fetch_emails_for_tenant(
             return summary
     # Pre-fetch IMAP messages outside any session so asyncio.to_thread
     # never runs inside one.
-    prefetched: list[tuple[Mailbox, list[dict]]] | None = None
+    prefetched: list[tuple[Mailbox, list[dict] | None]] | None = None
     if mode == "fetch":
         prefetched = await _prefetch_mailbox_messages(
             ctx, tenant_id, job_id, summary, tenant_slug=tenant_slug
@@ -224,8 +327,15 @@ async def _prefetch_mailbox_messages(
     summary: dict[str, Any],
     *,
     tenant_slug: str | None = None,
-) -> list[tuple[Mailbox, list[dict]]]:
-    """Load mailboxes and fetch raw messages; sessions close before IMAP work."""
+) -> list[tuple[Mailbox, list[dict] | None]]:
+    """Load mailboxes and fetch raw messages; sessions close before IMAP work.
+
+    The ``messages`` element is ``None`` when the IMAP fetch FAILED for
+    that mailbox (timeout, auth, network) — callers MUST treat None as
+    "do not advance the cursor". An empty list ``[]`` means the fetch
+    succeeded and the server returned no new messages, which is the
+    correct condition to advance the cursor to now.
+    """
     from app.db import AsyncSessionLocal
     from app.db_tenant import tenant_session
 
@@ -243,7 +353,7 @@ async def _prefetch_mailbox_messages(
     if not mailboxes:
         return []
 
-    mailbox_messages: list[tuple[Mailbox, list[dict]]] = []
+    mailbox_messages: list[tuple[Mailbox, list[dict] | None]] = []
     for index, mailbox in enumerate(mailboxes, start=1):
         progress = 10 + int(((index - 1) / max(len(mailboxes), 1)) * 35)
         await _write_job_status(
@@ -268,6 +378,10 @@ async def _prefetch_mailbox_messages(
                     if fresh is not None:
                         fresh.last_fetch_error = None
                         fresh.last_fetch_failed_at = None
+                        # Reset the consecutive-failure counter and clear
+                        # any auto-disable reason now that fetch works.
+                        fresh.consecutive_fetch_failures = 0
+                        fresh.auto_disabled_reason = None
                         await err_session.commit()
             except Exception as clear_exc:
                 logger.debug("Could not clear mailbox fetch error: %s", clear_exc)
@@ -276,17 +390,34 @@ async def _prefetch_mailbox_messages(
             logger.error("Failed to fetch messages from mailbox %s: %s", mailbox.id, exc)
             summary["mailboxes_failed"] += 1
             summary["errors"].append(f"Mailbox {mailbox.id} ({mailbox.label}): {exc}")
-            # Persist error so the UI can surface it without log-diving
+            # Persist error + increment the consecutive-failure counter.
+            # When the counter crosses the threshold, flip is_active off and
+            # set auto_disabled_reason so the UI shows a clear banner.
             try:
                 async with _open_session() as err_session:
                     fresh = await err_session.get(Mailbox, mailbox.id)
                     if fresh is not None:
                         fresh.last_fetch_error = str(exc)[:1024]
                         fresh.last_fetch_failed_at = datetime.now(timezone.utc)
+                        fresh.consecutive_fetch_failures = (
+                            (fresh.consecutive_fetch_failures or 0) + 1
+                        )
+                        if fresh.consecutive_fetch_failures >= MAILBOX_AUTO_DISABLE_THRESHOLD and fresh.is_active:
+                            fresh.is_active = False
+                            fresh.auto_disabled_reason = (
+                                f"Couldn't connect to this mailbox {fresh.consecutive_fetch_failures} "
+                                f"times in a row. Last error: {str(exc)[:200]}"
+                            )
+                            logger.warning(
+                                "Auto-disabled mailbox %s (%s) after %d consecutive failures",
+                                mailbox.id, mailbox.label, fresh.consecutive_fetch_failures,
+                            )
                         await err_session.commit()
             except Exception as persist_exc:
                 logger.debug("Could not persist mailbox fetch error: %s", persist_exc)
-            mailbox_messages.append((mailbox, []))
+            # None (not []) so the downstream cursor-advance logic can
+            # distinguish "fetch failed" from "fetch succeeded, 0 new".
+            mailbox_messages.append((mailbox, None))
 
     return mailbox_messages
 
@@ -297,7 +428,7 @@ async def _run_fetch_job(
     tenant_id: int,
     job_id: str,
     summary: dict[str, Any],
-    prefetched: list[tuple[Mailbox, list[dict]]] | None = None,
+    prefetched: list[tuple[Mailbox, list[dict] | None]] | None = None,
     *,
     tenant_slug: str | None = None,
 ) -> None:
@@ -461,7 +592,7 @@ async def _run_reprocess_job(
 
 async def _process_mailbox(
     mailbox: Mailbox,
-    messages: list[dict],
+    messages: list[dict] | None,
     tenant_id: int,
     session: AsyncSession,
     ctx: dict | None = None,
@@ -471,12 +602,19 @@ async def _process_mailbox(
     *,
     tenant_slug: str | None = None,
 ) -> dict:
-    """Process pre-fetched messages from one mailbox. Never raises."""
+    """Process pre-fetched messages from one mailbox. Never raises.
+
+    ``messages=None`` signals the upstream IMAP fetch FAILED for this
+    mailbox — we must NOT advance the cursor in that case (doing so
+    causes silent data loss: anything that was about to be re-pulled
+    after a cursor rewind gets skipped on the next fetch). The mailbox
+    is reported as failed and we return without touching the cursor.
+    """
     mailbox_id = mailbox.id
     mailbox_label = mailbox.label
     result = {
         "success": False,
-        "fetched": len(messages),
+        "fetched": len(messages) if messages is not None else 0,
         "new": 0,
         "skipped": 0,
         "timesheets_created": 0,
@@ -484,6 +622,12 @@ async def _process_mailbox(
         "message_diagnostics": [],
         "error": None,
     }
+
+    if messages is None:
+        # IMAP fetch failed upstream — error is already logged and
+        # persisted on the mailbox row in _prefetch_mailbox_messages.
+        result["error"] = "imap_fetch_failed"
+        return result
 
     try:
         if not messages:

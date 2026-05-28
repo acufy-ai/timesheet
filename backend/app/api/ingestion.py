@@ -1017,6 +1017,7 @@ async def delete_ingested_email(
 
 class BulkDeleteEmailsRequest(BaseModel):
     email_ids: list[int]
+    refetch: bool = False
 
 
 @router.post("/emails/bulk-delete")
@@ -1026,22 +1027,44 @@ async def bulk_delete_ingested_emails(
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
+    from datetime import timedelta
+    from app.models.mailbox import Mailbox
+
     deleted = 0
     all_storage_keys: list[str] = []
+    # Track the oldest received_at per mailbox across the batch so we can
+    # rewind each mailbox's cursor in one shot at the end. Each mailbox
+    # only rewinds if the new cursor is older than its current one
+    # (same conservative rule as single-delete: only rewind, never advance).
+    oldest_per_mailbox: dict[int, "datetime"] = {}
     for email_id in body.email_ids:
         email_record = await _load_ingested_email_for_delete(session, email_id, current_user.tenant_id)
         if email_record is None:
             continue
+        if body.refetch and email_record.received_at and email_record.mailbox_id:
+            current_oldest = oldest_per_mailbox.get(email_record.mailbox_id)
+            if current_oldest is None or email_record.received_at < current_oldest:
+                oldest_per_mailbox[email_record.mailbox_id] = email_record.received_at
         storage_keys = await _delete_ingested_email_tree(session, email_record)
         all_storage_keys.extend(storage_keys)
         deleted += 1
+
+    if body.refetch and oldest_per_mailbox:
+        mailbox_result = await session.execute(
+            select(Mailbox).where(Mailbox.id.in_(oldest_per_mailbox.keys()))
+        )
+        for mailbox in mailbox_result.scalars():
+            new_cursor = oldest_per_mailbox[mailbox.id] - timedelta(minutes=10)
+            if mailbox.last_fetched_at is None or new_cursor < mailbox.last_fetched_at:
+                mailbox.last_fetched_at = new_cursor
+
     await session.commit()
     for storage_key in all_storage_keys:
         try:
             await delete_file(storage_key)
         except FileNotFoundError:
             continue
-    return {"deleted": deleted}
+    return {"deleted": deleted, "cursors_rewound": len(oldest_per_mailbox) if body.refetch else 0}
 
 
 @router.get("/attachments/{attachment_id}/file")
@@ -1395,6 +1418,7 @@ async def assign_chain_candidate(
         timesheet_id,
         current_user.id,
         "chain_candidate_assigned",
+        tenant_id=timesheet.tenant_id,
         previous_value=previous,
         new_value={
             "employee_id": employee_id,
@@ -1459,6 +1483,7 @@ async def update_timesheet_data(
         timesheet_id,
         current_user.id,
         "field_updated",
+        tenant_id=timesheet.tenant_id,
         previous_value=previous,
         new_value=serialized_updates,
     )
@@ -1516,6 +1541,7 @@ async def add_line_item(
 
     await _validate_project(session, current_user, body.project_id)
     item = IngestionTimesheetLineItem(
+        tenant_id=timesheet.tenant_id,
         ingestion_timesheet_id=timesheet_id,
         work_date=body.work_date,
         hours=body.hours,
@@ -1532,6 +1558,7 @@ async def add_line_item(
         timesheet_id,
         current_user.id,
         "line_item_added",
+        tenant_id=timesheet.tenant_id,
         new_value=body.model_dump(mode="json"),
     )
     await session.commit()
@@ -1586,6 +1613,7 @@ async def update_line_item(
         timesheet_id,
         current_user.id,
         "line_item_updated",
+        tenant_id=timesheet.tenant_id,
         previous_value=item.original_value,
         new_value=body.model_dump(mode="json", exclude_unset=True),
     )
@@ -1634,6 +1662,7 @@ async def delete_line_item(
         timesheet_id,
         current_user.id,
         "line_item_deleted",
+        tenant_id=timesheet.tenant_id,
         previous_value=deleted_payload,
     )
     await session.commit()
@@ -1847,6 +1876,7 @@ async def approve_timesheet(
         timesheet_id,
         current_user.id,
         "approved",
+        tenant_id=timesheet.tenant_id,
         new_value=audit_payload,
         comment=body.comment,
     )
@@ -1891,6 +1921,7 @@ async def reject_timesheet(
         timesheet_id,
         current_user.id,
         "rejected",
+        tenant_id=timesheet.tenant_id,
         new_value={"reason": body.reason},
         comment=body.comment,
     )
@@ -1967,6 +1998,7 @@ async def hold_timesheet(
         timesheet_id,
         current_user.id,
         "placed_on_hold",
+        tenant_id=timesheet.tenant_id,
         comment=body.comment,
     )
     await session.commit()
@@ -2011,6 +2043,7 @@ async def reject_line_item(
     await write_audit_log(
         session, timesheet_id, current_user.id,
         "line_item_rejected",
+        tenant_id=timesheet.tenant_id,
         new_value={
             "line_item_id": item_id,
             "work_date": str(item.work_date),
@@ -2058,6 +2091,7 @@ async def unreject_line_item(
     await write_audit_log(
         session, timesheet_id, current_user.id,
         "line_item_unrejected",
+        tenant_id=timesheet.tenant_id,
         new_value={"line_item_id": item_id, "work_date": str(item.work_date)},
     )
     await session.commit()
@@ -2086,6 +2120,7 @@ async def revert_timesheet_rejection(
     await write_audit_log(
         session, timesheet_id, current_user.id,
         "rejection_reverted",
+        tenant_id=timesheet.tenant_id,
         new_value={"reverted_by": current_user.full_name},
     )
     await session.commit()

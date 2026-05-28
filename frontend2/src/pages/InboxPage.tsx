@@ -831,11 +831,25 @@ export const InboxPage: React.FC = () => {
     if (!window.confirm(`Delete ${ids.length} email(s) and all their timesheets from this application?`)) {
       return;
     }
+    // Second prompt: should we rewind each affected mailbox's fetch
+    // cursor so the next Fetch Emails re-ingests these? Without this,
+    // deleted emails stay gone from the app until someone resets the
+    // mailbox cursor by hand.
+    const refetch = window.confirm(
+      `Also rewind the mailbox so the next Fetch Emails will re-process these ${ids.length} email(s)?\n\n` +
+        'Click OK to re-fetch on the next sync. Click Cancel to delete only.'
+    );
     try {
-      await bulkDeleteEmails.mutateAsync(ids);
+      const result = await bulkDeleteEmails.mutateAsync({ emailIds: ids, refetch });
       setSelectedEmailIds(new Set());
       setStatusTone('success');
-      setStatusMessage(`Deleted ${ids.length} email(s) and their timesheets.`);
+      if (refetch && result.cursors_rewound > 0) {
+        setStatusMessage(
+          `Deleted ${ids.length} email(s). ${result.cursors_rewound} mailbox cursor(s) rewound — these will re-ingest on the next Fetch Emails.`
+        );
+      } else {
+        setStatusMessage(`Deleted ${ids.length} email(s) and their timesheets.`);
+      }
     } catch (error) {
       setStatusTone('danger');
       setStatusMessage(getApiErrorMessage(error, 'Unable to bulk delete emails.'));

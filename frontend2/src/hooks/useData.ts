@@ -1085,6 +1085,16 @@ export const useResetMailboxCursor = () => {
   });
 };
 
+export const useTryMailboxAgain = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => mailboxesAPI.tryAgain(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mailboxes'] });
+    },
+  });
+};
+
 export const useTriggerFetchEmails = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1150,7 +1160,10 @@ export const useBulkReprocessEmails = () => {
 export const useBulkDeleteIngestedEmails = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (emailIds: number[]) => ingestionAPI.bulkDeleteEmails(emailIds).then(res => res.data),
+    mutationFn: (arg: number[] | { emailIds: number[]; refetch: boolean }) => {
+      if (Array.isArray(arg)) return ingestionAPI.bulkDeleteEmails(arg).then(res => res.data);
+      return ingestionAPI.bulkDeleteEmails(arg.emailIds, arg.refetch).then(res => res.data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });

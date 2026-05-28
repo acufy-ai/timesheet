@@ -123,14 +123,29 @@ export const buildRowGroups = (
     }
   }
 
-  return Array.from(map.values()).map((group) => ({
-    ...group,
-    timesheets: [...group.timesheets].sort((left, right) => {
-      const leftValue = left.period_start ? new Date(left.period_start).getTime() : Number.MAX_SAFE_INTEGER;
-      const rightValue = right.period_start ? new Date(right.period_start).getTime() : Number.MAX_SAFE_INTEGER;
-      return leftValue - rightValue;
-    }),
-  }));
+  return Array.from(map.values())
+    .map((group) => ({
+      ...group,
+      timesheets: [...group.timesheets].sort((left, right) => {
+        const leftValue = left.period_start ? new Date(left.period_start).getTime() : Number.MAX_SAFE_INTEGER;
+        const rightValue = right.period_start ? new Date(right.period_start).getTime() : Number.MAX_SAFE_INTEGER;
+        return leftValue - rightValue;
+      }),
+    }))
+    // Sort GROUPS by the email's received_at (latest first), so the
+    // most-recent email in the connected mailbox surfaces at row 1.
+    // Insertion order isn't enough — a single email yields multiple
+    // timesheets and the group gets created on the FIRST timesheet
+    // encountered, which isn't necessarily from the latest email.
+    .sort((left, right) => {
+      const leftValue = left.primary.received_at
+        ? new Date(left.primary.received_at).getTime()
+        : 0;
+      const rightValue = right.primary.received_at
+        ? new Date(right.primary.received_at).getTime()
+        : 0;
+      return rightValue - leftValue;
+    });
 };
 
 /** Count pending row-groups (the unit shown in the inbox table).

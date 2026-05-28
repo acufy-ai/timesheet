@@ -430,6 +430,11 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
     body_text = ""
     body_html = ""
     attachments: list[ParsedAttachment] = []
+    # Dedupe by content hash: forwarded emails frequently list the same
+    # image twice (once Content-Disposition: inline, once attachment) so
+    # the recipient can both see it inline and download it. Both walk
+    # passes yield identical bytes; we keep the first and drop the rest.
+    seen_content_hashes: set[str] = set()
 
     if msg.is_multipart():
         for part in msg.walk():
@@ -444,6 +449,16 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
                 )
                 try:
                     content = part.get_payload(decode=True) or b""
+                    if content:
+                        content_hash = hashlib.sha256(content).hexdigest()
+                        if content_hash in seen_content_hashes:
+                            logger.info(
+                                "Skipping duplicate attachment %s (sha256=%s, %d bytes) "
+                                "already seen on this message",
+                                filename, content_hash[:12], len(content),
+                            )
+                            continue
+                        seen_content_hashes.add(content_hash)
                     attachments.append(
                         ParsedAttachment(
                             filename=filename,

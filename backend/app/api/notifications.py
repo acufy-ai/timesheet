@@ -494,6 +494,35 @@ async def _build_notification_summary(
             created_at=employees_without_projects_latest or now,
         )
 
+        # Mailbox is repeatedly failing to fetch — surface BEFORE the
+        # auto-disable threshold (5) so the admin can act on the warning.
+        # Fires when any active mailbox has 3+ consecutive failures.
+        from app.models.mailbox import Mailbox
+        struggling_mailboxes_count, struggling_latest = (
+            await db.execute(
+                select(func.count(Mailbox.id), func.max(Mailbox.last_fetch_failed_at))
+                .where(
+                    (Mailbox.tenant_id == current_user.tenant_id)
+                    & (Mailbox.is_active.is_(True))
+                    & (Mailbox.consecutive_fetch_failures >= 3)
+                )
+            )
+        ).one()
+        _add_notification(
+            items,
+            notification_id="mailbox-fetch-failing",
+            title="Mailbox is failing to fetch",
+            message=(
+                f"{int(struggling_mailboxes_count or 0)} mailbox"
+                f"{' has' if int(struggling_mailboxes_count or 0) == 1 else 'es have'}"
+                f" failed to fetch 3+ times in a row. Try Reconnect from Settings -> Mailboxes."
+            ),
+            route="/settings#mailboxes",
+            count=int(struggling_mailboxes_count or 0),
+            severity="warning",
+            created_at=struggling_latest or now,
+        )
+
     items = [
         item for item in items
         if item.created_at is None or _naive(item.created_at) >= ttl_cutoff_naive
