@@ -537,16 +537,28 @@ export const InboxPage: React.FC = () => {
   // timesheets. Proper pagination is the longer-term fix; this is the
   // immediate unblock. Backend cap (`/ingestion/timesheets?limit=`)
   // raised to match.
+  // When a fetch job is actively running, poll the inbox lists so newly
+  // ingested rows show up live in the Review queue rather than after
+  // the user navigates away and back. The hook no-ops the polling when
+  // the flag is false, so the cost is zero when no job is in flight.
+  const isFetchingLive =
+    Boolean(activeJobId)
+    && (fetchStatus?.status === 'queued' || fetchStatus?.status === 'in_progress');
   const { data: allTimesheets = [], isLoading: countsLoading } = useIngestionTimesheets(
     { limit: 1000 },
     true,
+    isFetchingLive,
   );
-  const { data: timesheets = [], isLoading } = useIngestionTimesheets({
-    status_filter: statusFilter || undefined,
-    client_id: clientId ? Number(clientId) : undefined,
-    search: search.trim() || undefined,
-    limit: 1000,
-  });
+  const { data: timesheets = [], isLoading } = useIngestionTimesheets(
+    {
+      status_filter: statusFilter || undefined,
+      client_id: clientId ? Number(clientId) : undefined,
+      search: search.trim() || undefined,
+      limit: 1000,
+    },
+    true,
+    isFetchingLive,
+  );
 
   const isPageLoading = isLoading || countsLoading || skippedLoading;
   const actionableSkippedEmails = React.useMemo(() => {

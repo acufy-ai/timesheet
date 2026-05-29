@@ -244,6 +244,96 @@ async def test_404_get_is_a_benign_skip(stub_token):
 
 
 @pytest.mark.asyncio
+async def test_progress_callback_emits_listed_then_per_message_fetched(stub_token):
+    """When a progress callback is supplied, the API path calls it once
+    with stage='listed' after the list pages resolve, then once per
+    successfully-fetched message with stage='fetched'. This is what the
+    worker uses to bump the UI status bar so a user staring at the
+    Inbox page sees actual movement instead of 'Connecting... 10%'."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/users/me/messages") and "/users/me/messages/" not in request.url.path:
+            return httpx.Response(
+                200,
+                json={"messages": [{"id": "m1"}, {"id": "m2"}, {"id": "m3"}]},
+            )
+        return httpx.Response(200, json={"raw": _b64url(_SAMPLE_RFC822)})
+
+    progress_calls: list[tuple[str, int, int]] = []
+
+    async def _capture(stage: str, fetched: int, total: int) -> None:
+        progress_calls.append((stage, fetched, total))
+
+    with _install_transport(handler):
+        result = await fetch_messages_via_gmail_api(
+            _StubMailbox(), session=None, progress_callback=_capture,
+        )
+
+    assert len(result) == 3
+    # First call after list-pages resolves: stage='listed', fetched=0,
+    # total=3 — so the worker can update the bar to "Fetching 3 emails..."
+    # before the slow per-message loop starts.
+    assert progress_calls[0] == ("listed", 0, 3)
+    # Then one "fetched" call per successful GET, monotonically increasing.
+    assert [c for c in progress_calls[1:]] == [
+        ("fetched", 1, 3),
+        ("fetched", 2, 3),
+        ("fetched", 3, 3),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_failure_does_not_break_fetch(stub_token):
+    """If the progress callback raises (e.g. Redis is down briefly),
+    the fetch still completes and returns all messages. A broken
+    status-write must never abort a fetch in flight."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/users/me/messages") and "/users/me/messages/" not in request.url.path:
+            return httpx.Response(200, json={"messages": [{"id": "m1"}, {"id": "m2"}]})
+        return httpx.Response(200, json={"raw": _b64url(_SAMPLE_RFC822)})
+
+    async def _explode(*args, **kwargs) -> None:
+        raise RuntimeError("redis is down")
+
+    with _install_transport(handler):
+        result = await fetch_messages_via_gmail_api(
+            _StubMailbox(), session=None, progress_callback=_explode,
+        )
+
+    # Fetch still returns all messages despite the callback exploding.
+    assert {r["uid"] for r in result} == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_not_called_for_skipped_messages(stub_token):
+    """A 404 (deleted between list and get) does not emit a 'fetched'
+    event — the message was never fetched. The total count stays the
+    same so the UI bar doesn't lie about progress."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/users/me/messages/" in request.url.path:
+            if request.url.path.endswith("/m_gone"):
+                return httpx.Response(404, json={"error": "not_found"})
+            return httpx.Response(200, json={"raw": _b64url(_SAMPLE_RFC822)})
+        return httpx.Response(
+            200, json={"messages": [{"id": "m_keep_1"}, {"id": "m_gone"}, {"id": "m_keep_2"}]},
+        )
+
+    progress_calls: list[tuple[str, int, int]] = []
+
+    async def _capture(stage: str, fetched: int, total: int) -> None:
+        progress_calls.append((stage, fetched, total))
+
+    with _install_transport(handler):
+        result = await fetch_messages_via_gmail_api(
+            _StubMailbox(), session=None, progress_callback=_capture,
+        )
+
+    assert {r["uid"] for r in result} == {"m_keep_1", "m_keep_2"}
+    # 'listed' for 3, then only 2 'fetched' events (the 404'd one is skipped).
+    fetched_events = [c for c in progress_calls if c[0] == "fetched"]
+    assert len(fetched_events) == 2
+
+
+@pytest.mark.asyncio
 async def test_uses_existing_cursor_when_present(stub_token):
     """When mailbox.last_fetched_at is set, the q= parameter on
     messages.list reflects that cursor (minus 5 minutes slack) rather

@@ -485,9 +485,48 @@ async def _prefetch_mailbox_messages(
             progress=progress,
             message=f"Connecting to {mailbox.label}...",
         )
+        # Bind the loop-scoped variables (mailbox, mailbox.label, progress)
+        # into the closure explicitly so the callback the provider invokes
+        # doesn't capture the loop's mutable state by reference.
+        async def _on_fetch_progress(
+            stage: str,
+            fetched: int,
+            total: int,
+            *,
+            _mailbox_label: str = mailbox.label,
+            _base_progress: int = progress,
+        ) -> None:
+            # Keep the bar inside the per-mailbox pre-fetch band so
+            # downstream stages (processing) still have room to advance.
+            # Pre-fetch occupies progress (5%); 5% spans from base..base+5.
+            if stage == "listed":
+                msg = (
+                    f"Fetching {total} email(s) from {_mailbox_label}..."
+                    if total
+                    else f"No new email in {_mailbox_label}."
+                )
+                bar = _base_progress
+            elif stage == "fetched" and total > 0:
+                msg = f"Fetching email {fetched}/{total} from {_mailbox_label}..."
+                bar = _base_progress + int((fetched / total) * 5)
+            else:
+                return
+            await _write_job_status(
+                ctx,
+                job_id=job_id,
+                tenant_id=tenant_id,
+                mode="fetch",
+                status="in_progress",
+                progress=bar,
+                message=msg,
+            )
+
         try:
             async with _open_session() as fetch_session:
-                messages = await fetch_messages(mailbox, fetch_session)
+                messages = await fetch_messages(
+                    mailbox, fetch_session,
+                    progress_callback=_on_fetch_progress,
+                )
             # Shadow-mode comparison (opt-in via INGESTION_SHADOW_LOG_PATH).
             # Logs the metadata-only vs full-fetch classifier divergence to
             # a JSONL file. NEVER affects production behavior — observation

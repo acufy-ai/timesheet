@@ -67,6 +67,18 @@ def _last_fetched_cutoff(last_fetched_at: datetime | None) -> datetime:
     )
 
 
+async def _safe_progress(callback, stage: str, fetched: int, total: int) -> None:
+    """Invoke the worker's progress callback if one was supplied, and
+    swallow any exception it raises so a broken status-write never
+    aborts a fetch in flight."""
+    if callback is None:
+        return
+    try:
+        await callback(stage, fetched, total)
+    except Exception as exc:
+        logger.warning("Gmail API: progress_callback raised %s — ignoring", exc)
+
+
 def _gmail_q_after(cutoff: datetime) -> str:
     """Gmail's search ``after:`` operator takes YYYY/MM/DD and is
     inclusive. Matches the IMAP ``SEARCH SINCE`` behavior we replaced."""
@@ -218,6 +230,7 @@ async def _get_raw_message(
 async def fetch_messages_via_gmail_api(
     mailbox: Mailbox,
     session: AsyncSession,
+    progress_callback=None,
 ) -> list[dict]:
     """Fetch all (recent) messages for ``mailbox`` via Gmail REST API.
 
@@ -230,6 +243,17 @@ async def fetch_messages_via_gmail_api(
     parse, it is logged and skipped so the rest of the batch still
     lands. This is the behavior the IMAP path could not give us: a
     mid-stream stall used to discard the entire batch.
+
+    ``progress_callback`` is an optional async callable invoked twice
+    per fetch — once after the list pages resolve with the total count,
+    and once per successfully-fetched message — so the worker can write
+    per-stage status to Redis. The callback is best-effort: any error
+    raised by it is logged and ignored so a progress-write failure
+    never breaks the fetch.
+
+    Signature: ``await progress_callback(stage: str, fetched: int, total: int)``
+    where ``stage`` is one of ``"listed"`` (after list-pages) or
+    ``"fetched"`` (after each successful message GET).
     """
     # Local import keeps the dependency graph one-way: imap imports
     # gmail_api, not the reverse, so unit tests can stub each side.
@@ -257,6 +281,7 @@ async def fetch_messages_via_gmail_api(
             "Gmail API: mailbox %s listed %d candidate message(s) since %s",
             mailbox.id, len(message_ids), cutoff.isoformat(),
         )
+        await _safe_progress(progress_callback, "listed", 0, len(message_ids))
 
         parsed_messages: list[dict] = []
         for idx, mid in enumerate(message_ids, 1):
@@ -287,6 +312,9 @@ async def fetch_messages_via_gmail_api(
                     mailbox.id, mid, exc,
                 )
                 continue
+            await _safe_progress(
+                progress_callback, "fetched", idx, len(message_ids),
+            )
 
     logger.info(
         "Gmail API: mailbox %s returning %d parsed messages",

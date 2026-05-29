@@ -1265,12 +1265,22 @@ export const useFetchJobStatus = (jobId?: string | null, enabled: boolean = true
   });
 };
 
-export const useIngestionTimesheets = (params?: Parameters<typeof ingestionAPI.listTimesheets>[0], enabled: boolean = true) => {
+export const useIngestionTimesheets = (
+  params?: Parameters<typeof ingestionAPI.listTimesheets>[0],
+  enabled: boolean = true,
+  // When a fetch job is in flight, poll so rows that just landed in the
+  // DB show up live in the Review queue instead of after the next
+  // manual refetch. 8s matches the FetchJobStatus poll cadence closely
+  // enough that the bar and the list look in sync without spamming the
+  // API. No-op (no polling) when no job is running.
+  isFetchingLive: boolean = false,
+) => {
   return useQuery({
     queryKey: ['ingestion', 'timesheets', params],
     queryFn: () => ingestionAPI.listTimesheets(params).then((res) => res.data),
     enabled,
     placeholderData: keepPreviousData,
+    refetchInterval: isFetchingLive ? 8000 : false,
   });
 };
 

@@ -902,10 +902,19 @@ async def _run_imap_operation(
 
 # ─── Public API ──────────────────────────────────────────────────────────────
 
-async def fetch_messages(mailbox: Mailbox, session: AsyncSession) -> list[dict]:
+async def fetch_messages(
+    mailbox: Mailbox,
+    session: AsyncSession,
+    progress_callback=None,
+) -> list[dict]:
     """
     Connect to a mailbox and fetch messages without mutating them.
     Returns normalized message dicts (IMAP, Gmail REST, or Graph).
+
+    ``progress_callback`` is forwarded to per-provider implementations
+    that support it (currently the Gmail REST API path). Best-effort:
+    if a provider doesn't support it, the callback is silently ignored.
+    Signature: ``await progress_callback(stage: str, fetched: int, total: int)``.
     """
     if mailbox.protocol == MailboxProtocol.graph:
         if mailbox.auth_type != MailboxAuthType.oauth2 or mailbox.oauth_provider != OAuthProvider.microsoft:
@@ -926,7 +935,9 @@ async def fetch_messages(mailbox: Mailbox, session: AsyncSession) -> list[dict]:
             "Mailbox %s (%s): routing via Gmail REST API",
             mailbox.id, mailbox.label,
         )
-        return await fetch_messages_via_gmail_api(mailbox, session)
+        return await fetch_messages_via_gmail_api(
+            mailbox, session, progress_callback=progress_callback,
+        )
 
     logger.info("Connecting to mailbox %s (%s) auth=%s", mailbox.id, mailbox.label, mailbox.auth_type)
 
