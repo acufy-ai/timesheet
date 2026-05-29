@@ -493,7 +493,10 @@ export interface Mailbox {
   last_fetched_at: string | null;
   last_fetch_error: string | null;
   last_fetch_failed_at: string | null;
-  auto_disabled_reason: string | null;
+  // Optional so consumers building partial Mailbox objects (e.g. test
+  // fixtures using Partial<Mailbox> spreads) still type-check. Backend
+  // always returns it (null when not disabled, string when disabled).
+  auto_disabled_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
