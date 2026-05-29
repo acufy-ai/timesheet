@@ -115,6 +115,11 @@ class FetchJobStatus(BaseModel):
     # Redis for up to JOB_STATUS_TTL_SECONDS (24h).
     started_at: str | None = None
     updated_at: str | None = None
+    # Real work-done counters (audit F-09): messages_processed /
+    # messages_total / mailboxes_processed / mailboxes_total. The frontend
+    # can render "5 of 12 emails from mailbox.com" with honest numbers
+    # instead of the rough percentage ladder. None = no counters yet.
+    counters: dict[str, int] | None = None
 
 
 class ReprocessSkippedResponse(BaseModel):

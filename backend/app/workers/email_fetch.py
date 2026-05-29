@@ -114,18 +114,29 @@ async def _write_job_status(
     message: str,
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    counters: dict[str, int] | None = None,
 ) -> None:
+    """Write the job status row to Redis.
+
+    Optional ``counters`` are real work-done numbers (audit F-09):
+    ``messages_processed`` / ``messages_total`` /
+    ``mailboxes_processed`` / ``mailboxes_total``. They let the frontend
+    surface honest "5 of 12 emails from mailbox.com" text alongside the
+    rough percentage bar. None means "no update to existing counters";
+    individual fields can be omitted to update only some.
+    """
     redis = ctx.get("redis")
     if redis is None:
         logger.warning("Redis unavailable, cannot write job status for job_id=%s", job_id)
         return
 
-    # Preserve started_at across status writes for the same job — set once
-    # on the first write, then carried forward. This anchors job age for the
-    # frontend's stalled-status detection (see audit F-04). updated_at moves
-    # with every write.
+    # Preserve started_at AND counters across status writes for the same
+    # job. started_at is set once on the first write (audit F-04); counters
+    # accumulate over the job lifetime so partial updates merge into the
+    # running state rather than replace it (audit F-09).
     now_iso = datetime.now(timezone.utc).isoformat()
     started_at = now_iso
+    merged_counters: dict[str, int] = {}
     try:
         prior = await redis.get(_status_key(job_id))
         if prior:
@@ -134,6 +145,12 @@ async def _write_job_status(
                 existing_started = prior_payload.get("started_at")
                 if existing_started:
                     started_at = existing_started
+                prior_counters = prior_payload.get("counters")
+                if isinstance(prior_counters, dict):
+                    merged_counters.update(
+                        {k: int(v) for k, v in prior_counters.items()
+                         if isinstance(v, (int, float))}
+                    )
             except (ValueError, TypeError):
                 # Corrupt prior payload — treat as a new job and overwrite.
                 pass
@@ -142,6 +159,13 @@ async def _write_job_status(
         # started_at. The lost continuity is harmless — frontend's
         # staleness threshold is generous (job_timeout + buffer).
         logger.debug("Could not read prior status for job_id=%s: %s", job_id, exc)
+
+    if counters:
+        # Caller-supplied counters override prior values for the keys
+        # they touch. Lets the worker bump messages_processed without
+        # resetting mailboxes_total (set earlier when the prefetch
+        # completed).
+        merged_counters.update({k: int(v) for k, v in counters.items()})
 
     payload = {
         "job_id": job_id,
@@ -152,6 +176,7 @@ async def _write_job_status(
         "message": message,
         "result": result,
         "error": error,
+        "counters": merged_counters or None,
         "started_at": started_at,
         "updated_at": now_iso,
     }
@@ -503,6 +528,30 @@ async def _run_fetch_job(
         )
         return
 
+    # Initialize aggregate counters once we know mailbox count + a rough
+    # message-total estimate (sum of pre-fetched message lists). Real
+    # messages_processed bumps live inside _process_one.
+    total_mailboxes = len(prefetched)
+    total_messages = sum(
+        len(m) for _, m in prefetched if isinstance(m, list)
+    )
+    await _write_job_status(
+        ctx,
+        job_id=job_id,
+        tenant_id=tenant_id,
+        mode="fetch",
+        status="in_progress",
+        progress=45,
+        message=f"Starting processing across {total_mailboxes} mailbox(es)...",
+        counters={
+            "mailboxes_total": total_mailboxes,
+            "mailboxes_processed": 0,
+            "messages_total": total_messages,
+            "messages_processed": 0,
+        },
+    )
+
+    cumulative_messages_processed = 0
     for index, (mailbox, messages) in enumerate(prefetched, start=1):
         mailbox_label = mailbox.label
         progress = 45 + int(((index - 1) / max(len(prefetched), 1)) * 45)
@@ -543,6 +592,11 @@ async def _run_fetch_job(
                 f"Mailbox {mailbox.id} ({mailbox_label}): {mailbox_result['error']}"
             )
 
+        # Track real per-mailbox completion. cumulative_messages_processed
+        # advances by however many messages this mailbox had — even if
+        # some were skipped/errored inside the per-message path, they
+        # still count as "processed" from the user's perspective.
+        cumulative_messages_processed += mailbox_result.get("fetched", 0)
         await _write_job_status(
             ctx,
             job_id=job_id,
@@ -555,6 +609,10 @@ async def _run_fetch_job(
                 f"{mailbox_result['timesheets_created']} staged."
             ),
             result=summary,
+            counters={
+                "mailboxes_processed": index,
+                "messages_processed": cumulative_messages_processed,
+            },
         )
 
 

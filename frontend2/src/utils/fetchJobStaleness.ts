@@ -47,3 +47,35 @@ export const isFetchJobStale = (
   if (Number.isNaN(updatedAt)) return false;
   return now - updatedAt > FETCH_STALE_THRESHOLD_MS;
 };
+
+/**
+ * Render-ready progress text for an in-flight fetch job. Prefers the
+ * honest counters from the backend (audit F-09) and falls back to the
+ * rough percentage when no counters are available.
+ *
+ * Pure function — pulled out of the InboxPage JSX so it can be unit-
+ * tested without rendering the page.
+ *
+ * @param status the latest status payload (may be null/undefined)
+ * @param progress the bar percentage to fall back to (0-100)
+ * @returns short display text like "5 of 12 emails" or "45%"
+ */
+export const formatFetchProgressText = (
+  status: FetchJobStatus | null | undefined,
+  progress: number,
+): string => {
+  const c = status?.counters ?? null;
+  if (c) {
+    const mp = c.messages_processed;
+    const mt = c.messages_total;
+    if (typeof mp === 'number' && typeof mt === 'number' && mt > 0) {
+      return `${mp} of ${mt} emails`;
+    }
+    const bp = c.mailboxes_processed;
+    const bt = c.mailboxes_total;
+    if (typeof bp === 'number' && typeof bt === 'number' && bt > 0) {
+      return `${bp} of ${bt} mailboxes`;
+    }
+  }
+  return `${progress}%`;
+};

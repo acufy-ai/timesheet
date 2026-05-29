@@ -41,7 +41,7 @@ import {
   buildSkippedRowGroup,
   type TimesheetRowGroup,
 } from '@/utils/inboxGrouping';
-import { isFetchJobStale } from '@/utils/fetchJobStaleness';
+import { formatFetchProgressText, isFetchJobStale } from '@/utils/fetchJobStaleness';
 import { readActiveFetchJobId, writeActiveFetchJobId } from '@/utils/activeFetchJob';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
@@ -973,11 +973,13 @@ export const InboxPage: React.FC = () => {
                   </Badge>
                   <span className="text-sm text-foreground">{fetchStatusMessage}</span>
                   {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') && !fetchStatusIsStale ? (
-                    <div className="flex items-center gap-2 flex-1 max-w-xs">
+                    <div className="flex items-center gap-2 flex-1 max-w-sm">
                       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-background">
                         <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${progress}%` }} />
                       </div>
-                      <span className="text-xs text-muted-foreground">{progress}%</span>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {formatFetchProgressText(fetchStatus, progress)}
+                      </span>
                     </div>
                   ) : null}
                   {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') && activeJobId ? (

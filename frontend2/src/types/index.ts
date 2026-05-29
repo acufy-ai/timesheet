@@ -541,6 +541,12 @@ export interface FetchJobStatus {
   // optional so older sessions/clients gracefully degrade.
   started_at?: string | null;
   updated_at?: string | null;
+  // Real work-done counters (audit F-09). Backend populates as fetch
+  // progresses. Keys we use today:
+  //   messages_total / messages_processed
+  //   mailboxes_total / mailboxes_processed
+  // Optional/null when no counters are available yet (e.g. queued).
+  counters?: Record<string, number> | null;
 }
 
 export interface FetchMessageDiagnostic {
