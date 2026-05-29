@@ -368,6 +368,24 @@ async def _prefetch_mailbox_messages(
         try:
             async with _open_session() as fetch_session:
                 messages = await fetch_messages(mailbox, fetch_session)
+            # Shadow-mode comparison (opt-in via INGESTION_SHADOW_LOG_PATH).
+            # Logs the metadata-only vs full-fetch classifier divergence to
+            # a JSONL file. NEVER affects production behavior — observation
+            # only — so we ignore its result and swallow its errors.
+            try:
+                from app.core.config import settings as _shadow_settings
+                if _shadow_settings.ingestion_shadow_log_path:
+                    from app.services.ingestion_shadow import run_shadow_comparison
+                    async with _open_session() as shadow_session:
+                        await run_shadow_comparison(
+                            mailbox, shadow_session, messages,
+                            log_path=_shadow_settings.ingestion_shadow_log_path,
+                        )
+            except Exception as shadow_exc:
+                logger.debug(
+                    "Shadow mode comparison failed for mailbox %s: %s",
+                    mailbox.id, shadow_exc,
+                )
             # Clear any prior error on success — best-effort. If this
             # maintenance write fails (e.g. tenant DB is missing the
             # last_fetch_error column from a partially-applied migration)

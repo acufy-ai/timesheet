@@ -59,6 +59,8 @@ ENV_FIELD_MAP = {
     "email_fetch_start_time": "EMAIL_FETCH_START_TIME",
     "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
     "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
+    "ingestion_fetch_headers_first": "INGESTION_FETCH_HEADERS_FIRST",
+    "ingestion_shadow_log_path": "INGESTION_SHADOW_LOG_PATH",
     "auth0_domain": "AUTH0_DOMAIN",
     "auth0_client_id": "AUTH0_CLIENT_ID",
     "auth0_client_secret": "AUTH0_CLIENT_SECRET",
@@ -351,6 +353,38 @@ class Settings(BaseModel):
     email_fetch_initial_days: int = Field(
         default=30,
         description="On first fetch (no cursor), only fetch emails from this many days back."
+    )
+    # Two-stage IMAP fetch flags (see backend/app/services/imap.py and
+    # backend/app/services/ingestion_pipeline.py). When BOTH flags are
+    # the default (false / empty), the worker behaves exactly as today:
+    # one FETCH RFC822 per message that pulls headers + body + every
+    # attachment, then the classifier decides whether the email matters.
+    #
+    # When ingestion_shadow_log_path is set (any non-empty file path),
+    # the worker runs TWO classifier passes per email:
+    #   1. metadata-only (envelope + bodystructure + body preview)
+    #   2. the canonical full-body pass (today's behavior)
+    # Both decisions are written to the file with the same correlation id
+    # so a human can grep for divergence. Real ingestion still uses
+    # decision (2) — the shadow pass is observation only.
+    #
+    # When ingestion_fetch_headers_first is true AND the shadow log path
+    # is empty (or after a soak proves zero divergence), the worker uses
+    # the metadata-only pass as the gate: attachment bytes only get
+    # downloaded for emails the classifier accepts. This is the actual
+    # bandwidth save.
+    #
+    # Never set ingestion_fetch_headers_first=true without first running
+    # shadow mode for at least the agreed soak window.
+    ingestion_fetch_headers_first: bool = Field(
+        default=False,
+        description="When true, fetch metadata+headers only first; "
+                    "download attachment bytes only after the classifier accepts the email.",
+    )
+    ingestion_shadow_log_path: str = Field(
+        default="",
+        description="If set, append per-email shadow-mode comparison logs to this file. "
+                    "Empty disables shadow logging.",
     )
 
     # Auth0 (identity provider). Backend still issues its own JWTs after

@@ -460,6 +460,342 @@ def _fetch_messages_sync(server: Any, last_fetched_at: datetime | None) -> list[
             pass
 
 
+def _walk_bodystructure(
+    part: Any,
+    path: tuple[int, ...] = (),
+) -> list[dict]:
+    """Flatten an imapclient BODYSTRUCTURE tree into a list of leaf parts.
+
+    Two real shapes imapclient yields, both seen in production:
+
+      A) Old/simple shape (list-of-children + trailing subtype label):
+         ``[child1, child2, ..., childN, b"<subtype>"]``
+         This is what most non-Gmail servers return and what our unit
+         test fixtures use.
+
+      B) Gmail/RFC3501 shape (tuple containing the children-list as its
+         first element):
+         ``([child1, child2, ..., childN], b"<subtype>", params, ...)``
+         This is what real Gmail INBOX returns for multipart/report
+         (DSN bounces) and multipart/related (inline-image forwards).
+
+    Both forms collapse to the same leaf list. Leaves are tuples whose
+    first two elements are ``(b"<type>", b"<subtype>")`` and that don't
+    contain a children-list (their first element is bytes, not list).
+
+    Each returned leaf carries the IMAP ``BODY[<part_num>]`` path
+    string (e.g. "1", "2.1", "2.2") so callers can request the bytes
+    later.
+    """
+    # Shape A: bare list-of-children + trailing subtype label.
+    if isinstance(part, list):
+        leaves: list[dict] = []
+        children = part[:-1] if part and isinstance(part[-1], (bytes, str)) else part
+        for idx, child in enumerate(children, start=1):
+            leaves.extend(_walk_bodystructure(child, path + (idx,)))
+        return leaves
+
+    # Shape B: tuple whose FIRST element is the children list. This is
+    # the multipart container shape Gmail returns. We detect it by the
+    # first element being a list (not bytes/str/int — those are leaf
+    # type fields).
+    if (isinstance(part, tuple) and part
+            and isinstance(part[0], list)):
+        leaves = []
+        children = part[0]
+        for idx, child in enumerate(children, start=1):
+            leaves.extend(_walk_bodystructure(child, path + (idx,)))
+        return leaves
+
+    # Leaf part. Field order per RFC3501 BODYSTRUCTURE for non-multipart:
+    #   type, subtype, params, content-id, description, encoding, size, ...
+    if not isinstance(part, tuple) or len(part) < 7:
+        return []
+
+    main_type = _bs_str(part[0])
+    sub_type = _bs_str(part[1])
+    params = part[2] if len(part) > 2 else None
+    size = part[6] if len(part) > 6 else None
+
+    filename: str | None = None
+    if isinstance(params, (tuple, list)):
+        # params is alternating key/value pairs: (b"name", b"foo.pdf", ...)
+        param_map = {}
+        for i in range(0, len(params) - 1, 2):
+            k = _bs_str(params[i])
+            v = _bs_str(params[i + 1])
+            if k:
+                param_map[k.lower()] = v
+        filename = param_map.get("name")
+
+    # Disposition (Content-Disposition) sits at different positions
+    # depending on whether the leaf is text or not:
+    #   non-text: position 8 (after md5)
+    #   text:     position 9 (after lines, then md5)
+    # imapclient delivers it as a 2-tuple (disposition_str, params_tuple).
+    # Scan the tail of the tuple for the first 2-tuple-shaped slot — it's
+    # the disposition, regardless of the exact index. More robust than
+    # hard-coding an index because some servers omit optional fields.
+    disposition = None
+    for idx in range(7, len(part)):
+        candidate = part[idx]
+        if isinstance(candidate, (tuple, list)) and len(candidate) >= 2 and isinstance(candidate[0], (bytes, str)):
+            # Heuristic: a disposition slot's first element is a short
+            # token like b"attachment" / b"inline". Param slots like the
+            # initial (b"charset", b"utf-8") tuple were already consumed
+            # by ``params`` at index 2. So this is the disposition.
+            disposition = _bs_str(candidate[0])
+            disp_params = candidate[1]
+            if isinstance(disp_params, (tuple, list)):
+                for i in range(0, len(disp_params) - 1, 2):
+                    k = _bs_str(disp_params[i])
+                    v = _bs_str(disp_params[i + 1])
+                    if k and k.lower() == "filename":
+                        filename = v
+            break
+
+    part_path = ".".join(str(n) for n in path) if path else "1"
+    return [{
+        "part_path": part_path,
+        "main_type": (main_type or "").lower(),
+        "sub_type": (sub_type or "").lower(),
+        "filename": filename,
+        "size_bytes": size if isinstance(size, int) else None,
+        "disposition": (disposition or "").lower() if disposition else None,
+    }]
+
+
+def _bs_str(value: Any) -> str | None:
+    """Best-effort coerce an imapclient BODYSTRUCTURE field to str."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _decode_imap_header(raw_bytes: bytes) -> str:
+    """Decode a raw IMAP header block byte string into the canonical
+    text our parser/classifier expects. Mirrors what
+    ``email.message_from_bytes`` would do on a full RFC822 message."""
+    import email
+    from email import policy
+    try:
+        msg = email.message_from_bytes(raw_bytes, policy=policy.default)
+    except Exception:
+        return ""
+    # Headers are stored on the message object; we'll re-emit them as a
+    # multipart-friendly bytes block for the canonical parser.
+    return raw_bytes.decode("utf-8", errors="replace")
+
+
+_BODY_PREVIEW_BYTES = 8192  # plenty for classifier's 500-char window
+
+
+def _fetch_messages_metadata_only_sync(
+    server: Any,
+    last_fetched_at: datetime | None,
+) -> list[dict]:
+    """Two-stage IMAP fetch, stage 1: fetch metadata + headers + small body
+    preview only — NO attachment bytes.
+
+    Output shape matches ``_fetch_messages_sync``'s with one caveat: each
+    attachment dict has ``content=None`` and an additional ``part_path``
+    field (the IMAP BODY[<n>] path). Callers that want the bytes call
+    ``_fetch_attachment_part_sync(server, uid, part_path)`` later.
+
+    Used by the shadow-mode comparison and (once shadow proves clean) by
+    the production fetch path. Skipping attachment bytes here is the
+    actual bandwidth save.
+    """
+    try:
+        server.select_folder("INBOX")
+
+        if last_fetched_at:
+            cutoff = last_fetched_at - timedelta(minutes=5)
+            uids = server.search(["SINCE", cutoff.strftime("%d-%b-%Y")])
+        else:
+            from app.core.config import settings as app_settings
+            cutoff = datetime.now(timezone.utc) - timedelta(days=app_settings.email_fetch_initial_days)
+            uids = server.search(["SINCE", cutoff.strftime("%d-%b-%Y")])
+
+        if not uids:
+            return []
+
+        messages: list[dict] = []
+        for batch_start in range(0, len(uids), IMAP_FETCH_BATCH_SIZE):
+            batch_uids = uids[batch_start:batch_start + IMAP_FETCH_BATCH_SIZE]
+            # Fetch envelope (subject, sender, date, message-id),
+            # bodystructure (MIME tree), and the full header block.
+            batch_data = server.fetch(
+                batch_uids,
+                ["ENVELOPE", "BODYSTRUCTURE", "BODY.PEEK[HEADER]", "RFC822.SIZE"],
+            )
+
+            for uid, data in batch_data.items():
+                try:
+                    parsed = _parse_metadata_only_message(server, uid, data)
+                    if parsed is not None:
+                        parsed["uid"] = uid
+                        messages.append(parsed)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to parse metadata-only message uid=%s: %s",
+                        uid, exc,
+                    )
+
+        return messages
+    finally:
+        try:
+            server.logout()
+        except Exception:
+            pass
+
+
+def _parse_metadata_only_message(server: Any, uid: int, data: dict) -> dict | None:
+    """Convert one IMAP FETCH response row into the same dict shape
+    ``_parse_raw_message`` produces, EXCEPT each attachment has
+    ``content=None`` and a ``part_path`` field for the later byte
+    fetch.
+
+    Also fetches a small text-body preview (up to _BODY_PREVIEW_BYTES)
+    for the classifier — same data it sees today, but capped at a
+    reasonable byte count instead of pulling the full body.
+    """
+    header_bytes = data.get(b"BODY[HEADER]") or data.get(b"RFC822.HEADER") or b""
+    envelope = data.get(b"ENVELOPE")
+    bodystructure = data.get(b"BODYSTRUCTURE")
+
+    if not header_bytes and not envelope:
+        return None
+
+    # Reconstruct a minimal RFC822 message from just the headers, so we
+    # can hand it to the canonical email_parser.parse_email — it knows
+    # how to extract subject/sender/recipients/Message-ID, the forwarded-
+    # sender detection, the chain-sender extraction. The body parts are
+    # absent here; we'll fill body_text ourselves from a small preview.
+    from app.services.email_parser import parse_email
+    parsed = parse_email(header_bytes)
+
+    # Walk BODYSTRUCTURE to enumerate parts.
+    leaves = _walk_bodystructure(bodystructure)
+
+    # Identify the body preview part (first text/plain) and fetch a small
+    # window of it. Falls back to text/html if no plain text part.
+    body_text = ""
+    preview_part = next(
+        (l for l in leaves if l["main_type"] == "text" and l["sub_type"] == "plain"),
+        None,
+    )
+    if preview_part is None:
+        preview_part = next(
+            (l for l in leaves if l["main_type"] == "text" and l["sub_type"] == "html"),
+            None,
+        )
+
+    if preview_part is not None:
+        try:
+            preview_data = server.fetch(
+                [uid],
+                [f"BODY.PEEK[{preview_part['part_path']}]<0.{_BODY_PREVIEW_BYTES}>"],
+            )
+            for _, pdata in preview_data.items():
+                # imapclient returns the partial body keyed by something
+                # like b"BODY[1]<0>". Find the first byte-valued entry.
+                for k, v in pdata.items():
+                    if isinstance(v, bytes) and v:
+                        try:
+                            body_text = v.decode("utf-8", errors="replace")
+                        except Exception:
+                            body_text = ""
+                        break
+                if body_text:
+                    break
+        except Exception as exc:
+            logger.debug("Body preview fetch failed for uid=%s: %s", uid, exc)
+
+    # Build attachment list with content=None placeholders.
+    #
+    # Selection rules (mirror what email_parser.parse_email does on a
+    # full RFC822 message):
+    #
+    #   * Skip body text parts (text/plain, text/html) that are NOT
+    #     marked attachment/inline. They're the message body, not an
+    #     attachment.
+    #   * Skip DSN/report machinery parts (message/delivery-status,
+    #     text/rfc822-headers) — they have no filename, no attachment
+    #     disposition, and email_parser's _is_processable_attachment
+    #     filter drops them.
+    #   * Keep anything else that has either a filename OR an explicit
+    #     attachment/inline disposition.
+    attachments: list[dict] = []
+    for leaf in leaves:
+        main = leaf["main_type"]
+        sub = leaf["sub_type"]
+        disp = leaf.get("disposition")
+        # Body text parts are not attachments unless explicitly marked.
+        if main == "text" and sub in ("plain", "html") and disp not in ("attachment", "inline"):
+            continue
+        # Parts without a filename AND without an attachment/inline
+        # disposition are MIME machinery (DSN report parts, etc.), not
+        # attachments the user attached.
+        if not leaf.get("filename") and disp not in ("attachment", "inline"):
+            continue
+        mime_type = f"{main}/{sub}"
+        filename = leaf["filename"] or f"attachment.{sub}"
+        attachments.append({
+            "filename": filename,
+            "mime_type": mime_type,
+            "content": None,  # not fetched yet
+            "is_processable": _is_processable_attachment(filename, mime_type),
+            "likely_timesheet": _is_likely_timesheet_filename(filename),
+            "part_path": leaf["part_path"],
+            "size_bytes": leaf["size_bytes"],
+            "disposition": disp,
+        })
+
+    received_at = None
+    if parsed.received_at is not None:
+        received_at = parsed.received_at.isoformat()
+
+    return {
+        "message_id": parsed.message_id,
+        "subject": parsed.subject,
+        "sender_email": parsed.sender_email or "unknown@unknown.com",
+        "sender_name": parsed.sender_name,
+        "recipients": parsed.recipients,
+        "body_text": body_text,
+        "body_html": "",  # not fetched in metadata mode
+        "received_at": received_at,
+        "has_attachments": bool(attachments),
+        "raw_headers": parsed.raw_headers,
+        "attachments": attachments,
+        "forwarded_from_email": parsed.forwarded_from_email,
+        "forwarded_from_name": parsed.forwarded_from_name,
+        "chain_senders": list(parsed.chain_senders) if parsed.chain_senders else [],
+        "_metadata_only": True,  # marker so downstream knows to fetch parts on demand
+    }
+
+
+def _fetch_attachment_part_sync(server: Any, uid: int, part_path: str) -> bytes:
+    """Stage 2 of the two-stage fetch: pull the actual bytes for ONE
+    attachment by IMAP part path. Used after the classifier accepts an
+    email and we now want to save the attachment bytes for the
+    extractor."""
+    server.select_folder("INBOX")
+    data = server.fetch([uid], [f"BODY.PEEK[{part_path}]"])
+    for _, pdata in data.items():
+        for k, v in pdata.items():
+            if isinstance(v, bytes):
+                return v
+    return b""
+
+
 def _fetch_single_sync(server: Any, search_id: str) -> dict | None:
     """
     Fetch a single message by Message-ID header value (synchronous).
@@ -581,6 +917,59 @@ async def fetch_messages(mailbox: Mailbox, session: AsyncSession) -> list[dict]:
     )
     logger.info("Mailbox %s: returning %s parsed messages", mailbox.id, len(messages))
     return messages
+
+
+async def fetch_messages_metadata_only(
+    mailbox: Mailbox, session: AsyncSession,
+) -> list[dict]:
+    """Two-stage fetch, stage 1: pull metadata + headers + small body
+    preview WITHOUT downloading attachment binary content.
+
+    Each returned message dict has the same shape as ``fetch_messages``
+    EXCEPT each attachment has ``content=None`` and a ``part_path`` we
+    can pass back to ``fetch_attachment_bytes`` once the classifier
+    accepts the email.
+
+    Graph mailboxes are passed through to the existing Graph fetch
+    (Graph has a separate metadata model; the savings here only apply
+    to IMAP).
+    """
+    if mailbox.protocol == MailboxProtocol.graph:
+        if mailbox.auth_type != MailboxAuthType.oauth2 or mailbox.oauth_provider != OAuthProvider.microsoft:
+            raise ValueError("Microsoft Graph mailboxes must use Microsoft OAuth.")
+        return await _fetch_microsoft_graph_messages(mailbox, session)
+
+    logger.info(
+        "Connecting to mailbox %s (%s) auth=%s [metadata-only mode]",
+        mailbox.id, mailbox.label, mailbox.auth_type,
+    )
+    last_fetched_at = mailbox.last_fetched_at
+    messages: list[dict] = await _run_imap_operation(
+        mailbox, session, _fetch_messages_metadata_only_sync, last_fetched_at,
+    )
+    logger.info(
+        "Mailbox %s: returning %s metadata-only messages",
+        mailbox.id, len(messages),
+    )
+    return messages
+
+
+async def fetch_attachment_bytes(
+    mailbox: Mailbox, session: AsyncSession, uid: int, part_path: str,
+) -> bytes:
+    """Two-stage fetch, stage 2: pull the bytes for ONE attachment by
+    IMAP part path. Call this only after the classifier accepts an
+    email — the whole point is to skip attachment downloads when the
+    classifier rejects.
+    """
+    if mailbox.protocol == MailboxProtocol.graph:
+        raise NotImplementedError(
+            "fetch_attachment_bytes is IMAP-only; Graph attachments come "
+            "down with the message."
+        )
+    return await _run_imap_operation(
+        mailbox, session, _fetch_attachment_part_sync, uid, part_path,
+    )
 
 
 async def update_last_fetched_at(mailbox: Mailbox, session: AsyncSession) -> None:
