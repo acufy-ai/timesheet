@@ -915,6 +915,10 @@ export const mailboxesAPI = {
 export const ingestionAPI = {
   triggerFetch: () => apiClient.post<FetchJobResponse>('/ingestion/fetch-emails', {}),
   getFetchStatus: (jobId: string) => apiClient.get<FetchJobStatus>(`/ingestion/fetch-emails/status/${jobId}`),
+  cancelFetch: (jobId: string) =>
+    apiClient.post<FetchJobStatus>(`/ingestion/fetch-emails/cancel/${jobId}`, {}),
+  adminCancelAllFetches: () =>
+    apiClient.post<{ cancelled: number }>('/ingestion/fetch-emails/admin/cancel-all', {}),
   getSkippedEmails: (params?: { limit?: number; include_classifier_skips?: boolean }) => apiClient.get<SkippedEmailOverview>('/ingestion/skipped-emails', { params }),
   promoteSkippedEmail: (emailId: number) =>
     apiClient.post<{ timesheet_id: number; already_promoted: boolean }>(`/ingestion/skipped-emails/${emailId}/promote`, {}),

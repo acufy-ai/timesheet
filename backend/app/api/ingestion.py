@@ -56,7 +56,13 @@ from app.schemas.ingestion import (
 )
 from app.services.llm_ingestion import draft_comment
 from app.services.storage import delete_file, read_file
-from app.workers.email_fetch import enqueue_fetch_job, enqueue_reprocess_skipped_fanout, get_job_status
+from app.workers.email_fetch import (
+    cancel_all_fetch_jobs_for_tenant,
+    cancel_fetch_job,
+    enqueue_fetch_job,
+    enqueue_reprocess_skipped_fanout,
+    get_job_status,
+)
 
 router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 
@@ -525,6 +531,69 @@ async def fetch_email_status(
         if job_id != expected_prefix and tenant_token not in job_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     return payload
+
+
+@router.post("/fetch-emails/cancel/{job_id}", response_model=FetchJobStatus)
+async def cancel_fetch_email_job(
+    job_id: str,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+) -> dict:
+    """Cancel an in-flight fetch/reprocess job. Cooperative abort via
+    arq's signal channel — the worker may finish the current message
+    before stopping — but the status row flips to ``cancelled``
+    immediately so the UI updates on the next poll.
+
+    Also releases the per-(tenant, mode) Redis fetch lock so a fresh
+    fetch can start right away without waiting for the lock TTL.
+
+    Auth: any user with ``can_review=True`` for the tenant that owns
+    the job. The tenant check mirrors the status endpoint's logic so
+    a reviewer can only cancel their own tenant's jobs.
+    """
+    # Read prior status first so we can run the same tenant check as
+    # the status endpoint does — refusing to cancel jobs belonging to
+    # other tenants.
+    try:
+        prior_payload = await get_job_status(job_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    tenant_id = prior_payload.get("tenant_id")
+    if tenant_id is not None and tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if tenant_id is None:
+        # Same fallback as the status endpoint: job_id pattern must
+        # name this tenant. Without that we'd accept any job_id from
+        # any tenant.
+        expected_prefix = f"fetch_tenant_{current_user.tenant_id}"
+        tenant_token = f"_tenant_{current_user.tenant_id}_"
+        if job_id != expected_prefix and tenant_token not in job_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        tenant_id = current_user.tenant_id
+
+    try:
+        return await cancel_fetch_job(job_id, int(tenant_id))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/fetch-emails/admin/cancel-all")
+async def admin_cancel_all_fetch_jobs(
+    current_user=Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    _: object = Depends(require_ingestion_enabled),
+) -> dict:
+    """Admin kill-switch: cancel every active fetch/reprocess job for
+    this tenant. Use when the queue is wedged from a worker crash and
+    individual per-job cancels aren't practical.
+
+    Returns the count of jobs cancelled.
+    """
+    try:
+        cancelled = await cancel_all_fetch_jobs_for_tenant(int(current_user.tenant_id))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return {"cancelled": cancelled}
 
 
 @router.get("/skipped-emails", response_model=SkippedEmailOverview)

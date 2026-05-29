@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   useResetMailboxCursor: vi.fn(),
   useTenantSettings: vi.fn(),
   useUpdateTenantSettings: vi.fn(),
+  useAdminCancelAllFetches: vi.fn(),
   oauthConnect: vi.fn(),
 }));
 
@@ -29,6 +30,7 @@ vi.mock('@/hooks', () => ({
   useResetMailboxCursor: mocks.useResetMailboxCursor,
   useTenantSettings: mocks.useTenantSettings,
   useUpdateTenantSettings: mocks.useUpdateTenantSettings,
+  useAdminCancelAllFetches: mocks.useAdminCancelAllFetches,
 }));
 
 vi.mock('@/api/endpoints', () => ({
@@ -73,6 +75,7 @@ const makeMailbox = (overrides: Partial<Mailbox>): Mailbox => ({
   last_fetched_at: null,
   last_fetch_error: null,
   last_fetch_failed_at: null,
+  auto_disabled_reason: null,
   created_at: '2026-04-01T00:00:00Z',
   updated_at: '2026-04-01T00:00:00Z',
   ...overrides,
@@ -94,6 +97,7 @@ const setupHooks = (mailboxes: Mailbox[]) => {
   mocks.useResetMailboxCursor.mockReturnValue(noopMutation);
   mocks.useTenantSettings.mockReturnValue({ data: {} });
   mocks.useUpdateTenantSettings.mockReturnValue(noopMutation);
+  mocks.useAdminCancelAllFetches.mockReturnValue(noopMutation);
 };
 
 describe('MailboxesPage — Reconnect action', () => {

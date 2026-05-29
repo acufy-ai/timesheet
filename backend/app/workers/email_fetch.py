@@ -1080,6 +1080,146 @@ def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:
     return minutes_since_start % interval < cron_window
 
 
+async def cancel_fetch_job(job_id: str, tenant_id: int) -> dict:
+    """Abort an in-flight fetch/reprocess job and release its lock.
+
+    Cooperative cancel via arq's ``Job.abort()``: the worker may still
+    finish processing the current message before stopping, which is
+    fine — each message commits independently so there's no half-state.
+    The status flips to ``cancelled`` in Redis immediately regardless,
+    so the UI shows the new state on the next poll.
+
+    Also clears the per-(tenant, mode) Redis fetch lock so a fresh
+    fetch can start right away. Without this the lock would sit until
+    its TTL expired (~6 min) and the next click would silently skip
+    with "another run in progress".
+
+    Returns the final status payload. Raises RuntimeError if Redis is
+    unreachable.
+    """
+    from arq import create_pool
+    from arq.jobs import Job, JobStatus
+
+    from app.workers.settings import get_redis_settings
+
+    redis = await create_pool(get_redis_settings())
+    try:
+        job = Job(job_id, redis)
+        prior_status = await job.status()
+
+        # Best-effort abort. arq's abort flips an abort-signal key the
+        # worker checks between steps; the worker honors it cooperatively.
+        # If the job already finished (complete / not_found / failed),
+        # abort() returns False but we still want to release the lock
+        # and flip status, so we don't gate on its return value.
+        try:
+            await job.abort(timeout=0)
+        except Exception as exc:
+            # arq raises if the job isn't running; that's fine — we
+            # still want to mark the status row.
+            logger.debug("Job.abort() raised on job_id=%s: %s", job_id, exc)
+
+        # Derive the mode from the job_id (best-effort; fetch is the
+        # common case). Used to compute the lock key to release.
+        if job_id.startswith("fetch_tenant_"):
+            mode = "fetch"
+        elif job_id.startswith("reprocess_tenant_") or "_reprocess_" in job_id:
+            mode = "reprocess_email"
+        else:
+            mode = "fetch"
+        lock_key = _fetch_lock_key(tenant_id, mode)
+        try:
+            # Best-effort lock release. We don't have the lock token so we
+            # can't use the safe Lua CAS — but cancel is an explicit user
+            # action, and the alternative is leaving a dead worker's lock
+            # in place for the full TTL. Use a direct DELETE.
+            await redis.delete(lock_key)
+        except Exception as exc:
+            logger.debug("Lock release on cancel failed for key=%s: %s", lock_key, exc)
+
+        # Flip status to cancelled. _write_job_status preserves
+        # started_at and updates updated_at, so the UI sees a fresh
+        # tick (no longer "stale") with the new state.
+        await _write_job_status(
+            {"redis": redis},
+            job_id=job_id,
+            tenant_id=tenant_id,
+            mode=mode,
+            status="cancelled",
+            progress=100,
+            message="Cancelled by user.",
+        )
+
+        logger.info(
+            "Cancelled job_id=%s tenant_id=%s (prior_status=%s)",
+            job_id, tenant_id, prior_status,
+        )
+        return await get_job_status(job_id)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to cancel job: {exc}. Is Redis running?") from exc
+    finally:
+        await redis.close()
+
+
+async def cancel_all_fetch_jobs_for_tenant(tenant_id: int) -> int:
+    """Admin kill-switch: scan Redis for any active job status rows
+    keyed to this tenant and cancel each. Used by the Settings →
+    Mailboxes admin panel when the user wants to clear a wedged worker
+    queue.
+
+    Returns the count of jobs cancelled. Best-effort: each cancel runs
+    in its own try/except so one bad job doesn't poison the sweep.
+    """
+    from arq import create_pool
+    from app.workers.settings import get_redis_settings
+
+    redis = await create_pool(get_redis_settings())
+    cancelled_count = 0
+    try:
+        # Scan for status rows of this tenant. Status key shape:
+        # ingestion:job-status:<job_id>. We can't filter by tenant in the
+        # key, so we read each row's payload and match tenant_id.
+        cursor = 0
+        prefix = "ingestion:job-status:"
+        candidate_job_ids: list[str] = []
+        while True:
+            cursor, keys = await redis.scan(cursor=cursor, match=f"{prefix}*", count=100)
+            for key in keys:
+                try:
+                    raw = await redis.get(key)
+                    if not raw:
+                        continue
+                    payload = json.loads(raw)
+                    if payload.get("tenant_id") != tenant_id:
+                        continue
+                    if payload.get("status") in ("complete", "failed", "cancelled", "not_found"):
+                        continue
+                    candidate_job_ids.append(payload.get("job_id"))
+                except Exception as inner_exc:
+                    logger.debug("Skipped key %s during admin sweep: %s", key, inner_exc)
+            if cursor == 0:
+                break
+    finally:
+        await redis.close()
+
+    # Cancel each candidate using the per-job function (handles lock
+    # release + status flip + arq abort).
+    for job_id in candidate_job_ids:
+        if not job_id:
+            continue
+        try:
+            await cancel_fetch_job(job_id, tenant_id)
+            cancelled_count += 1
+        except Exception as exc:
+            logger.warning("Admin sweep: failed to cancel job_id=%s: %s", job_id, exc)
+
+    logger.info(
+        "Admin sweep cancelled %d jobs for tenant_id=%s",
+        cancelled_count, tenant_id,
+    )
+    return cancelled_count
+
+
 async def get_job_status(job_id: str) -> dict:
     """
     Poll the status of a job by job_id.

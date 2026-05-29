@@ -1,5 +1,5 @@
 // Hooks barrel export
-export { useAuth, useIsAuthenticated, useUserRole, useHasRole, useIsAdmin, useIsPlatformAdmin, useIsViewer, useIsManager, useIsEmployee, useCanReview, useIngestionEnabled, useIsReviewer } from './useAuth';
+export { useAuth, useAuthState, useAuthActions, useIsAuthenticated, useUserRole, useHasRole, useIsAdmin, useIsPlatformAdmin, useIsViewer, useIsManager, useIsEmployee, useCanReview, useIngestionEnabled, useIsReviewer } from './useAuth';
 export {
   useTimeEntries,
   useTimeEntry,
@@ -91,7 +91,10 @@ export {
   useDeleteMailbox,
   useTestMailbox,
   useResetMailboxCursor,
+  useTryMailboxAgain,
   useTriggerFetchEmails,
+  useCancelFetchEmails,
+  useAdminCancelAllFetches,
   useReprocessSkippedEmails,
   useReprocessIngestionEmail,
   useDeleteIngestedEmail,

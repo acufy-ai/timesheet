@@ -25,11 +25,13 @@ import { EmptyState, Loading } from '@/components';
 import { mailboxesAPI } from '@/api/endpoints';
 import {
   useAuth,
+  useAdminCancelAllFetches,
   useClients,
   useCreateMailbox,
   useDeleteMailbox,
   useMailboxes,
   useResetMailboxCursor,
+  useTryMailboxAgain,
   useTestMailbox,
   useUpdateMailbox,
   useTenantSettings,
@@ -111,7 +113,26 @@ const getApiErrorMessage = (error: unknown, fallback: string): string => {
 
 export const MailboxesPage: React.FC = () => {
   const { data: mailboxes = [], isLoading, refetch: refetchMailboxes } = useMailboxes();
-  const { tenant } = useAuth();
+  const { tenant, user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'PLATFORM_ADMIN';
+  const adminCancelAll = useAdminCancelAllFetches();
+  const [killSwitchMessage, setKillSwitchMessage] = React.useState<string | null>(null);
+  const handleAdminCancelAll = async () => {
+    if (!window.confirm(
+      'Cancel ALL active fetch jobs for this tenant?\n\n' +
+      'Use this when a worker crash has left the queue wedged and individual ' +
+      'cancels aren\'t available. Cron-scheduled fetches will resume on the next tick.'
+    )) {
+      return;
+    }
+    try {
+      const result = await adminCancelAll.mutateAsync();
+      setKillSwitchMessage(`Cancelled ${result.cancelled} job${result.cancelled === 1 ? '' : 's'}.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to cancel jobs.';
+      setKillSwitchMessage(`Failed: ${msg}`);
+    }
+  };
   const maxMailboxes = tenant?.max_mailboxes ?? null;
   const activeMailboxCount = mailboxes.filter((m) => m.is_active).length;
   const totalConnections = mailboxes.length;
@@ -125,6 +146,7 @@ export const MailboxesPage: React.FC = () => {
   const deleteMailbox = useDeleteMailbox();
   const testMailbox = useTestMailbox();
   const resetCursor = useResetMailboxCursor();
+  const tryAgain = useTryMailboxAgain();
   const { data: tenantSettings = {} } = useTenantSettings();
   const updateSettings = useUpdateTenantSettings();
 
@@ -274,6 +296,17 @@ export const MailboxesPage: React.FC = () => {
     }
   };
 
+  const handleTryAgain = async (mailbox: Mailbox) => {
+    try {
+      await tryAgain.mutateAsync(mailbox.id);
+      setStatusTone('success');
+      setStatusMessage(`${mailbox.label} is back on. We'll try to connect again on the next fetch.`);
+    } catch (error) {
+      setStatusTone('danger');
+      setStatusMessage(getApiErrorMessage(error, 'Could not re-enable this mailbox.'));
+    }
+  };
+
   const handleOAuthConnect = async (provider: OAuthProvider) => {
     try {
       const response = await mailboxesAPI.oauthConnect(provider);
@@ -362,6 +395,7 @@ export const MailboxesPage: React.FC = () => {
               onTest={() => handleTest(mailbox)}
               onReconnect={() => void handleOAuthReconnect(mailbox)}
               onResetCursor={() => void handleResetCursor(mailbox)}
+              onTryAgain={() => void handleTryAgain(mailbox)}
               onDelete={() => handleDelete(mailbox)}
             />
           ))}
@@ -535,6 +569,33 @@ export const MailboxesPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Admin: stuck-fetch kill switch. Only rendered for admins. The
+          underlying endpoint also enforces role server-side. */}
+      {isAdmin ? (
+        <div className="rounded-xl border border-border bg-card p-5">
+          <h3 className="text-base font-semibold text-foreground">Advanced</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Cancel every active fetch job for this workspace. Use this when a
+            worker crash has left the queue wedged and the per-job Cancel button
+            in Inbox isn&apos;t available. Cron-scheduled fetches resume on the
+            next tick.
+          </p>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleAdminCancelAll}
+              disabled={adminCancelAll.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-transparent px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:bg-muted disabled:opacity-50"
+            >
+              {adminCancelAll.isPending ? 'Cancelling...' : 'Cancel all running fetches'}
+            </button>
+            {killSwitchMessage ? (
+              <span className="text-xs text-muted-foreground">{killSwitchMessage}</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {/* Create / Edit modal */}
       {isPanelOpen && (
         <MailboxFormModal
@@ -563,11 +624,12 @@ interface MailboxCardProps {
   onTest: () => void;
   onReconnect: () => void;
   onResetCursor: () => void;
+  onTryAgain: () => void;
   onDelete: () => void;
 }
 
 const MailboxCard: React.FC<MailboxCardProps> = ({
-  mailbox, isOAuth, onEdit, onTest, onReconnect, onResetCursor, onDelete,
+  mailbox, isOAuth, onEdit, onTest, onReconnect, onResetCursor, onTryAgain, onDelete,
 }) => {
   const [expanded, setExpanded] = React.useState(true);
 
@@ -595,14 +657,20 @@ const MailboxCard: React.FC<MailboxCardProps> = ({
               <h3 className="text-sm font-semibold text-foreground truncate">{mailbox.label}</h3>
               <span
                 className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                  mailbox.is_active
+                  mailbox.auto_disabled_reason
+                    ? 'bg-destructive/15 text-destructive'
+                    : mailbox.is_active
                     ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
-                {mailbox.is_active ? 'Active' : 'Paused'}
+                {mailbox.auto_disabled_reason
+                  ? 'Disconnected'
+                  : mailbox.is_active
+                  ? 'Active'
+                  : 'Paused'}
               </span>
-              {mailbox.last_fetch_error && (
+              {mailbox.last_fetch_error && !mailbox.auto_disabled_reason && (
                 <span
                   className="inline-flex items-center rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
                   title={mailbox.last_fetch_error}
@@ -640,16 +708,43 @@ const MailboxCard: React.FC<MailboxCardProps> = ({
             />
           </div>
 
-          {mailbox.last_fetch_error && (
+          {mailbox.auto_disabled_reason ? (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.22em] text-destructive">Last fetch failed</p>
-              <p className="mt-1 text-sm text-destructive/80">{mailbox.last_fetch_error}</p>
+              <p className="text-sm font-semibold text-destructive">Mailbox can't connect right now</p>
+              <p className="mt-1 text-sm text-destructive/80">{mailbox.auto_disabled_reason}</p>
               {mailbox.last_fetch_failed_at && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {new Date(mailbox.last_fetch_failed_at).toLocaleString()}
+                  Last attempt: {new Date(mailbox.last_fetch_failed_at).toLocaleString()}
                 </p>
               )}
+              <p className="mt-2 text-xs text-muted-foreground">
+                We paused this mailbox so it isn't holding up your other fetches. Check the
+                credentials, then try again.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onTryAgain}
+                  className="action-button"
+                >
+                  Try again
+                </button>
+                <CardActionButton onClick={onEdit} icon={<Pencil className="h-3.5 w-3.5" />} label="Edit credentials" />
+                <CardActionButton onClick={onTest} icon={<Play className="h-3.5 w-3.5" />} label="Test connection" />
+              </div>
             </div>
+          ) : (
+            mailbox.last_fetch_error && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
+                <p className="text-xs uppercase tracking-[0.22em] text-destructive">Last fetch failed</p>
+                <p className="mt-1 text-sm text-destructive/80">{mailbox.last_fetch_error}</p>
+                {mailbox.last_fetch_failed_at && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {new Date(mailbox.last_fetch_failed_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )
           )}
 
           <div className="flex flex-wrap gap-2 pt-1">

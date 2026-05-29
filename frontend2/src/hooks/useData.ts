@@ -1105,6 +1105,30 @@ export const useTriggerFetchEmails = () => {
   });
 };
 
+/** Per-job cancel. The backend flips status to ``cancelled`` immediately
+ * and releases the per-tenant fetch lock so a fresh fetch can start. */
+export const useCancelFetchEmails = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => ingestionAPI.cancelFetch(jobId).then((res) => res.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'fetch-status', data.job_id] });
+    },
+  });
+};
+
+/** Admin kill-switch: sweep + cancel every active fetch/reprocess job
+ * for this tenant. Returns ``{ cancelled: number }``. */
+export const useAdminCancelAllFetches = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => ingestionAPI.adminCancelAllFetches().then((res) => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'fetch-status'] });
+    },
+  });
+};
+
 export const useReprocessSkippedEmails = () => {
   const queryClient = useQueryClient();
   return useMutation({

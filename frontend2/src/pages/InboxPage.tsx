@@ -29,6 +29,7 @@ import {
   usePromoteSkippedEmail,
   useConfirmSkippedEmail,
   useTriggerFetchEmails,
+  useCancelFetchEmails,
   useUpdateIngestionTimesheetData,
   useUpdateMyPreferences,
   useAssignableUsers,
@@ -445,6 +446,7 @@ export const InboxPage: React.FC = () => {
   };
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
+  const cancelFetch = useCancelFetchEmails();
   const { data: mailboxes = [] } = useMailboxes();
   const lastFetchedAt = React.useMemo(() => {
     const stamps = mailboxes
@@ -952,6 +954,25 @@ export const InboxPage: React.FC = () => {
                       </div>
                       <span className="text-xs text-muted-foreground">{progress}%</span>
                     </div>
+                  ) : null}
+                  {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') && activeJobId ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await cancelFetch.mutateAsync(activeJobId);
+                          setStatusTone('info');
+                          setStatusMessage('Fetch cancelled.');
+                        } catch (error) {
+                          setStatusTone('danger');
+                          setStatusMessage(getApiErrorMessage(error, 'Unable to cancel fetch.'));
+                        }
+                      }}
+                      disabled={cancelFetch.isPending}
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition hover:bg-muted disabled:opacity-50"
+                    >
+                      {cancelFetch.isPending ? 'Cancelling...' : 'Cancel'}
+                    </button>
                   ) : null}
                 </div>
               ) : null}
