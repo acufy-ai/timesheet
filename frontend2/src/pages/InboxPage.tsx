@@ -42,6 +42,7 @@ import {
   type TimesheetRowGroup,
 } from '@/utils/inboxGrouping';
 import { isFetchJobStale } from '@/utils/fetchJobStaleness';
+import { readActiveFetchJobId, writeActiveFetchJobId } from '@/utils/activeFetchJob';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
   if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
@@ -321,7 +322,31 @@ export const InboxPage: React.FC = () => {
     typeof location.state === 'object' && location.state !== null && 'jobId' in location.state && typeof location.state.jobId === 'string'
       ? location.state.jobId
       : null;
-  const [activeJobId, setActiveJobId] = React.useState<string | null>(navJobId);
+  // Restore activeJobId from sessionStorage on first mount so a page
+  // reload (audit F-03) doesn't drop the polling UI for a job that's
+  // still running in the worker. Falls back to navJobId if a route
+  // explicitly passes one, then to nothing. Tenant-scoped key inside
+  // the util prevents leakage across workspaces.
+  const [activeJobId, setActiveJobIdState] = React.useState<string | null>(
+    () => navJobId ?? readActiveFetchJobId(user?.tenant_id) ?? null,
+  );
+  const setActiveJobId = React.useCallback((next: string | null) => {
+    setActiveJobIdState(next);
+    writeActiveFetchJobId(user?.tenant_id, next);
+  }, [user?.tenant_id]);
+  // Late hydration: if user.tenant_id arrives AFTER mount (auth /me round-
+  // trip) and we still don't have an activeJobId, pick up the persisted
+  // value now. One-shot — won't override a user-set state change.
+  const hydratedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (hydratedRef.current) return;
+    if (user?.tenant_id == null) return;
+    hydratedRef.current = true;
+    if (activeJobId == null) {
+      const persisted = readActiveFetchJobId(user.tenant_id);
+      if (persisted) setActiveJobIdState(persisted);
+    }
+  }, [user?.tenant_id, activeJobId]);
   const [statusFilter, setStatusFilter] = React.useState('');
   const [clientId, setClientId] = React.useState('');
   const [search, setSearch] = React.useState('');
