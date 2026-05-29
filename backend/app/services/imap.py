@@ -905,12 +905,28 @@ async def _run_imap_operation(
 async def fetch_messages(mailbox: Mailbox, session: AsyncSession) -> list[dict]:
     """
     Connect to a mailbox and fetch messages without mutating them.
-    Returns normalized message dicts (IMAP or Graph).
+    Returns normalized message dicts (IMAP, Gmail REST, or Graph).
     """
     if mailbox.protocol == MailboxProtocol.graph:
         if mailbox.auth_type != MailboxAuthType.oauth2 or mailbox.oauth_provider != OAuthProvider.microsoft:
             raise ValueError("Microsoft Graph mailboxes must use Microsoft OAuth.")
         return await _fetch_microsoft_graph_messages(mailbox, session)
+
+    # Gmail-OAuth path: route through the REST API instead of IMAP when
+    # the feature flag is on. Sidesteps the IMAP mid-stream throttle that
+    # silently hangs after a handful of FETCH bytes. Behavior is gated so
+    # we can revert instantly by flipping the env var.
+    if (
+        settings.use_gmail_api_for_google_oauth
+        and mailbox.auth_type == MailboxAuthType.oauth2
+        and mailbox.oauth_provider == OAuthProvider.google
+    ):
+        from app.services.gmail_api import fetch_messages_via_gmail_api
+        logger.info(
+            "Mailbox %s (%s): routing via Gmail REST API",
+            mailbox.id, mailbox.label,
+        )
+        return await fetch_messages_via_gmail_api(mailbox, session)
 
     logger.info("Connecting to mailbox %s (%s) auth=%s", mailbox.id, mailbox.label, mailbox.auth_type)
 

@@ -60,6 +60,7 @@ ENV_FIELD_MAP = {
     "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
     "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
     "imap_operation_timeout_seconds": "IMAP_OPERATION_TIMEOUT_SECONDS",
+    "use_gmail_api_for_google_oauth": "USE_GMAIL_API_FOR_GOOGLE_OAUTH",
     "ingestion_fetch_headers_first": "INGESTION_FETCH_HEADERS_FIRST",
     "ingestion_shadow_log_path": "INGESTION_SHADOW_LOG_PATH",
     "auth0_domain": "AUTH0_DOMAIN",
@@ -361,6 +362,18 @@ class Settings(BaseModel):
             "Per-operation timeout for IMAP fetch/search/login in seconds. "
             "Raise on tenants with large initial-fetch backlogs where SEARCH + "
             "FETCH + parse can exceed the default before any rows commit."
+        ),
+    )
+    use_gmail_api_for_google_oauth: bool = Field(
+        default=False,
+        description=(
+            "When true, mailboxes with oauth_provider=google use the Gmail "
+            "REST API instead of IMAP for fetching messages. Sidesteps Gmail's "
+            "opaque mid-stream IMAP FETCH throttle (silent socket hang after "
+            "5-10 messages) by using per-message HTTPS requests with explicit "
+            "429/Retry-After handling. The existing OAuth scope "
+            "(https://mail.google.com/) is a superset that already grants "
+            "Gmail API access — no re-consent needed."
         ),
     )
     # Two-stage IMAP fetch flags (see backend/app/services/imap.py and
