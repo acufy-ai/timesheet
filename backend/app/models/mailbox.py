@@ -82,6 +82,16 @@ class Mailbox(Base, TimestampMixin):
     last_fetch_failed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Counter of consecutive failed fetches. Reset to 0 on success.
+    # When this crosses MAILBOX_AUTO_DISABLE_THRESHOLD the worker flips
+    # ``is_active`` to False and sets ``auto_disabled_reason`` so the
+    # admin UI can show a clear "this mailbox isn't connecting" banner.
+    consecutive_fetch_failures: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+    auto_disabled_reason: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
 
     tenant: Mapped["Tenant"] = relationship("Tenant")
     linked_client: Mapped["Client | None"] = relationship("Client")

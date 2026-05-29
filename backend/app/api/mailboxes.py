@@ -285,6 +285,7 @@ def _mask_mailbox(mailbox: Mailbox) -> dict:
         "last_fetched_at": mailbox.last_fetched_at,
         "last_fetch_error": mailbox.last_fetch_error,
         "last_fetch_failed_at": mailbox.last_fetch_failed_at,
+        "auto_disabled_reason": mailbox.auto_disabled_reason,
         "created_at": mailbox.created_at,
         "updated_at": mailbox.updated_at,
     }
@@ -591,6 +592,28 @@ async def reset_mailbox_cursor(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
     mailbox.last_fetched_at = None
     await session.commit()
+
+
+@router.post("/{mailbox_id}/try-again", response_model=MailboxRead)
+async def try_mailbox_again(
+    mailbox_id: int,
+    current_user=Depends(require_role("ADMIN")),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Re-enable a mailbox the worker auto-disabled, and clear the
+    consecutive-failure counter. The next scheduled (or manual) fetch
+    will include this mailbox; if it still fails, the counter will
+    climb back to the threshold and it'll auto-disable again.
+    """
+    mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
+    if not mailbox:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
+    mailbox.is_active = True
+    mailbox.consecutive_fetch_failures = 0
+    mailbox.auto_disabled_reason = None
+    await session.commit()
+    return _mask_mailbox(mailbox)
 
 
 @router.post("/{mailbox_id}/test", response_model=ConnectionTestResult)

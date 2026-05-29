@@ -68,6 +68,7 @@ class MailboxRead(BaseModel):
     last_fetched_at: datetime | None
     last_fetch_error: str | None = None
     last_fetch_failed_at: datetime | None = None
+    auto_disabled_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 
