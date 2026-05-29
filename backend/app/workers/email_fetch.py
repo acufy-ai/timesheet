@@ -22,10 +22,23 @@ logger = logging.getLogger(__name__)
 
 JOB_STATUS_TTL_SECONDS = 86400
 
-# Worst-case ingestion job is ~5-10 min (large mailbox, many attachments,
-# LLM extraction). 15 min gives margin without leaving a permanent lock if
-# the worker crashes mid-job without releasing.
-FETCH_LOCK_TTL_SECONDS = 900
+
+def _fetch_lock_ttl_seconds() -> int:
+    """Lock TTL is derived from the per-job timeout so a crashed worker
+    can't hold the lock longer than the longest legitimate run + a small
+    grace period.
+
+    Previously hard-coded to 900s (15 min), which left a crashed-worker
+    lock alive long enough that the next manual fetch click silently
+    skipped with "another run in progress" — see audit finding F-04 on
+    2026-05-29. Now ties the lock TTL to ``worker_job_timeout`` (default
+    300s) + 60s buffer so a stuck lock clears within ~6 min of the worker
+    going down.
+
+    Released to a function so tests can monkey-patch ``settings``.
+    """
+    from app.core.config import settings as _s
+    return int(_s.worker_job_timeout) + 60
 
 # A mailbox that has failed to fetch this many times in a row is
 # auto-disabled by the worker. 5 is loose enough that a single bad
@@ -50,7 +63,7 @@ async def _try_acquire_fetch_lock(redis, key: str, token: str) -> bool:
         # Redis-less dev: skip locking. Single-worker dev environments
         # don't have the concurrency the lock protects against.
         return True
-    result = await redis.set(key, token, nx=True, ex=FETCH_LOCK_TTL_SECONDS)
+    result = await redis.set(key, token, nx=True, ex=_fetch_lock_ttl_seconds())
     return bool(result)
 
 
@@ -107,6 +120,29 @@ async def _write_job_status(
         logger.warning("Redis unavailable, cannot write job status for job_id=%s", job_id)
         return
 
+    # Preserve started_at across status writes for the same job — set once
+    # on the first write, then carried forward. This anchors job age for the
+    # frontend's stalled-status detection (see audit F-04). updated_at moves
+    # with every write.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    started_at = now_iso
+    try:
+        prior = await redis.get(_status_key(job_id))
+        if prior:
+            try:
+                prior_payload = json.loads(prior)
+                existing_started = prior_payload.get("started_at")
+                if existing_started:
+                    started_at = existing_started
+            except (ValueError, TypeError):
+                # Corrupt prior payload — treat as a new job and overwrite.
+                pass
+    except Exception as exc:
+        # If Redis read fails, keep going with the current time as
+        # started_at. The lost continuity is harmless — frontend's
+        # staleness threshold is generous (job_timeout + buffer).
+        logger.debug("Could not read prior status for job_id=%s: %s", job_id, exc)
+
     payload = {
         "job_id": job_id,
         "tenant_id": tenant_id,
@@ -116,7 +152,8 @@ async def _write_job_status(
         "message": message,
         "result": result,
         "error": error,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": started_at,
+        "updated_at": now_iso,
     }
     await redis.setex(
         _status_key(job_id),
@@ -1062,14 +1099,36 @@ async def get_job_status(job_id: str) -> dict:
         job = Job(job_id, redis)
         status = await job.status()
 
+        # Synthesized payloads when no per-job status row is found. Fill in
+        # started_at/updated_at with the current time so the schema shape
+        # stays consistent and the frontend's staleness check has data to
+        # work with (these synthesized rows are by definition "fresh"
+        # because we just observed them via arq state).
+        now_iso = datetime.now(timezone.utc).isoformat()
         if status == JobStatus.complete:
             result = await job.result()
-            return {"status": "complete", "job_id": job_id, "progress": 100, "message": "Done", "result": result}
+            return {
+                "status": "complete", "job_id": job_id, "progress": 100,
+                "message": "Done", "result": result,
+                "started_at": now_iso, "updated_at": now_iso,
+            }
         if status == JobStatus.in_progress:
-            return {"status": "in_progress", "job_id": job_id, "progress": 50, "message": "Processing..."}
+            return {
+                "status": "in_progress", "job_id": job_id, "progress": 50,
+                "message": "Processing...",
+                "started_at": now_iso, "updated_at": now_iso,
+            }
         if status in (JobStatus.deferred, JobStatus.queued):
-            return {"status": "queued", "job_id": job_id, "progress": 0, "message": "Queued..."}
-        return {"status": "not_found", "job_id": job_id, "progress": 0, "message": "Job not found."}
+            return {
+                "status": "queued", "job_id": job_id, "progress": 0,
+                "message": "Queued...",
+                "started_at": now_iso, "updated_at": now_iso,
+            }
+        return {
+            "status": "not_found", "job_id": job_id, "progress": 0,
+            "message": "Job not found.",
+            "started_at": now_iso, "updated_at": now_iso,
+        }
     except Exception as exc:
         raise RuntimeError(f"Failed to get job status: {exc}. Is Redis running?") from exc
     finally:

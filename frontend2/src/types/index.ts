@@ -493,6 +493,7 @@ export interface Mailbox {
   last_fetched_at: string | null;
   last_fetch_error: string | null;
   last_fetch_failed_at: string | null;
+  auto_disabled_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -530,6 +531,13 @@ export interface FetchJobStatus {
   mode?: string | null;
   result: Record<string, unknown> | null;
   error: string | null;
+  // ISO timestamps. ``started_at`` is set once on the first status write
+  // and preserved across the job's lifetime. ``updated_at`` moves on every
+  // tick — comparing it to ``now`` is how we detect a worker that died
+  // mid-job (the Redis row sits frozen for up to 24h otherwise). Both are
+  // optional so older sessions/clients gracefully degrade.
+  started_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface FetchMessageDiagnostic {

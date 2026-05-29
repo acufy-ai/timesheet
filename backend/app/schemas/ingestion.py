@@ -107,6 +107,14 @@ class FetchJobStatus(BaseModel):
     mode: str | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    # ISO-8601 timestamps that let the frontend reason about job freshness.
+    # ``started_at`` is stamped on the FIRST status write (so it never moves
+    # for the lifetime of a job) and ``updated_at`` on every subsequent
+    # write. The UI uses (now - updated_at) to detect stalled jobs after a
+    # worker crash — the worker no longer ticks but the status row sits in
+    # Redis for up to JOB_STATUS_TTL_SECONDS (24h).
+    started_at: str | None = None
+    updated_at: str | None = None
 
 
 class ReprocessSkippedResponse(BaseModel):

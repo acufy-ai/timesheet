@@ -40,6 +40,7 @@ import {
   buildSkippedRowGroup,
   type TimesheetRowGroup,
 } from '@/utils/inboxGrouping';
+import { isFetchJobStale } from '@/utils/fetchJobStaleness';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
   if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
@@ -857,7 +858,13 @@ export const InboxPage: React.FC = () => {
   };
 
   const progress = Math.max(0, Math.min(100, Number(fetchStatus?.progress ?? 0)));
+  // Staleness detection (audit F-04): if updated_at hasn't moved in
+  // longer than the backend's lock TTL, the worker likely crashed and
+  // the UI would otherwise spin until the 24h Redis TTL expires.
+  // Helper isolates the logic for unit testability.
+  const fetchStatusIsStale = isFetchJobStale(fetchStatus, Boolean(activeJobId));
   const fetchStatusTone =
+    fetchStatusIsStale ? 'danger' :
     fetchStatus?.status === 'complete' ? 'success' : fetchStatus?.status === 'failed' ? 'danger' : 'info';
   const showStandaloneStatusMessage =
     Boolean(statusMessage) &&
@@ -930,14 +937,15 @@ export const InboxPage: React.FC = () => {
               {activeJobId && fetchStatus && fetchStatus.status !== 'not_found' ? (
                 <div className="flex items-center gap-3">
                   <Badge tone={fetchStatusTone} className="normal-case tracking-normal">
-                    {fetchStatus.status === 'queued' ? 'Queued' :
+                    {fetchStatusIsStale ? 'Stalled' :
+                     fetchStatus.status === 'queued' ? 'Queued' :
                      fetchStatus.status === 'in_progress' ? 'Processing' :
                      fetchStatus.status === 'complete' ? 'Complete' :
                      fetchStatus.status === 'failed' ? 'Failed' :
                      fetchStatus.status}
                   </Badge>
                   <span className="text-sm text-foreground">{fetchStatusMessage}</span>
-                  {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') ? (
+                  {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') && !fetchStatusIsStale ? (
                     <div className="flex items-center gap-2 flex-1 max-w-xs">
                       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-background">
                         <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${progress}%` }} />
@@ -945,6 +953,25 @@ export const InboxPage: React.FC = () => {
                       <span className="text-xs text-muted-foreground">{progress}%</span>
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+
+              {fetchStatusIsStale ? (
+                <div className="rounded-lg border border-amber-300/40 bg-amber-500/5 px-4 py-2.5">
+                  <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                    This fetch hasn&apos;t updated in over 6 minutes.
+                  </p>
+                  <p className="mt-1 text-xs text-amber-700/80 dark:text-amber-300/80">
+                    The worker likely crashed. Click &quot;Fetch Emails&quot; again to start a fresh run; any
+                    emails already processed are saved.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveJobId(null); }}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-300/40 bg-transparent px-3 py-1 text-xs font-semibold text-amber-700 transition hover:bg-amber-500/10 dark:text-amber-300"
+                  >
+                    Dismiss stalled status
+                  </button>
                 </div>
               ) : null}
 
