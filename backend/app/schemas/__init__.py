@@ -823,7 +823,13 @@ class PasswordChangeResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    # Optional because the refresh token now lives in the HttpOnly ``rt``
+    # cookie (preferred path). The body field is the rollout fallback for
+    # legacy clients that still have a refresh token in sessionStorage.
+    # If we required it, a fresh client sending ``{}`` body (no legacy
+    # token to include) would 422 BEFORE the route's cookie-fallback
+    # logic could run — surfacing as a session loss to the user.
+    refresh_token: str | None = None
 
 
 class SetPasswordRequest(BaseModel):

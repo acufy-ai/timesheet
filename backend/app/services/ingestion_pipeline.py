@@ -3,11 +3,25 @@ Ingestion pipeline orchestrator.
 Stages ingestion data only. It does not create time_entries.
 """
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+
+
+def _email_fingerprint(value: str) -> str:
+    """Stable, non-reversible 8-byte hash of an email address for logs.
+
+    Lets us correlate ingestion events for the same address across log
+    lines without persisting the address itself — GDPR data-minimization
+    for EU tenants. NOT a security boundary; not salted; only useful for
+    correlation, not auth.
+    """
+    if not value:
+        return "<empty>"
+    return hashlib.blake2s(value.strip().lower().encode("utf-8"), digest_size=8).hexdigest()
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -928,7 +942,7 @@ async def _process_timesheet_attachment(
         if doc_employee_email and doc_employee_email in known_emails_map:
             employee_id = known_emails_map[doc_employee_email]
             resolved_employee_email = doc_employee_email
-            logger.info("Resolved employee via doc employee_email: %r", doc_employee_email)
+            logger.info("Resolved employee via doc employee_email fp=%s", _email_fingerprint(doc_employee_email))
 
         # Phase 1-B: contact_emails from document body/signatures.
         if employee_id is None:
@@ -939,7 +953,7 @@ async def _process_timesheet_attachment(
                     if normalized in known_emails_map:
                         employee_id = known_emails_map[normalized]
                         resolved_employee_email = normalized
-                        logger.info("Resolved employee via body email: %r", normalized)
+                        logger.info("Resolved employee via body email fp=%s", _email_fingerprint(normalized))
                         break
 
         # Phase 1-C: all chain_senders emails. Collect every match; auto-assign
@@ -958,8 +972,8 @@ async def _process_timesheet_attachment(
                 employee_id = next(iter(chain_match_ids))
                 resolved_employee_email = chain_match_emails[employee_id]
                 logger.info(
-                    "Resolved employee via chain email (unique match): user_id=%s email=%r",
-                    employee_id, resolved_employee_email,
+                    "Resolved employee via chain email (unique match): user_id=%s fp=%s",
+                    employee_id, _email_fingerprint(resolved_employee_email),
                 )
 
         # Phase 1-D: forwarded_from_email (direct forwarder).
@@ -968,7 +982,7 @@ async def _process_timesheet_attachment(
             if fwd_email in known_emails_map:
                 employee_id = known_emails_map[fwd_email]
                 resolved_employee_email = fwd_email
-                logger.info("Resolved employee via forwarded_from_email: %r", fwd_email)
+                logger.info("Resolved employee via forwarded_from_email fp=%s", _email_fingerprint(fwd_email))
 
         # Phase 2-A: fuzzy match on LLM-extracted employee_name.
         # Filename-derived fallback: stamp the filename name onto extracted_data
@@ -1253,6 +1267,7 @@ async def _process_timesheet_attachment(
                     employee_id, timesheet.period_start, timesheet.period_end, prior_approved[0],
                 )
                 audit = IngestionAuditLog(
+                    tenant_id=timesheet.tenant_id,
                     ingestion_timesheet_id=timesheet.id,
                     user_id=None,
                     action="auto_rejected",
@@ -1276,6 +1291,7 @@ async def _process_timesheet_attachment(
             if work_date is None or hours is None:
                 continue
             line_item = IngestionTimesheetLineItem(
+                tenant_id=timesheet.tenant_id,
                 ingestion_timesheet_id=timesheet.id,
                 work_date=work_date,
                 hours=hours,
@@ -1287,6 +1303,7 @@ async def _process_timesheet_attachment(
 
         # Audit log
         audit = IngestionAuditLog(
+            tenant_id=timesheet.tenant_id,
             ingestion_timesheet_id=timesheet.id,
             user_id=None,
             action="auto_ingested",
@@ -1908,12 +1925,17 @@ async def _resolve_or_create_external_user(
     base_username = sender_email.split("@", 1)[0].lower().replace(".", "_")
     username = base_username
     suffix = 1
-    while True:
+    for _ in range(100):
         taken = await session.execute(select(User).where(User.username == username))
         if taken.scalar_one_or_none() is None:
             break
         username = f"{base_username}_{suffix}"
         suffix += 1
+    else:
+        raise RuntimeError(
+            f"Could not allocate a unique username after 100 attempts (base={base_username!r}); "
+            "ingestion user creation aborted."
+        )
 
     full_name = (
         (extracted_employee_name or "").strip()
@@ -2000,7 +2022,7 @@ async def _resolve_or_create_extracted_employee_user(
     if not use_email:
         # Generate a placeholder email as fallback
         suffix = 0
-        while True:
+        for _ in range(100):
             suffix_part = "" if suffix == 0 else f"_{suffix}"
             use_email = f"{base_slug}.{tenant_id}{suffix_part}@ingestion.internal"
             taken_result = await session.execute(
@@ -2009,10 +2031,14 @@ async def _resolve_or_create_extracted_employee_user(
             if taken_result.scalar_one_or_none() is None:
                 break
             suffix += 1
+        else:
+            raise RuntimeError(
+                f"Could not allocate a unique placeholder email after 100 attempts (base={base_slug!r})."
+            )
 
     # Generate a unique username
     suffix = 0
-    while True:
+    for _ in range(100):
         suffix_part = "" if suffix == 0 else f"_{suffix}"
         candidate_username = f"{base_slug}_{tenant_id}{suffix_part}"
         taken_result = await session.execute(
@@ -2021,6 +2047,10 @@ async def _resolve_or_create_extracted_employee_user(
         if taken_result.scalar_one_or_none() is None:
             break
         suffix += 1
+    else:
+        raise RuntimeError(
+            f"Could not allocate a unique username after 100 attempts (base={base_slug!r})."
+        )
 
     # Insert with retry — two concurrent jobs can both pass the uniqueness
     # checks above, then both try to INSERT with the same email/username. The

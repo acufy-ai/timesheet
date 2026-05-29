@@ -1686,6 +1686,16 @@ async def approve_timesheet(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot approve: no employee assigned to this timesheet",
         )
+    if timesheet.employee_id == current_user.id:
+        # Migration 062's CHECK on time_entries (approved_by <> user_id)
+        # would fire at INSERT below if we let this through. Mirrors the
+        # guard in crud/time_entry.py:approve_time_entry for the manual
+        # path. Catches the case where a reviewer is also the employee
+        # on an ingested timesheet (real on multi-role users).
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot approve a timesheet for which you are the employee.",
+        )
 
 
     now = datetime.now(timezone.utc)
