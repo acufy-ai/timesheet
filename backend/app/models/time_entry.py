@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Integer, Time
+from sqlalchemy import Boolean, CheckConstraint, Index, String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Integer, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
 from typing import Optional, TYPE_CHECKING
@@ -24,6 +24,13 @@ class TimeEntry(Base, TimestampMixin):
     """TimeEntry model for tracking billable hours."""
 
     __tablename__ = "time_entries"
+    __table_args__ = (
+        CheckConstraint(
+            "approved_by IS NULL OR approved_by <> user_id",
+            name="ck_time_entries_no_self_approve",
+        ),
+        Index("ix_time_entries_user_date", "user_id", "entry_date"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
@@ -124,8 +131,21 @@ class TimeEntry(Base, TimestampMixin):
 
 class TimeEntryEditHistory(Base):
     __tablename__ = "time_entry_edit_history"
+    __table_args__ = (
+        Index(
+            "ix_time_entry_edit_history_tenant_entry",
+            "tenant_id",
+            "time_entry_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Defense-in-depth. Today the per-tenant DB connection is the real
+    # boundary; this column lets queries filter by tenant_id directly
+    # and keeps the schema uniform for the eventual Phase 3.F cleanup.
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
     time_entry_id: Mapped[int] = mapped_column(
         ForeignKey("time_entries.id"), nullable=False, index=True)
     edited_by: Mapped[int] = mapped_column(

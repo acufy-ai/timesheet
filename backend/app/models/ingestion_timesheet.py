@@ -104,9 +104,18 @@ class IngestionTimesheetLineItem(Base):
     __tablename__ = "ingestion_timesheet_line_items"
     __table_args__ = (
         Index("ix_ingestion_line_items_timesheet", "ingestion_timesheet_id"),
+        Index(
+            "ix_ingestion_line_items_tenant_timesheet",
+            "tenant_id",
+            "ingestion_timesheet_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Defense-in-depth — see TimeEntryEditHistory for the rationale.
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
     ingestion_timesheet_id: Mapped[int] = mapped_column(
         ForeignKey("ingestion_timesheets.id", ondelete="CASCADE"),
         nullable=False,
@@ -143,9 +152,18 @@ class IngestionAuditLog(Base):
     __table_args__ = (
         Index("ix_ingestion_audit_log_timesheet", "ingestion_timesheet_id"),
         Index("ix_ingestion_audit_log_user", "user_id"),
+        Index(
+            "ix_ingestion_audit_log_tenant_timesheet",
+            "tenant_id",
+            "ingestion_timesheet_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Defense-in-depth — see TimeEntryEditHistory for the rationale.
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
     ingestion_timesheet_id: Mapped[int] = mapped_column(
         ForeignKey("ingestion_timesheets.id", ondelete="CASCADE"), nullable=False
     )
