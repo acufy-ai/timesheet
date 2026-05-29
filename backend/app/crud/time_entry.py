@@ -313,6 +313,7 @@ async def update_time_entry(
 
     db.add(
         TimeEntryEditHistory(
+            tenant_id=entry.tenant_id,
             time_entry_id=entry.id,
             edited_by=edited_by,
             edited_at=datetime.now(timezone.utc),
@@ -600,6 +601,7 @@ async def recall_time_entries(
     for entry in pending:
         db.add(
             TimeEntryEditHistory(
+                tenant_id=entry.tenant_id,
                 time_entry_id=entry.id,
                 edited_by=user_id,
                 edited_at=now,
@@ -729,6 +731,13 @@ async def approve_time_entry(
     if not entry:
         raise ValueError("Time entry not found")
 
+    if entry.user_id == approved_by_id:
+        # Defense-in-depth: the API layer already blocks self-approval via
+        # the time_entry.approve permission check, but enforcing it here
+        # too means a future caller that forgets the API guard can't
+        # silently let a user approve their own entry.
+        raise ValueError("Cannot approve your own time entry")
+
     if entry.status != TimeEntryStatus.SUBMITTED:
         raise ValueError("Can only approve SUBMITTED entries")
 
@@ -754,6 +763,9 @@ async def approve_time_entries_batch(
     entries = await get_time_entries_by_ids(db, entry_ids, tenant_id=tenant_id)
     if len(entries) != len(set(entry_ids)):
         raise ValueError("One or more time entries were not found")
+
+    if any(entry.user_id == approved_by_id for entry in entries):
+        raise ValueError("Cannot approve your own time entry")
 
     if any(entry.status != TimeEntryStatus.SUBMITTED for entry in entries):
         raise ValueError("Can only approve SUBMITTED entries")
@@ -782,6 +794,9 @@ async def reject_time_entry(
     entry = await get_time_entry_by_id(db, entry_id, tenant_id=tenant_id)
     if not entry:
         raise ValueError("Time entry not found")
+
+    if entry.user_id == approved_by_id:
+        raise ValueError("Cannot reject your own time entry")
 
     if entry.status != TimeEntryStatus.SUBMITTED:
         raise ValueError("Can only reject SUBMITTED entries")

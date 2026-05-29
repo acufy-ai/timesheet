@@ -115,12 +115,18 @@ async def write_audit_log(
     timesheet_id: int,
     user_id: int | None,
     action: str,
+    *,
+    tenant_id: int,
     actor_type: IngestionAuditActorType = IngestionAuditActorType.user,
     previous_value: dict | None = None,
     new_value: dict | None = None,
     comment: str | None = None,
 ) -> None:
+    # tenant_id is keyword-only and required so a caller that forgets it
+    # fails loudly at the call site (TypeError) instead of writing a row
+    # with a NULL tenant_id that the schema would reject later.
     entry = IngestionAuditLog(
+        tenant_id=tenant_id,
         ingestion_timesheet_id=timesheet_id,
         user_id=user_id,
         action=action,
