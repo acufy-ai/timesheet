@@ -16,8 +16,14 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core.config import settings
 from app.services import imap as imap_module
 from app.services.imap import _run_imap_operation
+
+
+# Stall duration used by tests when the patched timeout is 0.05s — large
+# enough to reliably trip asyncio.wait_for, small enough to keep tests fast.
+_STALL_SECONDS = 0.55
 
 
 class _StubMailbox:
@@ -47,14 +53,14 @@ async def test_first_timeout_retries_and_then_succeeds():
             # will translate this into asyncio.TimeoutError for the
             # caller.
             import time
-            time.sleep(imap_module.IMAP_OPERATION_TIMEOUT + 0.5)
+            time.sleep(_STALL_SECONDS)
             return "should not reach"
         return "ok"
 
     # Skip the actual IMAP connect/login and the retry sleep.
     with (
         patch.object(imap_module, "_imap_connect_sync", return_value=object()),
-        patch.object(imap_module, "IMAP_OPERATION_TIMEOUT", 0.05),
+        patch.object(settings, "imap_operation_timeout_seconds", 0.05),
         patch.object(imap_module, "IMAP_TIMEOUT_RETRY_BACKOFF", 0.0),
     ):
         result = await _run_imap_operation(mailbox, None, _fake_fn)
@@ -72,12 +78,12 @@ async def test_second_timeout_raises():
     def _always_stalls(server, *args, **kwargs):
         call_count["n"] += 1
         import time
-        time.sleep(imap_module.IMAP_OPERATION_TIMEOUT + 0.5)
+        time.sleep(_STALL_SECONDS)
         return "never"
 
     with (
         patch.object(imap_module, "_imap_connect_sync", return_value=object()),
-        patch.object(imap_module, "IMAP_OPERATION_TIMEOUT", 0.05),
+        patch.object(settings, "imap_operation_timeout_seconds", 0.05),
         patch.object(imap_module, "IMAP_TIMEOUT_RETRY_BACKOFF", 0.0),
         pytest.raises(TimeoutError) as exc_info,
     ):

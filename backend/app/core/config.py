@@ -59,6 +59,7 @@ ENV_FIELD_MAP = {
     "email_fetch_start_time": "EMAIL_FETCH_START_TIME",
     "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
     "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
+    "imap_operation_timeout_seconds": "IMAP_OPERATION_TIMEOUT_SECONDS",
     "ingestion_fetch_headers_first": "INGESTION_FETCH_HEADERS_FIRST",
     "ingestion_shadow_log_path": "INGESTION_SHADOW_LOG_PATH",
     "auth0_domain": "AUTH0_DOMAIN",
@@ -353,6 +354,14 @@ class Settings(BaseModel):
     email_fetch_initial_days: int = Field(
         default=30,
         description="On first fetch (no cursor), only fetch emails from this many days back."
+    )
+    imap_operation_timeout_seconds: float = Field(
+        default=45.0,
+        description=(
+            "Per-operation timeout for IMAP fetch/search/login in seconds. "
+            "Raise on tenants with large initial-fetch backlogs where SEARCH + "
+            "FETCH + parse can exceed the default before any rows commit."
+        ),
     )
     # Two-stage IMAP fetch flags (see backend/app/services/imap.py and
     # backend/app/services/ingestion_pipeline.py). When BOTH flags are

@@ -22,11 +22,13 @@ logger = logging.getLogger(__name__)
 
 TOKEN_REFRESH_BUFFER_MINUTES = 5
 IMAP_FETCH_BATCH_SIZE = 50
-IMAP_OPERATION_TIMEOUT = 45.0  # seconds (was 120 — Gmail's slow path is
-# rarely worth waiting > 45s for; longer waits stack the scheduled queue
-# when fetch interval is 5 min). On timeout we retry once with a short
-# backoff before declaring failure (see _run_imap_operation).
 IMAP_TIMEOUT_RETRY_BACKOFF = 5.0  # seconds between timeout and retry
+
+
+def _imap_operation_timeout() -> float:
+    """Per-operation IMAP timeout, read live so a settings/env override
+    takes effect without a process restart in tests."""
+    return float(settings.imap_operation_timeout_seconds)
 
 # Per-mailbox lock to prevent concurrent OAuth token refreshes
 _token_refresh_locks: dict[int, asyncio.Lock] = {}
@@ -848,7 +850,7 @@ async def _run_imap_operation(
     Run a synchronous IMAP operation in a thread pool executor.
     Retries once with a refreshed token on OAuth authentication failure
     (port of shouldRetryImapAttempt logic from imap_service.ts).
-    Applies a per-operation timeout of IMAP_OPERATION_TIMEOUT seconds.
+    Applies a per-operation timeout of settings.imap_operation_timeout_seconds.
     """
     last_error: Exception | None = None
     timed_out_once = False
@@ -862,12 +864,13 @@ async def _run_imap_operation(
                 mailbox, session, force_refresh=(attempt > 0)
             )
 
+        op_timeout = _imap_operation_timeout()
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(
                     lambda tok=access_token: fn(_imap_connect_sync(mailbox, tok), *args),
                 ),
-                timeout=IMAP_OPERATION_TIMEOUT,
+                timeout=op_timeout,
             )
             return result
         except asyncio.TimeoutError:
@@ -875,12 +878,12 @@ async def _run_imap_operation(
                 timed_out_once = True
                 logger.info(
                     "Mailbox %s: IMAP timed out after %.0fs; retrying once in %.1fs",
-                    mailbox.id, IMAP_OPERATION_TIMEOUT, IMAP_TIMEOUT_RETRY_BACKOFF,
+                    mailbox.id, op_timeout, IMAP_TIMEOUT_RETRY_BACKOFF,
                 )
                 await asyncio.sleep(IMAP_TIMEOUT_RETRY_BACKOFF)
                 continue
             raise TimeoutError(
-                f"IMAP operation timed out after {IMAP_OPERATION_TIMEOUT}s "
+                f"IMAP operation timed out after {op_timeout}s "
                 f"(retried once) for mailbox {mailbox.id} ({mailbox.label})"
             )
         except Exception as exc:
