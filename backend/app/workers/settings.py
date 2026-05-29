@@ -73,6 +73,15 @@ class WorkerSettings:
     keep_result = settings.worker_keep_result
     health_check_interval = 30
     log_results = True
+    # Enable arq's cooperative job abort so Job.abort() from the cancel
+    # endpoint actually interrupts a running job. Without this flag, abort
+    # only takes effect on the NEXT job dispatch — meaning a job already
+    # in flight runs to completion and the UI shows "Processing 16/45"
+    # even though the user clicked Cancel. arq sets an abort key in Redis
+    # and the worker checks it between awaits; combined with our explicit
+    # is_job_cancelled() check inside the per-message loop, cancel is
+    # respected at the next message boundary (a few seconds, not minutes).
+    allow_abort_jobs = True
     cron_jobs = [
         cron(check_and_send_reminders, minute=_cron_minutes),
         cron(scheduled_fetch_emails, minute=_cron_minutes),

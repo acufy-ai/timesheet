@@ -51,6 +51,43 @@ def _status_key(job_id: str) -> str:
     return f"ingestion:job-status:{job_id}"
 
 
+# Statuses that should be treated as TERMINAL — once a status row carries
+# one of these, subsequent worker writes must NOT overwrite it. Without
+# this guard, the cancel endpoint flips status to "cancelled" in Redis,
+# but the very next per-message status write from a still-running worker
+# resets it to "in_progress" and the UI never sees the cancel.
+_TERMINAL_STATUSES = {"complete", "failed", "cancelled"}
+
+
+async def _is_job_cancelled(ctx: dict, job_id: str) -> bool:
+    """Best-effort check: has the status row for this job been flipped
+    to a terminal state (typically cancelled) by an external actor?
+
+    Called from inside the per-message loop so the worker can stop
+    early when the user clicks Cancel. arq's own ``allow_abort_jobs``
+    handles the case where the worker is between awaits; this handles
+    the case where we're awaiting an LLM/IMAP call and want a clean
+    stop at the next message boundary.
+
+    Returns False on any Redis error — we'd rather complete a fetch
+    than abort one spuriously on a transient hiccup.
+    """
+    redis = ctx.get("redis") if ctx else None
+    if redis is None:
+        return False
+    try:
+        raw = await redis.get(_status_key(job_id))
+    except Exception:
+        return False
+    if not raw:
+        return False
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    return payload.get("status") in _TERMINAL_STATUSES
+
+
 def _fetch_lock_key(tenant_id: int, mode: str) -> str:
     # Lock is per (tenant, mode) so a fetch and a reprocess for the same
     # tenant don't block each other — they touch different sets of rows.
@@ -134,6 +171,15 @@ async def _write_job_status(
     # job. started_at is set once on the first write (audit F-04); counters
     # accumulate over the job lifetime so partial updates merge into the
     # running state rather than replace it (audit F-09).
+    #
+    # Also: if a prior write already flipped the status to a TERMINAL
+    # value (complete/failed/cancelled), refuse to overwrite it. This is
+    # the load-bearing piece for cancel — without it, the cancel endpoint
+    # writes status=cancelled but the next per-message status write from
+    # a still-running worker resets it to in_progress and the UI never
+    # sees the cancel. The exception is when the CALLER is writing a
+    # terminal status (status in _TERMINAL_STATUSES), which is always
+    # allowed — late completion / cancellation paths still need to land.
     now_iso = datetime.now(timezone.utc).isoformat()
     started_at = now_iso
     merged_counters: dict[str, int] = {}
@@ -151,6 +197,18 @@ async def _write_job_status(
                         {k: int(v) for k, v in prior_counters.items()
                          if isinstance(v, (int, float))}
                     )
+                # Terminal-status lockout. A prior cancel/complete/failed
+                # write means the job is done; later worker writes are
+                # the worker not realizing the cancel yet. Drop them so
+                # the UI keeps showing the terminal state.
+                prior_status = prior_payload.get("status")
+                if (prior_status in _TERMINAL_STATUSES
+                        and status not in _TERMINAL_STATUSES):
+                    logger.debug(
+                        "Skipping status overwrite job_id=%s: prior=%s, attempted=%s",
+                        job_id, prior_status, status,
+                    )
+                    return
             except (ValueError, TypeError):
                 # Corrupt prior payload — treat as a new job and overwrite.
                 pass
@@ -553,6 +611,20 @@ async def _run_fetch_job(
 
     cumulative_messages_processed = 0
     for index, (mailbox, messages) in enumerate(prefetched, start=1):
+        # Cancel check at the mailbox boundary too — user clicked Cancel
+        # while we were busy on the previous mailbox; don't start a new
+        # one. Cheaper than the per-message check (one Redis read per
+        # mailbox, not per email) and catches the common case where the
+        # cancel arrives between mailboxes.
+        if await _is_job_cancelled(ctx, job_id):
+            logger.info(
+                "Cancel observed at mailbox boundary for job_id=%s; "
+                "skipping remaining %d mailboxes",
+                job_id,
+                len(prefetched) - index + 1,
+            )
+            break
+
         mailbox_label = mailbox.label
         progress = 45 + int(((index - 1) / max(len(prefetched), 1)) * 45)
         await _write_job_status(
@@ -764,6 +836,24 @@ async def _process_mailbox(
 
         async def _process_one(msg_index: int, raw_message: dict):
             async with sem:
+                # Cooperative cancel check at each message boundary.
+                # User clicks Cancel -> ``cancel_fetch_job`` writes
+                # status=cancelled to Redis. We read it here BEFORE
+                # spending an LLM call or DB write on the next message
+                # and bail if the row says we're cancelled. Combined
+                # with arq's ``allow_abort_jobs`` (which interrupts
+                # between awaits) cancel is honored within a few
+                # seconds rather than after the whole batch finishes.
+                if ctx and job_id and await _is_job_cancelled(ctx, job_id):
+                    logger.info(
+                        "Cancel observed mid-batch for job_id=%s; "
+                        "skipping remaining %d messages from %s",
+                        job_id,
+                        total_messages - msg_index,
+                        mailbox_label,
+                    )
+                    return
+
                 if ctx and job_id and total_messages > 0:
                     msg_progress = base_progress + int(((msg_index) / total_messages) * progress_range)
                     await _write_job_status(
