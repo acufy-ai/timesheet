@@ -1,5 +1,5 @@
 // Hooks barrel export
-export { useAuth, useAuthState, useAuthActions, useIsAuthenticated, useUserRole, useHasRole, useIsAdmin, useIsPlatformAdmin, useIsViewer, useIsManager, useIsEmployee, useCanReview, useIngestionEnabled, useIsReviewer } from './useAuth';
+export { useAuth, useIsAuthenticated, useUserRole, useHasRole, useIsAdmin, useIsPlatformAdmin, useIsViewer, useIsManager, useIsEmployee, useCanReview, useIngestionEnabled, useIsReviewer } from './useAuth';
 export {
   useTimeEntries,
   useTimeEntry,
