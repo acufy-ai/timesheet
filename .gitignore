@@ -47,8 +47,17 @@ CLAUDE.md
 # Build output
 frontend/tsconfig.tsbuildinfo
 frontend2/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+frontend2/tsconfig.node.tsbuildinfo
 frontend/dist/
 frontend2/dist/
+
+# Vite emits these alongside vite.config.ts during type-check. They are
+# regenerated on every `tsc -b` and have no business in version control.
+frontend/vite.config.d.ts
+frontend/vite.config.js
+frontend2/vite.config.d.ts
+frontend2/vite.config.js
 
 # Stray package-lock from accidental `npm install` at repo root
 /package-lock.json
@@ -56,6 +65,23 @@ frontend2/dist/
 # Dead-code holdover from the platform-admin redesign. Not imported
 # anywhere; left as a local reference until the cleanup PR.
 frontend/src/pages/PlatformAdminPage.legacy.tsx
+frontend2/src/pages/PlatformAdminPage.legacy.tsx
+
+# Local-only working artifacts that get re-created often and would
+# pollute the repo if tracked. APPLICATION_GUIDE.md and USER_GUIDE.md
+# were both deliberately untracked in commit 9c09b8d (2026-05-25 "stop
+# tracking churning docs"); keep them ignored. CODE_REVIEW.md is a
+# personal checklist with [ ] checkboxes the author ticks through.
+# If any of these needs to be shared with the team, do it via
+# local/docs/ (see local/README.md).
+APPLICATION_GUIDE.md
+USER_GUIDE.md
+CODE_REVIEW.md
+
+# Backend scratch / forensics / one-off scripts used during local
+# debugging or incident recovery. All convention-named `.local_*` so
+# they never accidentally get committed.
+backend/.local_*
 
 # Database dumps (contain secrets, never commit)
 db-dumps/
@@ -63,7 +89,11 @@ db-dumps/
 # Production-readiness audit artifacts (local-only)
 audit/
 
-# Lightsail ldev deploy: real env values and tarred images stay local
-deploy-ldev/.env.ldev
-deploy-ldev/.env.ldev.bak.*
-deploy-ldev/images/
+# Lightsail ldev deploy: kept entirely out of git per commit 9c09b8d
+# ("operator-only deploy-ldev, kept in private archive"). The build
+# script, compose file, env templates, and nginx config are all
+# operator tooling specific to one host; if you need to share them,
+# move into local/ first (see local/README.md) so the move is the
+# moment of "intent to share." Without this rule a stray `git add .`
+# would re-track everything 9c09b8d removed.
+deploy-ldev/
