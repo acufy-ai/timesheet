@@ -486,9 +486,16 @@ async def get_public_tenant_settings(
     return await get_public_settings(db, current_user.tenant_id)
 
 
+class TenantSettingsUpdate(PydanticBaseModel):
+    """Wraps the {key: value} body for /users/tenant-settings so OpenAPI
+    shows ``object`` instead of a raw ``dict``. Per-key validation against
+    the setting catalog still happens in ``set_setting``."""
+    model_config = {"extra": "allow"}
+
+
 @router.patch("/tenant-settings", response_model=dict)
 async def update_tenant_settings(
-    body: dict,
+    body: TenantSettingsUpdate,
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
@@ -510,7 +517,7 @@ async def update_tenant_settings(
         )
 
     result: dict = {}
-    for key, value in body.items():
+    for key, value in body.model_dump(exclude_unset=True).items():
         try:
             result[key] = await set_setting(
                 db,
@@ -543,6 +550,7 @@ async def test_smtp_connection(
     Does not send a message. Returns {"ok": true} or {"ok": false, "detail": "..."}.
     Requires the custom_outbound_email feature flag.
     """
+    import asyncio
     import smtplib
 
     from app.services.tenant_features import has_feature
@@ -564,12 +572,17 @@ async def test_smtp_connection(
     if cfg is None:
         return {"ok": False, "detail": "SMTP host is not configured. Enter a host in the Email / SMTP settings first."}
 
-    try:
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=10) as server:
+    def _probe() -> None:
+        # smtplib is synchronous; run it off the event loop so concurrent
+        # admin "Test connection" clicks don't serialize on a 5s wait.
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=5) as server:
             if cfg["use_tls"]:
                 server.starttls()
             if cfg["username"]:
                 server.login(cfg["username"], cfg["password"])
+
+    try:
+        await asyncio.to_thread(_probe)
         return {"ok": True}
     except smtplib.SMTPAuthenticationError as exc:
         return {"ok": False, "detail": f"Authentication failed: {exc.smtp_error.decode(errors='replace') if isinstance(exc.smtp_error, bytes) else str(exc)}"}
@@ -708,8 +721,17 @@ async def reset_user_password(
             )
         except auth0_mgmt.Auth0MgmtError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-    user.hashed_password = get_password_hash(payload.new_password)
+        # For Auth0 users, Auth0 is the source of truth. Write a random
+        # throwaway hash locally so a future Auth0-disabled fallback can
+        # never accept the user's *old* bcrypt as valid — and so this
+        # endpoint can't leave the two stores divergent if the local
+        # commit fails after Auth0 already succeeded. The other two
+        # password-change endpoints already follow this pattern; this
+        # one was the outlier.
+        import secrets
+        user.hashed_password = get_password_hash(secrets.token_urlsafe(48))
+    else:
+        user.hashed_password = get_password_hash(payload.new_password)
     user.has_changed_password = False
     db.add(user)
     await db.commit()

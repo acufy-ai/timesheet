@@ -147,10 +147,18 @@ async def build_tenant_smtp_config(db: AsyncSession, tenant_id: int) -> Optional
         return None
 
     raw_password = await get_setting(db, tenant_id, "smtp_password") or ""
-    try:
-        password = decrypt(raw_password) if raw_password else ""
-    except Exception:
-        password = raw_password
+    if raw_password:
+        try:
+            password = decrypt(raw_password)
+        except Exception:
+            logger.error(
+                "Failed to decrypt smtp_password for tenant %s; refusing to fall back to the stored ciphertext. "
+                "Check ENCRYPTION_KEY / ENCRYPTION_KEYS_LEGACY and re-save the SMTP password.",
+                tenant_id,
+            )
+            return None
+    else:
+        password = ""
 
     return {
         "host": host,
@@ -172,6 +180,7 @@ async def _send_via_custom_smtp(
     body_html: Optional[str],
 ) -> bool:
     """Send through the tenant's stored SMTP credentials."""
+    import asyncio
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -181,22 +190,27 @@ async def _send_via_custom_smtp(
         logger.warning("Tenant %s chose custom_smtp but smtp_host is blank", tenant_id)
         return False
 
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"{cfg['from_name']} <{cfg['from_address']}>" if cfg["from_name"] else cfg["from_address"]
-        msg["To"] = to_address
-        msg.attach(MIMEText(body_text, "plain"))
-        if body_html:
-            msg.attach(MIMEText(body_html, "html"))
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"{cfg['from_name']} <{cfg['from_address']}>" if cfg["from_name"] else cfg["from_address"]
+    msg["To"] = to_address
+    msg.attach(MIMEText(body_text, "plain"))
+    if body_html:
+        msg.attach(MIMEText(body_html, "html"))
+    payload = msg.as_string()
 
+    def _do_send() -> None:
+        # smtplib is synchronous and would otherwise block the event loop
+        # for the full connect/send timeout (15s) on slow MX servers.
         with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as server:
             if cfg["use_tls"]:
                 server.starttls()
             if cfg["username"]:
                 server.login(cfg["username"], cfg["password"])
-            server.sendmail(cfg["from_address"], to_address, msg.as_string())
+            server.sendmail(cfg["from_address"], to_address, payload)
 
+    try:
+        await asyncio.to_thread(_do_send)
         logger.info("Sent email via custom SMTP for tenant %s to %s", tenant_id, to_address)
         return True
     except Exception as exc:

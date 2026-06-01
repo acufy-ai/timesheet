@@ -87,7 +87,7 @@ All four containers are required. Don't skip any:
 
 ### 4. Log in
 
-Open `http://localhost:5181` in your browser.
+Open `http://localhost:5174` in your browser.
 
 | Email | Password | Role |
 |---|---|---|
@@ -175,10 +175,10 @@ the `DATABASE_URL` and `CONTROL_DATABASE_URL` lines. Recreate the api
 container after fixing: `docker compose -f docker-compose.yml -f docker-compose.dev-shared.yml up -d --force-recreate api`.
 
 **Frontend loads but every API call 401s:**
-Clear `sessionStorage` for `localhost:5181` and log in again. Tokens
+Clear `sessionStorage` for `localhost:5174` and log in again. Tokens
 from another environment (ldev, prod) don't transfer.
 
-**Port 5181 already in use:**
+**Port 5174 already in use:**
 Change `FRONTEND_PORT` in the root `.env` to something free
 (5182, 5300, whatever), then `docker compose ... up -d --force-recreate frontend`.
 

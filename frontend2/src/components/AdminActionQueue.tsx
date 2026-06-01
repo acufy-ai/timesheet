@@ -5,6 +5,7 @@ import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, Clock, File
 import { useDismissAttentionSignal, useDismissedAttentionSignals } from '@/hooks';
 import type { DashboardRecentActivityItem, NotificationItem, User } from '@/types';
 import { isSystemBotUser } from '@/utils/userFilters';
+import { buildRouteWithParams } from '@/utils/routes';
 
 type Urgency = 'urgent' | 'warn' | 'info';
 
@@ -45,19 +46,6 @@ const urgencyChip: Record<Urgency, string> = {
 
 const urgencyOrder: Record<Urgency, number> = { urgent: 0, warn: 1, info: 2 };
 
-const buildRouteWithParams = (
-  route: string,
-  params?: Record<string, string | number | boolean | null> | null,
-) => {
-  if (!params) return route;
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
-    if (value === null || value === undefined || value === '') return;
-    searchParams.set(key, String(value));
-  });
-  const query = searchParams.toString();
-  return query ? `${route}?${query}` : route;
-};
 
 const SNOOZE_OPTIONS: Array<{ label: string; ms: number | null }> = [
   { label: 'Dismiss', ms: null },

@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { '@': path.resolve(__dirname, './src') },
     },
+    build: {
+      // Explicit: no sourcemaps in production bundles. Sourcemaps would
+      // expose original source paths and unminified code to anyone who
+      // opens devtools on a customer-facing build.
+      sourcemap: false,
+    },
     server: {
       port: 5176,
       strictPort: true,

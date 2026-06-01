@@ -9,11 +9,9 @@
 # - The `db` service is still defined by the base compose file but no
 #   service depends on it here. Don't `docker compose up db`.
 # - Redis stays available locally (some flows need it).
-# - Frontend is published on the FRONTEND_PORT from `.env`, default 5181
-#   for the sandbox to avoid colliding with the developer's normal 5176
-#   Vite session.
+# - Frontend is published on the FRONTEND_PORT from `.env`, default 5174.
 #
-# Tip: set FRONTEND_PORT=5181 in your `.env` or `BACKEND_PORT=8000` if
+# Tip: set FRONTEND_PORT=<port> in your `.env` or `BACKEND_PORT=<port>` if
 # you want non-defaults; the base compose reads those.
 
 services:

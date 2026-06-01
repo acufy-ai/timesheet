@@ -756,5 +756,32 @@ async def seed_database() -> None:
     print("   - Sr. Manager (Alexander): alexander@example.com / password")
 
 
+async def _refuse_in_prod_unless_authorized() -> None:
+    """Refuse to run if the DB already has users, unless SEED_ALLOW_PROD=true.
+
+    This is a guardrail, not a security boundary — anyone with shell access
+    to the api container can flip the env var. The point is to stop a
+    careless ``python -m app.seed`` against a populated prod DB from
+    creating demo users (and demo data with weak passwords) in real
+    tenants.
+    """
+    import os
+
+    if os.environ.get("SEED_ALLOW_PROD", "").lower() == "true":
+        return
+
+    async with AsyncSessionLocal() as session:
+        existing = await session.execute(select(func.count(User.id)))
+        count = existing.scalar() or 0
+
+    if count > 0:
+        raise SystemExit(
+            f"Refusing to seed: target DB already has {count} users. "
+            "Set SEED_ALLOW_PROD=true to override (you almost certainly "
+            "don't want to)."
+        )
+
+
 if __name__ == "__main__":
+    asyncio.run(_refuse_in_prod_unless_authorized())
     asyncio.run(seed_database())

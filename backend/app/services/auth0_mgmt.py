@@ -12,6 +12,7 @@ in-process token caching is plenty.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 import string
@@ -195,7 +196,10 @@ async def create_user(
         # (a sub bound to this email).
         existing = await find_user_by_email(email)
         if existing and existing.get("user_id"):
-            logger.info("Auth0 user already existed for %s; reusing sub", email)
+            logger.info(
+                "Auth0 user already existed for fp=%s; reusing sub",
+                hashlib.blake2s(email.strip().lower().encode("utf-8"), digest_size=8).hexdigest(),
+            )
             return existing["user_id"]
 
     code: str | None = None

@@ -904,6 +904,17 @@ export const AdminPage: React.FC = () => {
     // pass only ``?role=...``) should leave the current tab alone.
     tabSyncRef.current = null;
   }, [searchParams, activeTab, isAdminUser]);
+
+  // Clear any in-progress bulk selection when the user navigates to a
+  // different tab. The floating bulk-actions bar operates on the Users
+  // tab only; if the user clicks "Approved Timesheets" we don't want
+  // a stale selection (and its bar) following them into a context where
+  // the actions don't apply.
+  React.useEffect(() => {
+    if (activeTab !== 'users') {
+      setSelectedUserIds((prev) => (prev.size === 0 ? prev : new Set()));
+    }
+  }, [activeTab]);
   const changeTab = React.useCallback((next: typeof activeTab) => {
     setActiveTab(next);
     tabSyncRef.current = next;
@@ -1921,39 +1932,15 @@ export const AdminPage: React.FC = () => {
     scrollToUserList();
   };
 
-  // When the user has a bulk selection going, dim the page and block
-  // clicks on anything that isn't the bulk bar or a row checkbox. This
-  // makes the bar feel modal: commit or cancel, no escape to the kebab
-  // or inline Edit (which would act on a single user and leave the
-  // selection in an ambiguous state).
+  // True when the floating bulk-action bar is on screen. Used to clear
+  // the selection on tab switches so the bar doesn't survive a context
+  // the user moved away from.
   const selectionActive = isAdminUser && selectedUserIds.size > 0;
 
   return (
     <>
-    {/* Subtle scrim that signals the page is in bulk-action mode while
-        a selection exists. The scrim is visual only; row checkboxes
-        stay above it (z-40 elsewhere) so the user can still adjust the
-        selection. Per-row actions (inline Edit, kebab) are inert below
-        the scrim, which is the behavior we want. */}
-    {selectionActive && (
-      <div
-        aria-hidden="true"
-        className="fixed inset-0 z-30 bg-black/30 backdrop-blur-[1px] pointer-events-none"
-      />
-    )}
-    <div
-      className="space-y-6"
-      // When a bulk selection is active, the whole page is inert except
-      // for the row checkboxes (which use [data-bulk-select] to opt back
-      // into pointer events via the CSS rule below) and the floating
-      // bar (rendered outside this div).
-      style={selectionActive ? { pointerEvents: 'none' } : undefined}
-    >
-      {selectionActive && (
-        // Local style: re-enable pointer events on row checkboxes so the
-        // user can still tune the selection while everything else is locked.
-        <style>{`[data-bulk-select] { pointer-events: auto !important; }`}</style>
-      )}
+    <div className="space-y-6">
+
       <div>
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -3110,11 +3097,9 @@ export const AdminPage: React.FC = () => {
         )}
 
         <div ref={userListSectionRef} className="surface-card overflow-hidden">
-          {/* BulkSelectBar moved OUT of this wrapper — see render block
-              below the closing of the inert page wrapper. Keeping it
-              inside would inherit pointer-events: none from the
-              selection-active wrapper above and the bar's own buttons
-              would silently fail clicks. */}
+          {/* The floating bulk-actions bar is rendered at the bottom of
+              this component, outside the user-list card, so it floats
+              above the page regardless of scroll position. */}
           <table className="w-full text-sm">
             <thead className="border-b border-border">
               <tr>
@@ -4307,9 +4292,10 @@ export const AdminPage: React.FC = () => {
     {showExportModal && (
       <ExportModal onClose={() => setShowExportModal(false)} />
     )}
-    {/* Bulk-actions bar lives OUTSIDE the inert page wrapper so its
-        buttons stay clickable while the rest of the page is locked.
-        Renders nothing when no users are selected. */}
+    {/* Floating bulk-actions bar. Renders nothing when no users are
+        selected. The rest of the page stays fully interactive so the
+        user can keep searching, sorting, and adding more rows to the
+        selection without dismissing the bar. */}
     {isAdminUser && (() => {
       const selectedUsers = (users ?? []).filter((u) => selectedUserIds.has(u.id));
       const allExternal = selectedUsers.length > 0 && selectedUsers.every((u) => u.is_external);

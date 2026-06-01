@@ -16,7 +16,6 @@ import { authAPI } from '@/api/endpoints';
 
 import { AcufyLogo, NeuralPrismIcon } from '@/components/layout/AcufyLogo';
 import { ThemePicker } from '@/components/layout/ThemePicker';
-import { FrontendSwitcher } from '@/components/layout/FrontendSwitcher';
 import { TopbarTimer } from '@/components/timer/TopbarTimer';
 import { buildNavigation } from '@/components/layout/navigation';
 import { cn } from '@/lib/utils';
@@ -369,9 +368,6 @@ export const TopNavBar: React.FC = () => {
             <div className="hidden sm:block mr-2">
               <TopbarTimer />
             </div>
-
-            {/* Frontend switcher (dev/preview) */}
-            <FrontendSwitcher />
 
             {/* Theme picker */}
             <ThemePicker />

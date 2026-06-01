@@ -176,6 +176,20 @@ class User(Base, TimestampMixin):
 
     @property
     def manager_id(self) -> Optional[int]:
+        # Raise if the relationship wasn't eager-loaded. The implicit
+        # lazy-load that SQLAlchemy would otherwise emit fails with
+        # DetachedInstanceError once the session closes — surfacing the
+        # missing selectinload here is far easier to debug than a
+        # request-time crash deep in response serialization.
+        from sqlalchemy import inspect as sa_inspect
+
+        state = sa_inspect(self)
+        if "manager_assignment" in state.unloaded:
+            raise RuntimeError(
+                "User.manager_assignment was not eager-loaded. Add "
+                "selectinload(User.manager_assignment) to the query, or "
+                "populate the field via a DTO before serialization."
+            )
         return self.manager_assignment.manager_id if self.manager_assignment else None
 
     @property

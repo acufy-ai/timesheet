@@ -84,11 +84,37 @@ _qb_service: QuickBooksService = QuickBooksServiceMock()
 
 
 def get_quickbooks_service() -> QuickBooksService:
-    """Get the current QuickBooks service instance."""
+    """Get the current QuickBooks service instance.
+
+    Emits a one-shot warning when the active service is the mock and
+    we're not in DEBUG mode — so a misconfigured prod deploy that
+    accidentally keeps the mock doesn't silently fabricate QB IDs for
+    real customer data.
+    """
+    global _qb_service_warned
+    if isinstance(_qb_service, QuickBooksServiceMock):
+        try:
+            from app.core.config import settings
+            if not settings.debug and not _qb_service_warned:
+                logger.warning(
+                    "QuickBooks integration is using the MOCK service in a non-DEBUG environment. "
+                    "Real customer data will receive fabricated QB IDs. "
+                    "Set DEBUG=true (dev) or wire a real QuickBooksService implementation (prod)."
+                )
+                _qb_service_warned = True
+        except Exception:
+            # Defensive: never let the warning short-circuit the integration.
+            pass
     return _qb_service
+
+
+# Tracks whether we've already emitted the "mock in prod" warning so
+# logs aren't flooded on every call.
+_qb_service_warned: bool = False
 
 
 def set_quickbooks_service(service: QuickBooksService):
     """Set the QuickBooks service instance (for testing or swapping implementations)."""
-    global _qb_service
+    global _qb_service, _qb_service_warned
     _qb_service = service
+    _qb_service_warned = False
