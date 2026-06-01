@@ -1438,12 +1438,20 @@ async def switch_role(
         target = await get_user_by_email(db, target.email)
 
     realm = "platform" if target.role == UserRole.PLATFORM_ADMIN else "tenant"
+    # Mint with active_role so refresh-on-hard-reload preserves the
+    # chosen role. Without this claim, a refresh round-trips through
+    # users.role from the DB, which is the user's *last explicit
+    # choice* — fine in the common case but flips silently if any
+    # other path (a background process, another tab, a DB session)
+    # mutated users.role between the original switch and the refresh.
+    # Matches the contract the role-handoff endpoint already follows.
     payload = _build_token_payload(
         user_id=target.id,
         tenant_id=target.tenant_id,
         can_review=target.can_review,
         realm=realm,
         tenant_slug=token_tenant_slug,
+        active_role=requested_role_value,
     )
     access = create_access_token(payload)
     refresh, jti, expires_at = create_refresh_token(payload)
