@@ -28,14 +28,17 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Cap on live tenant engines; oldest idle is evicted past this.
-_MAX_LIVE_ENGINES = 32
+# Cap on live tenant engines; oldest IDLE is evicted past this.
+# An engine with active sessions (inuse > 0) is never evicted — a long
+# ingestion job can't have its connection ripped out from under it just
+# because a new tenant hit the API.
+_MAX_LIVE_ENGINES = 64
 
 
 class _EngineRecord:
-    """AsyncEngine + bound sessionmaker."""
+    """AsyncEngine + bound sessionmaker + in-use refcount."""
 
-    __slots__ = ("engine", "session_factory")
+    __slots__ = ("engine", "session_factory", "inuse")
 
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
@@ -46,6 +49,9 @@ class _EngineRecord:
             autocommit=False,
             autoflush=False,
         )
+        # Bumped on tenant_session __aenter__, decremented on __aexit__.
+        # Only engines with inuse == 0 are eviction candidates.
+        self.inuse = 0
 
 
 # slug -> engine record. OrderedDict for insertion-order LRU eviction.
@@ -116,14 +122,33 @@ async def get_engine_for_slug(slug: str) -> AsyncEngine:
         )
         _registry[slug] = _EngineRecord(engine)
 
-        # Lazy dispose so in-flight queries on the evicted engine still complete.
+        # Eviction policy: scan oldest-first for the first IDLE entry
+        # (inuse == 0) and drop it. Engines with active sessions are
+        # skipped — a long ingestion job that's mid-fetch can't have its
+        # connection killed because a new tenant hit the API. If every
+        # engine is busy we just keep the cache over-cap and log a
+        # warning; that's the right tradeoff (memory cost vs. data loss).
         if len(_registry) > _MAX_LIVE_ENGINES:
-            oldest_slug, oldest_record = _registry.popitem(last=False)
-            logger.info(
-                "tenant_registry: evicting engine for slug=%s (cap=%s)",
-                oldest_slug, _MAX_LIVE_ENGINES,
-            )
-            asyncio.create_task(oldest_record.engine.dispose())
+            evicted_slug: str | None = None
+            for candidate_slug, candidate_record in list(_registry.items()):
+                if candidate_slug == slug:
+                    continue  # don't evict the one we just inserted
+                if candidate_record.inuse == 0:
+                    evicted_slug = candidate_slug
+                    break
+            if evicted_slug is not None:
+                evicted_record = _registry.pop(evicted_slug)
+                logger.info(
+                    "tenant_registry: evicting idle engine for slug=%s (cap=%s)",
+                    evicted_slug, _MAX_LIVE_ENGINES,
+                )
+                asyncio.create_task(evicted_record.engine.dispose())
+            else:
+                logger.warning(
+                    "tenant_registry: cache over cap (%d entries, cap=%d) but every engine "
+                    "has active sessions; deferring eviction",
+                    len(_registry), _MAX_LIVE_ENGINES,
+                )
 
         return engine
 
@@ -146,6 +171,10 @@ def tenant_session(slug: str):
 
     Workers use ``async with tenant_session(slug) as session:``. Routes
     should depend on ``get_tenant_db`` instead.
+
+    Bumps the engine's inuse refcount on enter, decrements on exit, so
+    the cache's LRU eviction can avoid disposing an engine that has
+    a live session attached.
     """
     if not slug:
         raise ValueError("tenant slug must be a non-empty string")
@@ -154,17 +183,36 @@ def tenant_session(slug: str):
         def __init__(self, slug: str):
             self._slug = slug
             self._session = None
+            self._acquired = False
 
         async def __aenter__(self):
             factory = await get_session_factory_for_slug(self._slug)
+            # Bump refcount while holding the lock so an evictor running
+            # between get_session_factory and __aenter__ can't pick our
+            # engine. We don't await between the lock release and the
+            # session enter, so the engine can't be evicted in that gap
+            # either (the engine reference is local).
+            async with _registry_lock:
+                record = _registry.get(self._slug)
+                if record is not None:
+                    record.inuse += 1
+                    self._acquired = True
             self._session = factory()
             await self._session.__aenter__()
             return self._session
 
         async def __aexit__(self, exc_type, exc, tb):
-            if self._session is not None:
-                await self._session.__aexit__(exc_type, exc, tb)
-                self._session = None
+            try:
+                if self._session is not None:
+                    await self._session.__aexit__(exc_type, exc, tb)
+                    self._session = None
+            finally:
+                if self._acquired:
+                    async with _registry_lock:
+                        record = _registry.get(self._slug)
+                        if record is not None and record.inuse > 0:
+                            record.inuse -= 1
+                    self._acquired = False
 
     return _SessionCM(slug)
 
