@@ -10,6 +10,7 @@ import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
 import {
   useAuth,
+  useIsAdmin,
   useIsManager,
   useIsViewer,
   useAssignChainCandidate,
@@ -43,6 +44,12 @@ import {
 } from '@/utils/inboxGrouping';
 import { formatFetchProgressText, isFetchJobStale } from '@/utils/fetchJobStaleness';
 import { readActiveFetchJobId, writeActiveFetchJobId } from '@/utils/activeFetchJob';
+import {
+  readInboxViewState,
+  writeInboxViewState,
+  clearInboxViewState,
+  scrollAndHighlightRow,
+} from '@/utils/inboxViewState';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
   if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
@@ -472,7 +479,14 @@ export const InboxPage: React.FC = () => {
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
   const cancelFetch = useCancelFetchEmails();
-  const { data: mailboxes = [] } = useMailboxes();
+  // GET /mailboxes is admin-only on the backend. Gating the hook on
+  // useIsAdmin() avoids the 403 noise managers see in the console.
+  // Trade-off: non-admins no longer see "Last fetched <ts>" in the
+  // header. A proper backend fix (allow managers with can_review to
+  // read mailbox metadata) would restore that — but the permission
+  // layer is currently scoped out, so this is the minimal fix.
+  const isAdmin = useIsAdmin();
+  const { data: mailboxes = [] } = useMailboxes(isAdmin);
   const lastFetchedAt = React.useMemo(() => {
     const stamps = mailboxes
       .map((m) => m.last_fetched_at)
@@ -648,6 +662,96 @@ export const InboxPage: React.FC = () => {
   React.useEffect(() => {
     setSelectedEmailIds(new Set());
   }, [timesheets]);
+
+  // === Inbox view restoration on return from the Review panel ===
+  //
+  // Goal: when a reviewer opens row N and clicks "Back to inbox", they
+  // come back to the same row scrolled into view (or, if the row was
+  // approved and is no longer in the filter result, the same scroll
+  // position they had). Filters / search / status tab are also
+  // restored. State lives in sessionStorage keyed by tenant id and is
+  // age-limited to 30 minutes (see utils/inboxViewState.ts).
+  //
+  // Two effects:
+  //   (1) Hydrate filter inputs once on first mount. Runs before the
+  //       list query fires so the request uses the saved filters.
+  //   (2) After the list resolves, scroll to the saved row (and apply
+  //       a brief highlight) OR fall back to the saved scrollY if the
+  //       row is gone. The fallback matches the "Option B" decision
+  //       captured during design — preserve the user's place in the
+  //       list over forcing them back to the top.
+  //
+  // We persist on every row-open (handled below in openReview), so the
+  // state is fresh by the time the user clicks "Back to inbox."
+  const inboxHydratedRef = React.useRef(false);
+  const inboxRestoredRef = React.useRef(false);
+  // Hydrate filter state from sessionStorage on first mount.
+  React.useEffect(() => {
+    if (inboxHydratedRef.current) return;
+    if (user?.tenant_id == null) return;
+    inboxHydratedRef.current = true;
+    const saved = readInboxViewState(user.tenant_id);
+    if (!saved) return;
+    setStatusFilter(saved.statusFilter);
+    setClientId(saved.clientId);
+    setSearch(saved.search);
+  }, [user?.tenant_id]);
+
+  // Restore scroll position / highlight the saved row once the list
+  // resolves. Guarded by a one-shot ref so a later list refetch (e.g.
+  // background polling during a fetch job) doesn't keep snapping the
+  // user's scroll around.
+  React.useEffect(() => {
+    if (inboxRestoredRef.current) return;
+    // Wait until BOTH effects above have run AND the page is no longer
+    // loading. Otherwise we'd try to scroll an empty list.
+    if (!inboxHydratedRef.current) return;
+    if (isPageLoading) return;
+    if (user?.tenant_id == null) return;
+    const saved = readInboxViewState(user.tenant_id);
+    if (!saved) {
+      inboxRestoredRef.current = true;
+      return;
+    }
+    inboxRestoredRef.current = true;
+    // Defer one frame so the rendered DOM matches the just-resolved
+    // list state. Without this, the `data-row-key` we want to query
+    // may not yet be in the document.
+    window.requestAnimationFrame(() => {
+      let scrolledToRow = false;
+      if (saved.activeRowKey) {
+        scrolledToRow = scrollAndHighlightRow(saved.activeRowKey);
+      }
+      if (!scrolledToRow) {
+        // Option B fallback: the saved row isn't visible (probably it
+        // was approved and the filter is `pending`, etc.). Land the
+        // user at the same scroll Y they had so neighboring rows are
+        // recognizable rather than snapping to the top.
+        window.scrollTo({ top: saved.scrollY, behavior: 'auto' });
+      }
+      // One-shot: drop the persisted state after consuming so a full
+      // page reload (or a fresh visit later in the day) doesn't get
+      // surprised by stale filter values.
+      clearInboxViewState(user.tenant_id);
+    });
+  }, [isPageLoading, user?.tenant_id, groups.length]);
+
+  // Persist the current inbox view when the reviewer clicks a row to
+  // open the Review panel. Stamps the scrollY at click time so the
+  // restore can land them exactly where they left off.
+  const persistInboxView = React.useCallback(
+    (rowKey: string) => {
+      if (user?.tenant_id == null) return;
+      writeInboxViewState(user.tenant_id, {
+        statusFilter,
+        clientId,
+        search,
+        scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+        activeRowKey: rowKey,
+      });
+    },
+    [user?.tenant_id, statusFilter, clientId, search],
+  );
 
   // Collect unique email_ids from currently visible groups
   const allVisibleEmailIds = React.useMemo(
@@ -1406,6 +1510,7 @@ export const InboxPage: React.FC = () => {
                     ? Boolean(group.skipped?.id)
                     : Number.isInteger(rowTarget.id) && rowTarget.id > 0;
                   const openReview = () => {
+                    persistInboxView(group.key);
                     if (isSkipped && group.skipped) {
                       navigate(`/ingestion/email/${group.skipped.id}`);
                     } else if (canOpenReview) {
@@ -1416,6 +1521,7 @@ export const InboxPage: React.FC = () => {
                   return (
                     <React.Fragment key={group.key}>
                       <tr
+                        data-row-key={group.key}
                         className={`group h-11 transition hover:bg-muted ${canOpenReview ? 'cursor-pointer' : 'cursor-default'}`}
                         onClick={() => openReview()}
                       >
@@ -1806,6 +1912,7 @@ export const InboxPage: React.FC = () => {
                   ? Boolean(group.skipped?.id)
                   : Number.isInteger(rowTarget.id) && rowTarget.id > 0;
                 const openReview = () => {
+                  persistInboxView(group.key);
                   if (isSkipped && group.skipped) {
                     navigate(`/ingestion/email/${group.skipped.id}`);
                   } else if (canOpenReview) {
@@ -1819,6 +1926,7 @@ export const InboxPage: React.FC = () => {
                 return (
                   <div
                     key={group.key}
+                    data-row-key={group.key}
                     data-testid="inbox-card"
                     className={[
                       'rounded-xl border border-border/70 bg-card/40 transition hover:bg-muted hover:border-border-strong/80',

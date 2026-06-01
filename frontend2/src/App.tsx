@@ -47,16 +47,13 @@ const HomeRedirect: React.FC = () => {
 };
 
 const ProtectedRoute: React.FC = () => {
-  const { user, isLoading, accessToken } = useAuth();
-
-  console.log('[ProtectedRoute]', { hasUser: !!user, isLoading, hasToken: !!accessToken, role: user?.role });
+  const { user, isLoading } = useAuth();
 
   if (isLoading) {
     return <BootLoader message="Restoring your workspace" />;
   }
 
   if (!user) {
-    console.warn('[ProtectedRoute] No user, redirecting to login. Token in localStorage:', !!localStorage.getItem('accessToken'));
     return <Navigate to="/login" replace />;
   }
 
