@@ -4,12 +4,13 @@ Checks all tenants with reminders enabled and sends
 emails to employees/contractors who are behind on submissions.
 """
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy import select
 from app.core.timezone_utils import now_for_tenant
 from app.db import AsyncSessionLocal
 from app.models.assignments import EmployeeManagerAssignment
+from app.models.sent_reminder import SentReminder
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntry, TimeEntryStatus
@@ -22,6 +23,49 @@ DAY_NAME_TO_WEEKDAY = {
     "mon": 0, "tue": 1, "wed": 2, "thu": 3,
     "fri": 4, "sat": 5, "sun": 6,
 }
+
+
+async def _already_sent(
+    session,
+    *,
+    tenant_id: int,
+    user_id: int,
+    period_start: date,
+    reminder_kind: str,
+) -> bool:
+    """True if we've already sent this exact (period, kind) reminder to
+    this recipient. Worker checks before sending so a mid-loop SMTP
+    failure on tick N doesn't cause re-notification on tick N+1."""
+    result = await session.execute(
+        select(SentReminder.id).where(
+            (SentReminder.tenant_id == tenant_id)
+            & (SentReminder.user_id == user_id)
+            & (SentReminder.period_start == period_start)
+            & (SentReminder.reminder_kind == reminder_kind)
+        ).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _record_sent(
+    session,
+    *,
+    tenant_id: int,
+    user_id: int,
+    period_start: date,
+    reminder_kind: str,
+) -> None:
+    """Persist that we just sent a reminder. Commit immediately so a
+    subsequent crash in the same tick doesn't leave the row uncommitted
+    and re-trigger the send on retry."""
+    session.add(SentReminder(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        period_start=period_start,
+        reminder_kind=reminder_kind,
+        sent_at=datetime.now(timezone.utc),
+    ))
+    await session.commit()
 
 
 async def _eligible_internal_reminder_recipients(
@@ -215,16 +259,36 @@ async def _check_internal_reminders(
 
         if not has_submitted:
             if in_early_window or in_final_window:
-                subject = "Reminder: Timesheet submission due soon"
-                body = (
-                    f"Dear {employee.full_name},\n\n"
-                    f"This is a reminder that your timesheet is due by "
-                    f"{deadline_day.capitalize()} at {deadline_time_str}.\n\n"
-                    f"Please submit your timesheet before the deadline.\n\n"
-                    f"Regards,\nAcufy Platform"
-                )
-                await send_email(to_address=employee.email, subject=subject, body_text=body)
-                logger.info("Sent reminder to %s (tenant %s)", employee.email, tenant_id)
+                kind = "internal_early" if in_early_window else "internal_final"
+                if await _already_sent(
+                    session,
+                    tenant_id=tenant_id,
+                    user_id=employee.id,
+                    period_start=week_start,
+                    reminder_kind=kind,
+                ):
+                    logger.debug(
+                        "Skipping duplicate %s reminder for user %s (tenant %s)",
+                        kind, employee.id, tenant_id,
+                    )
+                else:
+                    subject = "Reminder: Timesheet submission due soon"
+                    body = (
+                        f"Dear {employee.full_name},\n\n"
+                        f"This is a reminder that your timesheet is due by "
+                        f"{deadline_day.capitalize()} at {deadline_time_str}.\n\n"
+                        f"Please submit your timesheet before the deadline.\n\n"
+                        f"Regards,\nAcufy Platform"
+                    )
+                    await send_email(to_address=employee.email, subject=subject, body_text=body)
+                    await _record_sent(
+                        session,
+                        tenant_id=tenant_id,
+                        user_id=employee.id,
+                        period_start=week_start,
+                        reminder_kind=kind,
+                    )
+                    logger.info("Sent reminder to user %s (tenant %s, kind=%s)", employee.id, tenant_id, kind)
 
             if (
                 lock_enabled
@@ -305,6 +369,8 @@ async def _check_external_reminders(
 
     month_start = datetime(now.year, now.month, 1, tzinfo=tz)
 
+    period_start = month_start.date()
+    kind = "external_2day" if in_2day_window else "external_3h"
     for external in externals:
         if not external.email or external.email.endswith("@ingestion.internal"):
             continue
@@ -319,6 +385,18 @@ async def _check_external_reminders(
         has_submitted = email_result.scalar_one_or_none() is not None
 
         if not has_submitted:
+            if await _already_sent(
+                session,
+                tenant_id=tenant_id,
+                user_id=external.id,
+                period_start=period_start,
+                reminder_kind=kind,
+            ):
+                logger.debug(
+                    "Skipping duplicate %s reminder for contractor %s (tenant %s)",
+                    kind, external.id, tenant_id,
+                )
+                continue
             subject = "Reminder: Monthly timesheet submission due soon"
             body = (
                 f"Dear Contractor,\n\n"
@@ -328,7 +406,14 @@ async def _check_external_reminders(
                 f"Regards,\nAcufy Platform"
             )
             await send_email(to_address=external.email, subject=subject, body_text=body)
-            logger.info("Sent contractor reminder to %s (tenant %s)", external.email, tenant_id)
+            await _record_sent(
+                session,
+                tenant_id=tenant_id,
+                user_id=external.id,
+                period_start=period_start,
+                reminder_kind=kind,
+            )
+            logger.info("Sent contractor reminder to user %s (tenant %s, kind=%s)", external.id, tenant_id, kind)
 
 
 async def _load_tenant_settings(tenant_id: int, session) -> dict:
