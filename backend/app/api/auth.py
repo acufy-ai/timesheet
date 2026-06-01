@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.schemas import LoginRequest, TokenResponse, UserResponse, UserCreate, ChangePasswordRequest, PasswordChangeResponse, RefreshRequest, VerifyEmailRequest, VerifyEmailResponse, ResendVerificationRequest, MessageResponse, RoleSwitchRequest, RoleHandoffIssueResponse, RoleHandoffExchangeRequest, SetPasswordRequest, SetPasswordResponse, InvitationStatusResponse, ForgotPasswordRequest
@@ -904,10 +904,25 @@ async def refresh_token(
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
+    request: Request,
+    response: Response,
     current_user: User = Depends(get_current_user),
-) -> User:
-    """Return the current authenticated user."""
-    return current_user
+):
+    """Return the current authenticated user.
+
+    Conditional GET: clients that send ``If-None-Match`` matching our
+    ETag get a 304 with no body. The DB query has already run by the
+    time we know the ETag, so the win here is "no JSON over the wire,
+    no parse on the client" — not "no DB hit". For typical reload
+    flows that's still meaningful: ~50-100ms saved on the round trip
+    plus a few KB not transferred.
+    """
+    from app.core.etag import respond_with_etag
+
+    # Serialize through the response_model schema so the ETag is keyed
+    # on the same shape the client receives, not on a richer ORM dump.
+    payload = UserResponse.model_validate(current_user).model_dump(mode="json")
+    return respond_with_etag(request, response, payload)
 
 
 @router.post("/change-password", response_model=PasswordChangeResponse)

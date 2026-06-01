@@ -90,6 +90,7 @@ app.add_middleware(
     allow_headers=[
         "Authorization",
         "Content-Type",
+        "If-None-Match",  # for conditional GET round trip (ETag, /auth/me, /tenants/mine)
         "X-Service-Token",
         "X-Tenant-ID",
         # Platform-admin cross-tenant writes (e.g. creating an ADMIN in
@@ -98,6 +99,11 @@ app.add_middleware(
         # per-tenant database.
         "X-Tenant-Slug",
     ],
+    # Headers the browser allows JS to READ from cross-origin responses.
+    # Without ETag here, axios sees response.headers.etag as undefined
+    # and the conditional-GET cache never gets populated. X-Request-Id
+    # is exposed so the frontend can correlate logs with backend traces.
+    expose_headers=["ETag", "X-Request-Id"],
 )
 
 

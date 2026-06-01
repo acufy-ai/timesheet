@@ -1,6 +1,6 @@
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,9 +33,11 @@ router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 @router.get("/mine", response_model=TenantResponse)
 async def get_my_tenant(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
-) -> TenantResponse:
+):
     """Get the current user's own tenant. Any authenticated user can call this.
 
     Routes through ``get_tenant_db`` (NOT ``get_db``) so isolated tenants
@@ -44,7 +46,12 @@ async def get_my_tenant(
     handlers (e.g. ``POST /admin/tenant/logo`` writes the logo into the
     per-tenant DB, so a ``get_db``-routed read here would return
     ``has_logo: false`` for a tenant that does have a logo).
+
+    Conditional GET: returns 304 when the client's If-None-Match
+    matches the current ETag. See app.core.etag for the contract.
     """
+    from app.core.etag import respond_with_etag
+
     if not current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No tenant assigned")
     tenant = await get_tenant(db, current_user.tenant_id)
@@ -57,7 +64,7 @@ async def get_my_tenant(
     payload = TenantResponse.model_validate(tenant)
     payload.has_logo = bool(getattr(tenant, "logo_storage_key", None))
     payload.logo_mime_type = getattr(tenant, "logo_mime_type", None)
-    return payload
+    return respond_with_etag(request, response, payload.model_dump(mode="json"))
 
 
 @router.get("", response_model=list[TenantResponse])

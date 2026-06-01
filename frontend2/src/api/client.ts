@@ -8,6 +8,10 @@ export const apiClient: AxiosInstance = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Accept 304 as a success status — the ETag interceptor below
+  // substitutes the cached body for the (empty) 304 response. Without
+  // this, axios would reject 304 as an error before our handler runs.
+  validateStatus: (s) => (s >= 200 && s < 300) || s === 304,
 });
 
 // Add token to requests
@@ -107,5 +111,77 @@ apiClient.interceptors.response.use(
     }
   },
 );
+
+// ── ETag-based conditional GET cache ───────────────────────────────
+//
+// Backend returns an ETag on selected GETs (e.g. /auth/me,
+// /tenants/mine). We stash {etag, body} in sessionStorage keyed by
+// the request URL. Subsequent requests send If-None-Match; a 304
+// reply means the body is unchanged, so we substitute the cached body
+// and resolve the call as if the server had returned the data.
+//
+// Cache lives in sessionStorage so it dies with the tab — exactly the
+// right scope (next mount may want fresh data after auth changes).
+// Storage key is prefixed so it can't collide with other entries.
+
+const ETAG_CACHE_PREFIX = 'etag:';
+
+const _etagCacheKey = (url: string): string => `${ETAG_CACHE_PREFIX}${url}`;
+
+const _readEtagCache = (url: string): { etag: string; body: unknown } | null => {
+  try {
+    const raw = sessionStorage.getItem(_etagCacheKey(url));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const _writeEtagCache = (url: string, etag: string, body: unknown): void => {
+  try {
+    sessionStorage.setItem(_etagCacheKey(url), JSON.stringify({ etag, body }));
+  } catch {
+    // Storage quota exceeded — swallow. Worst case is we just skip the
+    // cache for this entry, not a correctness issue.
+  }
+};
+
+apiClient.interceptors.request.use((config) => {
+  // Only apply to GETs; only when we have a cached etag for this URL.
+  if ((config.method?.toLowerCase() ?? 'get') !== 'get') return config;
+  const url = config.url ?? '';
+  if (!url) return config;
+  const cached = _readEtagCache(url);
+  if (cached?.etag) {
+    config.headers = config.headers ?? {};
+    (config.headers as Record<string, string>)['If-None-Match'] = cached.etag;
+  }
+  return config;
+});
+
+apiClient.interceptors.response.use((response) => {
+  const url = response.config.url ?? '';
+  const status = response.status;
+
+  // Server says nothing changed — return the cached body in place of
+  // the empty 304 response. axios callers see a normal 200-shaped
+  // result and never know the wire was a 304.
+  if (status === 304 && url) {
+    const cached = _readEtagCache(url);
+    if (cached) {
+      response.data = cached.body;
+      response.status = 200;
+    }
+    return response;
+  }
+
+  // Fresh response with an ETag — stash it so the next request can
+  // ride the cache.
+  const etag = response.headers?.etag || response.headers?.ETag;
+  if (etag && url && status >= 200 && status < 300) {
+    _writeEtagCache(url, etag, response.data);
+  }
+  return response;
+});
 
 export default apiClient;
