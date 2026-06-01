@@ -105,6 +105,28 @@ def encrypt(plaintext: str) -> str:
     return f"{_VERSION_PREFIX_V1}{body}"
 
 
+def self_test() -> None:
+    """Round-trip a canary value to verify the active encryption key is usable.
+
+    Raises ``RuntimeError`` on failure. Intended to run at process startup so
+    a misconfigured ``ENCRYPTION_KEY`` fails the boot rather than silently
+    breaking SMTP / OAuth credential decryption at request time.
+    """
+    canary = "acufy-encryption-canary"
+    try:
+        token = encrypt(canary)
+        roundtrip = decrypt(token)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Encryption self-test failed: {exc}. "
+            "Check ENCRYPTION_KEY is a 32-byte hex string."
+        ) from exc
+    if roundtrip != canary:
+        raise RuntimeError(
+            "Encryption self-test failed: round-trip value did not match canary."
+        )
+
+
 def decrypt(encrypted: str) -> str:
     """Decrypt a value produced by :func:`encrypt`.
 

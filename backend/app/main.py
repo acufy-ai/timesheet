@@ -45,6 +45,7 @@ from app.models.ingestion_timesheet import (  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401 — registers Tenant with Base.metadata
 from app.models.tenant_settings import TenantSettings  # noqa: F401
 from app.models.platform_settings import PlatformSettings  # noqa: F401
+from app.models.sent_reminder import SentReminder  # noqa: F401 — registers table on Base.metadata
 from app.models.user import UserRole
 
 logger = logging.getLogger(__name__)
@@ -54,13 +55,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup. Run the encryption self-test FIRST so a misconfigured
+    # ENCRYPTION_KEY fails the boot loudly here rather than silently
+    # breaking SMTP / OAuth credential decryption at request time.
+    from app.services.encryption import self_test as encryption_self_test
+    encryption_self_test()
+    logger.info("Encryption self-test passed")
     await init_db()
-    print("[OK] Database initialized")
+    logger.info("Database initialized")
     yield
     # Shutdown
     await close_db()
-    print("[OK] Database connection closed")
+    logger.info("Database connection closed")
 
 
 # Create FastAPI app
