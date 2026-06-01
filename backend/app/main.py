@@ -101,6 +101,50 @@ app.add_middleware(
 )
 
 
+_access_logger = logging.getLogger("app.access")
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    """Structured per-request log + X-Request-Id propagation.
+
+    Generates a UUID for every request, stamps it on the response header
+    so clients (and downstream services) can correlate, and emits a
+    single INFO line at completion with method, path, status, duration,
+    user id and tenant id when available. The middleware runs BEFORE
+    security headers so the request id is available even on responses
+    that error out early.
+    """
+    import time
+    import uuid
+
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request.state.request_id = request_id
+    start = time.perf_counter()
+
+    response: Response = await call_next(request)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    response.headers["X-Request-Id"] = request_id
+
+    # current_user is set on request.state by the auth dependencies when
+    # they fire. Health checks and unauthenticated routes leave it None.
+    current_user = getattr(request.state, "current_user", None)
+    user_id = getattr(current_user, "id", None) if current_user else None
+    tenant_id = getattr(current_user, "tenant_id", None) if current_user else None
+
+    _access_logger.info(
+        "%s %s -> %d (%dms) user_id=%s tenant_id=%s rid=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        user_id,
+        tenant_id,
+        request_id,
+    )
+    return response
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response: Response = await call_next(request)
