@@ -77,10 +77,14 @@ async def _seed_ingestion_timesheet(db):
     email = IngestedEmail(
         tenant_id=tenant.id,
         mailbox_id=mailbox.id,
+        # message_id is NOT NULL on the model. Any unique string works
+        # for tests that don't care about idempotency.
+        message_id="<test@example.com>",
         subject="s",
         sender_email="s@example.com",
         received_at=datetime.now(timezone.utc),
-        raw_payload={},
+        # raw_payload was renamed to raw_headers; both are nullable JSON
+        # on the current model, so we can simply omit them.
     )
     db.add(email)
     await db.flush()
@@ -100,7 +104,15 @@ async def test_edit_history_requires_tenant_id(db):
     client = Client(tenant_id=tenant.id, name="C")
     db.add(client)
     await db.flush()
-    project = Project(tenant_id=tenant.id, client_id=client.id, name="P")
+    project = Project(
+        tenant_id=tenant.id,
+        client_id=client.id,
+        name="P",
+        # billable_rate is NOT NULL on the model; default to 0 since
+        # this test doesn't care about billing math, only the
+        # tenant_id NOT NULL contract on the child tables below.
+        billable_rate=Decimal("0.00"),
+    )
     db.add(project)
     await db.flush()
     entry = TimeEntry(
