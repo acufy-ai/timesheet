@@ -630,7 +630,18 @@ export const ReviewPanelPage: React.FC = () => {
   const [editingLineItem, setEditingLineItem] = React.useState<IngestionLineItem | null>(null);
   const [lineItemForm, setLineItemForm] = React.useState<LineItemFormState>(emptyLineItem());
   const [selectedAttachmentId, setSelectedAttachmentId] = React.useState<number | null>(null);
-  const [attachmentUrl, setAttachmentUrl] = React.useState<string | null>(null);
+  // The blob URL is tagged with the attachment id it was fetched FOR.
+  // Reason: when the reviewer flips between sibling-week pills, the
+  // route changes -> selectedAttachmentId changes synchronously, but
+  // the new blob fetch is async and resolves a tick later. In between,
+  // the JSX would otherwise pair the NEW selectedAttachment (e.g. a
+  // PDF) with the OLD blob URL (e.g. the previous xlsx week), mount
+  // <iframe src=oldXlsxBlob>, and Chrome's PDF.js sniffs the bytes,
+  // falls back to "Save As", and pops a download dialog labeled with
+  // the new MIME ("Save as Microsoft Excel Worksheet"). Tying the URL
+  // to its source id and gating the iframe on (forId === current)
+  // eliminates that window.
+  const [attachmentUrl, setAttachmentUrl] = React.useState<{ url: string; forId: number } | null>(null);
   const [attachmentLoadError, setAttachmentLoadError] = React.useState<string | null>(null);
   const [showFullSheet, setShowFullSheet] = React.useState(false);
   const [fullSheetHtml, setFullSheetHtml] = React.useState<string | null>(null);
@@ -759,15 +770,30 @@ export const ReviewPanelPage: React.FC = () => {
   // use-before-declaration check on selectedAttachment.)
 
   React.useEffect(() => {
+    // Capture the id this effect run is fetching for. Compared against
+    // selectedAttachmentId again on resolution so a stale fetch from a
+    // previous pill doesn't overwrite the current attachment's URL.
+    const fetchForId = selectedAttachmentId;
     let objectUrl: string | null = null;
-    if (!selectedAttachmentId) {
-      setAttachmentUrl(null);
+    // Drop the previous blob synchronously so the JSX never has the
+    // (new id, old url) shape that triggered the xlsx-shown-as-pdf
+    // download dialog. The iframe gate below also enforces this, but
+    // dropping it here cuts one rendering frame's worth of risk.
+    setAttachmentUrl(null);
+    if (!fetchForId) {
       setAttachmentLoadError(null);
       return undefined;
     }
-    ingestionAPI.getAttachmentFile(selectedAttachmentId)
-      .then((url) => { objectUrl = url; setAttachmentUrl(url); setAttachmentLoadError(null); })
-      .catch(() => { setAttachmentUrl(null); setAttachmentLoadError('Unable to load attachment preview.'); });
+    ingestionAPI.getAttachmentFile(fetchForId)
+      .then((url) => {
+        objectUrl = url;
+        setAttachmentUrl({ url, forId: fetchForId });
+        setAttachmentLoadError(null);
+      })
+      .catch(() => {
+        setAttachmentUrl(null);
+        setAttachmentLoadError('Unable to load attachment preview.');
+      });
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [selectedAttachmentId]); // intentionally excludes emailContext — only re-fetch when the actual ID changes
 
@@ -802,7 +828,7 @@ export const ReviewPanelPage: React.FC = () => {
     if (scrollTargetAttachmentId === null) return;
     if (selectedAttachmentId !== scrollTargetAttachmentId) return;
     const ready =
-      Boolean(attachmentUrl) ||
+      Boolean(attachmentUrl && attachmentUrl.forId === selectedAttachmentId) ||
       Boolean(selectedAttachment?.rendered_html) ||
       Boolean(selectedAttachment?.raw_extracted_text);
     if (!ready) return;
@@ -827,6 +853,15 @@ export const ReviewPanelPage: React.FC = () => {
     selectedAttachment?.raw_extracted_text,
   ]);
   const selectedAttachmentType = attachmentKind(selectedAttachment);
+  // The actual URL string, ONLY when it matches the currently-selected
+  // attachment. During a pill switch, ``attachmentUrl`` may briefly
+  // still hold the previous pill's blob; gating reads on forId ===
+  // selectedAttachmentId keeps the JSX from mounting an <iframe src>
+  // with a blob whose MIME doesn't match the new selectedAttachment.
+  const liveAttachmentUrl =
+    attachmentUrl && attachmentUrl.forId === selectedAttachmentId
+      ? attachmentUrl.url
+      : null;
   const structured = timesheet?.extracted_data;
   const fromStructured = structured && typeof structured === 'object' && typeof (structured as Record<string, unknown>).employee_name === 'string'
     ? String((structured as Record<string, unknown>).employee_name)
@@ -1484,10 +1519,10 @@ export const ReviewPanelPage: React.FC = () => {
               <div>
                 {attachmentLoadError
                   ? <div className="px-6 py-10 text-sm text-[var(--danger)]">{attachmentLoadError}</div>
-                  : selectedAttachmentType === 'pdf' && attachmentUrl
-                    ? <iframe src={attachmentUrl} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} />
-                    : selectedAttachmentType === 'image' && attachmentUrl
-                      ? <div className="flex items-center justify-center p-4"><img src={attachmentUrl} alt={selectedAttachment.filename} className="max-w-full rounded-2xl object-contain" /></div>
+                  : selectedAttachmentType === 'pdf' && liveAttachmentUrl
+                    ? <iframe src={liveAttachmentUrl} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} />
+                    : selectedAttachmentType === 'image' && liveAttachmentUrl
+                      ? <div className="flex items-center justify-center p-4"><img src={liveAttachmentUrl} alt={selectedAttachment.filename} className="max-w-full rounded-2xl object-contain" /></div>
                       : selectedAttachment.rendered_html
                         ? <iframe srcDoc={showFullSheet && fullSheetHtml ? fullSheetHtml : selectedAttachment.rendered_html} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} sandbox="" />
                         : selectedAttachment.spreadsheet_preview
