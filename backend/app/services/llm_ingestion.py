@@ -390,8 +390,14 @@ Extract every distinct timesheet period you can identify. Use ISO 8601 dates \
 For weekly or monthly calendar-style timesheets, treat headers like \
 Mo/Tu/We/Th/Fr/Sa/Su as Monday through Sunday. If only five working days are \
 represented, map them to Monday through Friday unless the document explicitly \
-shows weekend work. Do not create weekend line items when weekend cells are \
-blank or zero, and do not shift Friday hours onto Saturday or Sunday.
+shows weekend work. Create a line item for EVERY day column that contains a \
+non-empty, non-zero hours value — including Saturdays and Sundays. The day of \
+the week never determines whether a row is included; only the cell's value \
+does. Skip a day only when its cell is blank or contains 0. Do not shift \
+Friday hours onto Saturday or Sunday, and conversely do not drop Saturday or \
+Sunday hours just because they fall on a weekend. The sum of line_items hours \
+must equal total_hours; if it does not, you have either dropped a row that \
+should be included or misread a cell.
 If the document is a summary or pivot sheet that lists categories and totals \
 without daily dates, do not invent a repeated work_date for each category row; \
 infer the month/period from tokens like 2/26 and return an empty line_items array.
