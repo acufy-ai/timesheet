@@ -330,6 +330,49 @@ async def process_email(
         result.email_id = email_record.id
         return result
 
+    # Body-only timesheet extraction (added 2026-06-04). When the
+    # classifier said this IS a submission AND there are no candidate
+    # attachments AND the body has substance, run LLM extraction on
+    # the body text directly. Produces an IngestionTimesheet row with
+    # line items the reviewer can confirm. Sibling to the attachment
+    # loop below; emails with attachments take the attachment path
+    # unchanged, so this change cannot regress that flow.
+    #
+    # We deliberately don't attempt employee/client auto-resolution
+    # here -- the attachment path's resolution helpers were tuned
+    # against PDF/spreadsheet shape and the chain_senders signal is
+    # rarely useful for body-only forwards. The reviewer assigns those
+    # fields manually, same as a Promoted-from-skip row, but unlike
+    # Promote they get the line items pre-populated from the LLM.
+    classifier_says_submission = (
+        bool(classification.get("is_timesheet_email"))
+        or intent in SUBMISSION_INTENTS
+    )
+    body_text_for_extract = (parsed.body_text or "").strip()
+    if (
+        not has_candidates
+        and classifier_says_submission
+        and len(body_text_for_extract) >= 100
+    ):
+        body_rows_created = await _process_body_only_timesheet(
+            body_text=body_text_for_extract,
+            email_record=email_record,
+            tenant_id=tenant_id,
+            session=session,
+            now=now,
+        )
+        result.timesheets_created += body_rows_created
+        if body_rows_created > 0:
+            # Successful body extraction. Skip the attachment loop (there
+            # weren't any candidates anyway) and the zero-timesheet
+            # skip gate below.
+            await session.commit()
+            result.email_id = email_record.id
+            return result
+        # Empty extraction: fall through to the existing skip-on-zero
+        # behavior so the row still appears in the Skipped tab and the
+        # reviewer can Promote it by hand.
+
     candidate_attachment_count = 0
     failed_attachment_count = 0
     for attachment, attachment_record in attachment_records:
@@ -781,6 +824,130 @@ def _dedupe_extracted_timesheets(extracted_list: list[dict]) -> list[dict]:
 
     return deduped
 
+
+
+async def _process_body_only_timesheet(
+    body_text: str,
+    email_record: IngestedEmail,
+    tenant_id: int,
+    session: AsyncSession,
+    now: datetime,
+) -> int:
+    """Run LLM extraction on an email body when no candidate attachment
+    is present. Returns the count of IngestionTimesheet rows created.
+
+    Sibling to _process_timesheet_attachment but intentionally minimal:
+
+    - No employee/client auto-resolution. The reviewer assigns those
+      manually. Auto-resolution helpers were tuned for attachment
+      shapes and the signals they rely on (chain_senders, document
+      employee_email) are mostly absent or wrong for body-only
+      forwards.
+    - No anomaly detection. The reviewer eyes the body and the line
+      items together.
+    - No duplicate-period guard. We rely on already_ingested
+      (message_id dedup) at the email level; same period within the
+      same email is impossible.
+
+    Everything else mirrors the attachment path so the reviewer UI
+    treats body-only rows identically: same status=pending, same
+    line_items table, same extracted_data shape.
+    """
+    ref_date = (
+        email_record.received_at.date().isoformat()
+        if email_record and email_record.received_at
+        else None
+    )
+    try:
+        extracted_list = await extract_timesheet_data(
+            body_text,
+            filename_hint="",  # No filename for body-only
+            likely_timesheet=True,  # Classifier already said yes
+            reference_date=ref_date,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Body-only LLM extraction crashed for email %s: %s",
+            email_record.id, exc,
+        )
+        return 0
+
+    extracted_list = _dedupe_extracted_timesheets(extracted_list)
+    if not extracted_list:
+        return 0
+
+    created_count = 0
+    for extracted_data in extracted_list:
+        if not isinstance(extracted_data, dict):
+            continue
+
+        line_items_data = _normalize_line_items(
+            line_items=extracted_data.get("line_items", []),
+            period_start=extracted_data.get("period_start"),
+            period_end=extracted_data.get("period_end"),
+        )
+
+        # If the LLM returned zero usable line items, don't create a
+        # row -- the reviewer would just delete it. Skipping here keeps
+        # the email in the Skipped tab so the Promote button is still
+        # the manual escape hatch.
+        if not line_items_data:
+            continue
+
+        timesheet = IngestionTimesheet(
+            tenant_id=tenant_id,
+            email_id=email_record.id,
+            attachment_id=None,  # the load-bearing difference vs the attachment path
+            employee_id=None,    # reviewer assigns manually
+            client_id=None,      # reviewer assigns manually
+            period_start=_parse_iso_date(extracted_data.get("period_start")),
+            period_end=_parse_iso_date(extracted_data.get("period_end")),
+            total_hours=_resolve_total_hours(extracted_data, line_items_data),
+            status=IngestionTimesheetStatus.pending,
+            extracted_data={
+                **extracted_data,
+                # Breadcrumb so the reviewer UI (and any future
+                # debugging) can tell this came from body extraction.
+                "source": "email_body",
+            },
+            extracted_supervisor_name=(
+                (extracted_data.get("supervisor_name") or "").strip() or None
+            ),
+            llm_anomalies=None,
+            llm_match_suggestions=None,
+            submitted_at=email_record.received_at,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(timesheet)
+        await session.flush()
+
+        for item in line_items_data:
+            work_date = _parse_iso_date(item.get("work_date"))
+            if work_date is None:
+                continue
+            try:
+                hours = Decimal(str(item.get("hours") or "0"))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            if hours <= 0:
+                continue
+            session.add(
+                IngestionTimesheetLineItem(
+                    tenant_id=tenant_id,
+                    ingestion_timesheet_id=timesheet.id,
+                    work_date=work_date,
+                    hours=hours,
+                    description=item.get("description") or None,
+                    project_code=item.get("project_code") or None,
+                    project_id=None,
+                )
+            )
+
+        await session.flush()
+        created_count += 1
+
+    return created_count
 
 
 async def _process_timesheet_attachment(

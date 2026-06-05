@@ -217,7 +217,15 @@ const hasTimesheetKeywords = (value: string | null | undefined): boolean => {
   return keywords.some((keyword) => text.includes(keyword));
 };
 
-const isActionableSkippedEmail = (email: SkippedEmail): boolean => {
+const SUBMISSION_INTENTS = [
+  'new_submission',
+  'resubmission',
+  'correction',
+  'submission',
+  'timesheet_submission',
+];
+
+export const isActionableSkippedEmail = (email: SkippedEmail): boolean => {
   // Classifier-skipped emails are always actionable when the backend
   // surfaces them — these are exactly the rows the reviewer needs to
   // audit. The "isNoiseSkipReason" filter was hiding them by design;
@@ -227,15 +235,23 @@ const isActionableSkippedEmail = (email: SkippedEmail): boolean => {
     email.skip_reason?.startsWith('low_confidence_no_attachments:');
   if (isClassifierSkip) return true;
 
+  // Classifier-yes override (added 2026-06-04 for body-only timesheets).
+  // When the LLM said this IS a submission, surface it as actionable
+  // regardless of attachment state. Without this, body-only
+  // submissions hit the no_candidate_timesheet_attachment gate
+  // downstream and get filtered out as "noise". Mirrors the same
+  // override on the backend's _is_actionable_skipped_email so both
+  // sides agree on which rows the reviewer sees.
+  if (email.classification_intent && SUBMISSION_INTENTS.includes(email.classification_intent)) {
+    return true;
+  }
+
   if (isNoiseSkipReason(email.skip_reason)) return false;
 
   const hasTimesheetContext =
     hasTimesheetKeywords(email.subject) ||
-    email.classification_intent === 'new_submission' ||
-    email.classification_intent === 'resubmission' ||
-    email.classification_intent === 'correction' ||
-    email.classification_intent === 'submission' ||
-    email.classification_intent === 'timesheet_submission' ||
+    (email.classification_intent !== null && email.classification_intent !== undefined &&
+      SUBMISSION_INTENTS.includes(email.classification_intent)) ||
     email.reprocessable_attachments.some((attachment) => hasTimesheetKeywords(attachment.filename));
 
   if (!hasTimesheetContext) return false;

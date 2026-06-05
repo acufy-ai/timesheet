@@ -1,6 +1,6 @@
 import React from 'react';
 import { format } from 'date-fns';
-import { ArrowDown, ArrowLeft, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, X, XCircle } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, X, XCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -30,6 +30,7 @@ import {
   useUpdateIngestionLineItem,
   useUpdateIngestionTimesheetData,
   useAssignableUsers,
+  usePromoteSkippedEmail,
 } from '@/hooks';
 import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
 
@@ -505,6 +506,7 @@ export const ReviewPanelPage: React.FC = () => {
   const holdTimesheet = useHoldIngestionTimesheet();
   const draftComment = useDraftIngestionComment();
   const reprocessEmail = useReprocessIngestionEmail();
+  const promoteSkipped = usePromoteSkippedEmail();
   const queryClient = useQueryClient();
   const [reprocessJobId, setReprocessJobId] = React.useState<string | null>(null);
   const { data: reprocessStatus } = useFetchJobStatus(reprocessJobId, Boolean(reprocessJobId));
@@ -1278,6 +1280,31 @@ export const ReviewPanelPage: React.FC = () => {
     setReprocessJobId(response.job_id);
   };
 
+  // Promote a classifier-skipped email into the regular review queue.
+  // Reprocess is the wrong action for this case: it re-runs the same
+  // classifier path that produced the skip in the first place, so the
+  // email goes right back to skipped. Promote bypasses the classifier
+  // entirely and creates a blank pending IngestionTimesheet the reviewer
+  // can fill in by hand.
+  const handlePromoteSkipped = async () => {
+    if (!emailContext?.id) return;
+    try {
+      const result = await promoteSkipped.mutateAsync(emailContext.id);
+      // Refresh both list and detail caches so the source view (inbox)
+      // and the freshly created timesheet are consistent.
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'emails'] });
+      // Land on the new (or pre-existing) timesheet so the reviewer can
+      // immediately fill in employee/client/hours.
+      navigate(`/ingestion/timesheet/${result.timesheet_id}`);
+    } catch {
+      // Hook surfaces failures via React Query state; the toolbar
+      // disables the button while pending so there's no extra UI work
+      // to do here.
+    }
+  };
+
   return (
     <div className="-m-6 flex h-[calc(100vh-64px)] flex-col overflow-hidden">
       {/* ── Top bar ─────────────────────────────────────────────────── */}
@@ -1344,6 +1371,23 @@ export const ReviewPanelPage: React.FC = () => {
           </span>
         )}
         <div className="flex shrink-0 items-center gap-2">
+          {/* Promote: only on skipped emails (email-only view + skip_reason
+             stamped by the pipeline). The Reprocess button next to this
+             one re-runs the same classifier and would just re-skip; this
+             one bypasses the classifier entirely and creates a blank
+             pending IngestionTimesheet for the reviewer to fill in. */}
+          {isEmailMode && storedEmail?.skip_reason && (
+            <button
+              type="button"
+              onClick={() => void handlePromoteSkipped()}
+              disabled={promoteSkipped.isPending}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm text-primary transition hover:bg-primary/20 disabled:opacity-50"
+              title="Send this email to the review queue and let a human fill in the timesheet details"
+            >
+              <ArrowRight className="h-4 w-4" />
+              <span>{promoteSkipped.isPending ? 'Promoting...' : 'Promote to review'}</span>
+            </button>
+          )}
           {/* Reprocess: icon-only dropdown with two scopes. */}
           <div ref={reprocessMenuRef} className="relative">
             <button

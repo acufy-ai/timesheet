@@ -185,6 +185,19 @@ def _is_actionable_skipped_email(
         "timesheet_submission",
     }
 
+    # Classifier-yes override (added 2026-06-04 for body-only timesheets).
+    # When the LLM explicitly classifies this email as a submission, the
+    # reviewer always needs to see it -- even if there are zero candidate
+    # attachments. Without this, body-only timesheets (Kalpana's January
+    # 2026 forwarded month, etc.) hit the no_candidate_timesheet_attachment
+    # gate downstream and get hidden as 'noise' by the per-skip-reason
+    # rules below. The override is intentionally tight: both
+    # is_timesheet_email and a submission-flavored intent qualify; subject-
+    # keyword matches and filename hints do NOT, since those produced too
+    # many false positives in the old behavior.
+    if is_timesheet_email or intent in submission_intents:
+        return True
+
     has_timesheet_filename_hint = any(
         _has_timesheet_keywords(attachment.filename)
         for attachment in attachments

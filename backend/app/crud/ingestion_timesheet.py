@@ -1,15 +1,17 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.client import Client
 from app.models.ingested_email import IngestedEmail
 from app.models.ingestion_timesheet import (
     IngestionAuditActorType,
     IngestionAuditLog,
     IngestionTimesheet,
 )
+from app.models.user import User
 
 
 async def get_ingestion_timesheet(
@@ -82,7 +84,6 @@ async def list_ingestion_timesheets(
         # reports OR I'm the reviewer. We OR them inside a single
         # ``where`` so that managers see both flavours in one query
         # even when there's overlap.
-        from sqlalchemy import or_, and_  # local import keeps top clean
         clauses = []
         if employee_ids is not None:
             # Empty list → match nothing (avoids accidentally matching
@@ -99,11 +100,29 @@ async def list_ingestion_timesheets(
     if email_id:
         query = query.where(IngestionTimesheet.email_id == email_id)
     if search:
+        # Outer-join User (resolved employee) and Client so we can match
+        # the search against their names too. Outer because employee_id
+        # and client_id are nullable (e.g. promoted-from-skip rows have
+        # neither resolved yet), and search must still surface those
+        # rows when the term matches subject/sender/llm_summary.
+        #
+        # Before this change the server-side search only checked
+        # llm_summary + subject + sender_email, so any employee whose
+        # name didn't appear in the email itself (typical for forwarded
+        # timesheets) was unfindable. Adding User.full_name +
+        # User.email + Client.name closes that gap.
+        query = query.outerjoin(User, IngestionTimesheet.employee_id == User.id)
+        query = query.outerjoin(Client, IngestionTimesheet.client_id == Client.id)
         like_value = f"%{search.strip()}%"
         query = query.where(
-            (IngestionTimesheet.llm_summary.ilike(like_value)) |
-            (IngestedEmail.subject.ilike(like_value)) |
-            (IngestedEmail.sender_email.ilike(like_value))
+            or_(
+                IngestionTimesheet.llm_summary.ilike(like_value),
+                IngestedEmail.subject.ilike(like_value),
+                IngestedEmail.sender_email.ilike(like_value),
+                User.full_name.ilike(like_value),
+                User.email.ilike(like_value),
+                Client.name.ilike(like_value),
+            )
         )
 
     result = await session.execute(query)

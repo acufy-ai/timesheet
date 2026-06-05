@@ -9,6 +9,7 @@ import {
   domainOf,
   formatRelativeReceived,
   getInitials,
+  isActionableSkippedEmail,
   isPersonalDomain,
   isStaleReceived,
   suggestNameFromDomain,
@@ -731,5 +732,99 @@ describe('InboxPage — Team Timesheets shortcut role gate', () => {
     mocks.useIsViewer.mockReturnValue(false);
     renderPage();
     expect(screen.queryByRole('button', { name: /Approved Timesheets/i })).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// isActionableSkippedEmail — body-only timesheet override (2026-06-04)
+//
+// Mirrors the backend's _is_actionable_skipped_email regression suite.
+// When the LLM classifier explicitly says this IS a submission, the
+// row must be surfaced as actionable regardless of attachment state.
+// Without that override, body-only timesheets get filtered out as
+// "noise" (no_candidate_timesheet_attachment is a no-attachment skip
+// reason classified as noise by isNoiseSkipReason).
+// ─────────────────────────────────────────────────────────────────────
+describe('isActionableSkippedEmail — classifier-yes override', () => {
+  // Local helper. The function's signature only reads a small subset
+  // of SkippedEmail fields, but TypeScript demands the full type, so
+  // we cast through unknown to keep the assertions terse.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const make = (partial: any) => partial as Parameters<typeof isActionableSkippedEmail>[0];
+
+  const baseEmail = {
+    id: 1,
+    subject: '',
+    sender_email: 'anon@example.com',
+    sender_name: null,
+    received_at: '2026-06-04T00:00:00Z',
+    mailbox_label: null,
+    has_attachments: false,
+    timesheet_attachment_count: 0,
+    classification_intent: null,
+    classification_confidence: 0.0,
+    skip_reason: 'no_candidate_timesheet_attachment',
+    skip_detail: null,
+    reprocessable_attachments: [],
+  };
+
+  it('classifier intent=new_submission overrides no_candidate_timesheet_attachment', () => {
+    // The Kalpana case: forwarded month, body has weekly date ranges
+    // + hour totals, no attachments. New prompt -> intent=new_submission.
+    // Filter must keep the row visible despite the noise skip reason.
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: 'new_submission',
+    }))).toBe(true);
+  });
+
+  it('classifier intent=resubmission also qualifies', () => {
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: 'resubmission',
+    }))).toBe(true);
+  });
+
+  it('classifier intent=correction also qualifies', () => {
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: 'correction',
+    }))).toBe(true);
+  });
+
+  it('classifier intent=unrelated with no attachments stays filtered', () => {
+    // Negative case: the override is intentionally narrow. A non-
+    // submission intent + no attachments + a noise skip reason is
+    // still noise. Without this assertion a sloppy override could
+    // re-surface garbage emails.
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: 'unrelated',
+    }))).toBe(false);
+  });
+
+  it('classifier intent=query with no attachments stays filtered', () => {
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: 'query',
+    }))).toBe(false);
+  });
+
+  it('null classification_intent with no attachments stays filtered', () => {
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      classification_intent: null,
+    }))).toBe(false);
+  });
+
+  it('subject keyword alone does NOT trigger the override', () => {
+    // 'Timesheet question' is a common shape for non-submission
+    // emails. Without classifier-yes, subject-only keyword match is
+    // not enough to override the noise filter.
+    expect(isActionableSkippedEmail(make({
+      ...baseEmail,
+      subject: 'Timesheet question',
+      classification_intent: 'query',
+    }))).toBe(false);
   });
 });

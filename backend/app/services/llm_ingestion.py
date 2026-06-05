@@ -290,6 +290,11 @@ async def classify_email(
     """
     Classify an incoming email as a timesheet submission or not.
     """
+    # Body-only timesheet rule (added 2026-06-04). A real submission
+    # does not always come as an attachment. When the body itself
+    # contains weekly date ranges paired with hour totals, treat that
+    # as a valid submission even with zero attachments. The rule is
+    # additive to the original attachment-shaped hint; both stay.
     system = (
         "You are classifying incoming emails for a consulting timesheet "
         "processing system.\n"
@@ -299,10 +304,32 @@ async def classify_email(
         "If the email has attachments with names or types that look like "
         "timesheets (spreadsheets, PDFs, images), lean towards classifying "
         "it as a timesheet submission.\n"
+        "Body-only timesheets are ALSO valid submissions. When the body "
+        "itself contains weekly date ranges paired with hour totals, "
+        "treat that as a submission even with zero attachments. "
+        "Concrete shape: one or more lines like "
+        "'01/05/2026 to 01/11/2026 - 41.5 hrs' or "
+        "'01/05 - 01/11: 41.5 hours' or "
+        "'2026-01-05 through 2026-01-11: 41.5h'. "
+        "A monthly total alone (e.g. 'Jan 2026 - 162 hrs') without any "
+        "per-week or per-day breakdown is NOT enough on its own; the "
+        "body must show at least one explicit date-range-plus-hours "
+        "line. Forwarded messages qualify if the forwarded body "
+        "contains that shape; the sender of record can be the original "
+        "author rather than the forwarder.\n"
+        "Counter-cases that look superficially similar but are NOT "
+        "submissions:\n"
+        " - PTO/HR notices mentioning hours (e.g. 'you have 8 hours of "
+        "PTO remaining').\n"
+        " - Reminders or questions about timesheets without any hour "
+        "data.\n"
+        " - Approval emails ('your timesheet was approved') from a "
+        "downstream system. These should be intent=unrelated.\n"
         f"{_UNTRUSTED_PROMPT_GUARD}\n"
-        "Respond only in valid JSON with fields: is_timesheet_email (boolean), "
-        "intent (one of: new_submission, resubmission, correction, query, "
-        "unrelated), confidence (0-1), reasoning (string)."
+        "Respond only in valid JSON with fields: is_timesheet_email "
+        "(boolean), intent (one of: new_submission, resubmission, "
+        "correction, query, unrelated), confidence (0-1), reasoning "
+        "(string)."
     )
 
     safe_filenames = [
@@ -314,13 +341,18 @@ async def classify_email(
     )
     candidate_hint = " [includes processable timesheet attachment]" if has_candidate_attachment else ""
     safe_subject = _sanitize_untrusted(subject, max_chars=500) or "(none)"
-    safe_body = _sanitize_untrusted(body_text, max_chars=500)
+    # 2026-06-04: bumped body cap from 500 to 2000 chars so that body-only
+    # timesheets (a full month of weekly rows is typically 6-8 lines) are
+    # actually visible to the classifier. The prior 500-char cap meant a
+    # forwarded multi-week submission's weekly lines were sometimes
+    # truncated before the LLM saw them, causing skip-as-unrelated.
+    safe_body = _sanitize_untrusted(body_text, max_chars=2000)
     user = (
         "<untrusted_input>\n"
         f"Subject: {safe_subject}\n"
         f"Attachments: {filenames_str}{candidate_hint}\n"
         f"Attachment types: {mime_str}\n"
-        f"Body (first 500 chars): {safe_body}\n"
+        f"Body (first 2000 chars): {safe_body}\n"
         "</untrusted_input>"
     )
 
@@ -401,6 +433,15 @@ should be included or misread a cell.
 If the document is a summary or pivot sheet that lists categories and totals \
 without daily dates, do not invent a repeated work_date for each category row; \
 infer the month/period from tokens like 2/26 and return an empty line_items array.
+Weekly-range carve-out (for email-body submissions): when the text contains \
+explicit date-range-plus-hours lines such as '01/05/2026 to 01/11/2026 - 41.5 hrs' \
+or '01/12 - 01/18: 40 hours', treat each range as one line item. Set work_date \
+to the range's START date in ISO 8601, and set hours to the range's total. \
+description can be set to the range itself (e.g. 'Week of 01/05 - 01/11'). This \
+is NOT the summary/pivot case above -- a body that gives you explicit week \
+ranges with explicit hour subtotals is a faithful submission, not a pivot. \
+Emit one line_item per such range. The week range is the work_date, the \
+range total is the hours.
 If a field is uncertain, include it in uncertain_fields.
 Respond only in valid JSON with a top-level field timesheets, where timesheets \
 is an array of objects with fields: employee_name, employee_email (the email \
