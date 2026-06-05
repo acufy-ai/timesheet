@@ -136,8 +136,10 @@ export const ApprovalsPage: React.FC = () => {
     setTimeout(() => setStatusMessage(''), 5000);
   }, []);
 
+  // Pending is a finite review worklist — request the full backlog so the
+  // week grouping never drops the oldest weeks. Matches the backend ceiling.
   const params = useMemo(
-    () => ({ search: search.trim() || undefined, sort_by: sortBy, sort_order: sortOrder, limit: 500 }),
+    () => ({ search: search.trim() || undefined, sort_by: sortBy, sort_order: sortOrder, limit: 1000 }),
     [search, sortBy, sortOrder]
   );
 

@@ -126,7 +126,13 @@ async def get_pending_approvals(
         "entry_date", pattern="^(entry_date|submitted_at|hours|employee)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    # The pending queue is a finite review worklist, not an unbounded feed:
+    # the UI groups every pending entry by employee->week, so a low default
+    # silently dropped the oldest weeks (sorted entry_date desc) and made the
+    # list count diverge from the dashboard's unbounded pending COUNT. Default
+    # to the ceiling so the manager always sees their whole backlog; callers
+    # can still pass a smaller limit explicitly.
+    limit: int = Query(1000, ge=1, le=5000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER")),
