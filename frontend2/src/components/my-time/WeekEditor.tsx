@@ -323,7 +323,19 @@ export const WeekEditor: React.FC<Props> = ({ weekAnchorDate, onAnchorChange }) 
   // ── Derived data ──────────────────────────────────────────────
   const selectedKey = fmtIso(selectedDate);
   const dayEntries = useMemo(
-    () => visibleEntries.filter((e: TimeEntry) => e.entry_date === selectedKey),
+    () =>
+      visibleEntries
+        .filter((e: TimeEntry) => e.entry_date === selectedKey)
+        // Chronological by start time so the day reads in clock order;
+        // entries without a start_time fall to the end (id as tiebreaker).
+        .sort((a: TimeEntry, b: TimeEntry) => {
+          const sa = a.start_time ?? '';
+          const sb = b.start_time ?? '';
+          if (sa && sb && sa !== sb) return sa.localeCompare(sb);
+          if (sa && !sb) return -1;
+          if (!sa && sb) return 1;
+          return (a.id ?? 0) - (b.id ?? 0);
+        }),
     [visibleEntries, selectedKey],
   );
 

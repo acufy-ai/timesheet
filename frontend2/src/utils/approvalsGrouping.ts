@@ -195,6 +195,20 @@ export function groupWeekByDay(entries: TimeEntry[]): DayBucket[] {
   }
   const days = Array.from(byDate.values());
   days.sort((a, b) => a.date.localeCompare(b.date));
+  // Within each day, order entries chronologically by start time so the
+  // reviewer reads them top-to-bottom in clock order. start_time is wire
+  // "HH:MM[:SS]" (24h), which sorts lexicographically; entries without a
+  // start_time fall to the end, with id as a stable tiebreaker.
+  for (const day of days) {
+    day.entries.sort((a, b) => {
+      const sa = a.start_time ?? '';
+      const sb = b.start_time ?? '';
+      if (sa && sb && sa !== sb) return sa.localeCompare(sb);
+      if (sa && !sb) return -1;
+      if (!sa && sb) return 1;
+      return (a.id ?? 0) - (b.id ?? 0);
+    });
+  }
   return days;
 }
 

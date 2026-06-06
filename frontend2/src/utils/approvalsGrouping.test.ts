@@ -123,6 +123,32 @@ describe('groupWeekByDay', () => {
   it('returns an empty array for an empty input (does not emit empty days)', () => {
     expect(groupWeekByDay([])).toEqual([]);
   });
+
+  it('orders entries WITHIN a day chronologically by start_time', () => {
+    // Regression: prod showed a day's entries in insertion/id order
+    // (e.g. 5pm, 8pm, 7:30pm, 1pm, 3pm). They must read in clock order.
+    const day = [
+      entry({ id: 1, entry_date: '2026-05-26', start_time: '17:00' }),
+      entry({ id: 2, entry_date: '2026-05-26', start_time: '20:00' }),
+      entry({ id: 3, entry_date: '2026-05-26', start_time: '19:30' }),
+      entry({ id: 4, entry_date: '2026-05-26', start_time: '13:00' }),
+      entry({ id: 5, entry_date: '2026-05-26', start_time: '15:00' }),
+    ];
+    const [bucket] = groupWeekByDay(day);
+    expect(bucket.entries.map((e) => e.start_time)).toEqual([
+      '13:00', '15:00', '17:00', '19:30', '20:00',
+    ]);
+  });
+
+  it('sorts entries without a start_time to the end, id as tiebreaker', () => {
+    const day = [
+      entry({ id: 10, entry_date: '2026-05-26', start_time: null }),
+      entry({ id: 11, entry_date: '2026-05-26', start_time: '09:00' }),
+      entry({ id: 9, entry_date: '2026-05-26', start_time: null }),
+    ];
+    const [bucket] = groupWeekByDay(day);
+    expect(bucket.entries.map((e) => e.id)).toEqual([11, 9, 10]);
+  });
 });
 
 // ─── computeStatTiles ───────────────────────────────────────────────
