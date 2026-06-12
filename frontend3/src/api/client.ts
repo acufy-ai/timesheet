@@ -92,8 +92,14 @@ import type {
 export const TOKEN_KEY = 'accessToken';
 export const REFRESH_KEY = 'refreshToken';
 
+// API base. Dev + same-origin-proxy deploys use the relative '/api' (the Vite
+// proxy / nginx rewrites it to the backend root). Prod fronts the API at an
+// absolute origin (e.g. https://acufy.ai/api) because the SPA itself is served
+// under a sub-path; VITE_API_BASE_URL supplies that, baked at build time.
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
+
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE,
   timeout: 20_000,
 });
 
@@ -135,7 +141,7 @@ async function tokenIsDead(): Promise<boolean> {
   const token = window.sessionStorage.getItem(TOKEN_KEY);
   if (!token) return true;
   try {
-    await axios.get('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    await axios.get(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
     return false; // /auth/me works -> token is valid, the 403 was a permission denial
   } catch (e) {
     const s = (e as { response?: { status?: number } })?.response?.status;
@@ -147,7 +153,7 @@ async function runRefresh(): Promise<string | null> {
   const refresh = window.sessionStorage.getItem(REFRESH_KEY);
   if (!refresh) return null;
   try {
-    const res = await axios.post('/api/auth/refresh', { refresh_token: refresh });
+    const res = await axios.post(`${API_BASE}/auth/refresh`, { refresh_token: refresh });
     const data = res.data as { access_token?: string; refresh_token?: string };
     if (!data?.access_token) return null;
     window.sessionStorage.setItem(TOKEN_KEY, data.access_token);

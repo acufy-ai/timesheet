@@ -5,7 +5,13 @@ import path from 'node:path';
 
 // frontend3 dev server runs on 5175 so frontend2 (5174) can run alongside.
 // Both proxy /api -> http://localhost:8000 (the live backend).
+//
+// VITE_BASE_PATH lets prod serve the SPA under a sub-path (prod fronts the app
+// at acufy.ai/apps/timesheet/). Default '/' for dev + root deploys. Vite needs
+// a trailing slash on `base`.
+const basePath = process.env.VITE_BASE_PATH || '/';
 export default defineConfig({
+  base: basePath.endsWith('/') ? basePath : `${basePath}/`,
   plugins: [react()],
   resolve: {
     alias: {

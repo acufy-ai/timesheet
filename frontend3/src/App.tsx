@@ -57,7 +57,10 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <AuthProvider>
-          <BrowserRouter>
+          {/* basename = Vite's base path (import.meta.env.BASE_URL), minus the
+              trailing slash, so routes resolve under a sub-path deploy
+              (prod: /apps/timesheet/). Empty string at root. */}
+          <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
             <Routes>
               {/* Public */}
               <Route path="/login" element={<LoginPage />} />

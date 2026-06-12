@@ -108,13 +108,17 @@ services:
       start_period: 30s
 
   # ── Frontend (new UI, frontend3) ──────────────────────────
-  # frontend3 is the cutover UI. It talks to the API via a relative '/api'
-  # baseURL reverse-proxied inside its own nginx (see frontend3/nginx.conf),
-  # so it needs none of f2's VITE_API_BASE_URL / Auth0 / CSP build args.
+  # frontend3 is the cutover UI. VITE_BASE_PATH lets it serve under a sub-path
+  # (prod: /apps/timesheet/) and VITE_API_BASE_URL points it at the API's
+  # absolute origin (prod fronts both the SPA sub-path and /api via host nginx).
+  # Both default to root / same-origin for local/dev.
   # Rollback: set context back to ./frontend2 (+ restore its args) and rebuild.
   frontend:
     build:
       context: ./frontend3
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-5174}:80"
