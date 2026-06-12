@@ -4,6 +4,7 @@ import { Mail, Lock, ExternalLink, CheckCircle2, XCircle, Loader2 } from 'lucide
 import axios from 'axios';
 
 import { brandingApi, tenantSettingsApi } from '@/api/client';
+import { withBase } from '@/lib/basePath';
 import { useMailboxes, useTenantSettings, useUpdateTenantSettings } from '@/hooks/useAdmin';
 import { SectionWrapper, Card } from '@/components/settings/SettingsPrimitives';
 import { TenantSettingsForm } from '@/components/TenantSettingsForm';
@@ -143,7 +144,7 @@ export const OutboundEmailSettings: React.FC = () => {
               rightSlot={
                 !hasActiveMailbox ? (
                   <a
-                    href="/settings?section=mailboxes"
+                    href={withBase('/settings?section=mailboxes')}
                     className="inline-flex items-center gap-1 text-xs text-primary hover:underline whitespace-nowrap"
                   >
                     Connect <ExternalLink className="w-3 h-3" />

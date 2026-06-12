@@ -101,7 +101,7 @@ export function VerifyAccountPage() {
         <div className="space-y-4 text-center">
           <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300"><CheckCircle2 className="h-6 w-6" /></div>
           <p className="text-sm text-muted-foreground">Your password is set. You can now sign in.</p>
-          <Button className="w-full" onClick={() => { window.location.href = '/login'; }}>Go to sign in</Button>
+          <Link to="/login" className="block"><Button className="w-full">Go to sign in</Button></Link>
         </div>
       ) : (
         <div className="space-y-4 text-center">

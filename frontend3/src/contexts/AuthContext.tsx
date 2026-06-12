@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import { REFRESH_KEY, SESSION_EXPIRED_EVENT, TOKEN_KEY, authApi } from '@/api/client';
+import { withOrigin } from '@/lib/basePath';
 import type { LoginResponse, User } from '@/types/user';
 
 interface AuthContextValue {
@@ -215,7 +216,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await authApi.switchRole(role);
       const data = res.data as LoginResponse;
       window.localStorage.setItem(HANDOFF_KEY, JSON.stringify({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user }));
-      const dest = `${window.location.origin}/dashboard`;
+      // Include the deploy base path so the new tab lands on
+      // /apps/timesheet/dashboard, not the host root /dashboard.
+      const dest = withOrigin('/dashboard');
       if (tab) tab.location.href = dest;
       else window.open(dest, '_blank');
     } catch {
