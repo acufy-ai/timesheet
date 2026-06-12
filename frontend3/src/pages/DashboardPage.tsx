@@ -31,6 +31,10 @@ import type { ProjectHealth } from '@/types/dashboard';
 // /dashboard/manager-* endpoints. Employee/admin variants land later; for now
 // non-managers see the same data their role is scoped to (empty is handled).
 
+// Temporarily hide the manager "conversation" prose banner — its text
+// generation needs rework. Set back to true to restore it.
+const SHOW_MANAGER_CONVERSATION = false;
+
 function greeting(now: Date): string {
   const h = now.getHours();
   if (h < 12) return 'Good morning';
@@ -168,8 +172,11 @@ export function DashboardPage() {
 
       {/* Manager conversation: prose status + dynamic CTAs (replaces the old
           attention banner). Managers only — viewers are read-only and have no
-          approvals/reminders surface. */}
-      {isManagerRole && managerView === 'team' && !loading && !hardError ? (
+          approvals/reminders surface.
+          TEMPORARILY HIDDEN: the prose text-generation needs rework; keep the
+          banner off for users until it's revised. Flip SHOW_MANAGER_CONVERSATION
+          back to true to re-enable. */}
+      {SHOW_MANAGER_CONVERSATION && isManagerRole && managerView === 'team' && !loading && !hardError ? (
         <ManagerConversation overview={overview} ingestionEnabled={managerIngestionEnabled} pendingIngestionCount={pendingIngestionCount} />
       ) : null}
       {/* Viewers get a read-only header line instead of the action card. */}
