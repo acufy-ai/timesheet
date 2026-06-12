@@ -183,6 +183,12 @@ async def get_current_user(
             adapter.locked_until = None
             adapter.created_at = pa.created_at
             adapter.updated_at = pa.updated_at
+            # UserResponse.manager_id reads the manager_assignment relationship
+            # via a guarded property that raises if it's unloaded. The PA
+            # adapter is in-memory and never queried, so set it explicitly to
+            # None (a platform admin has no manager) — otherwise /auth/me 500s
+            # on serialization with "manager_assignment was not eager-loaded".
+            adapter.manager_assignment = None
             request.state.current_user = adapter
             return adapter
 

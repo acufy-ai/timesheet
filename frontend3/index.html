@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/acufy-logo.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f0fdfa" />
+    <title>Acufy AI Timesheet · v3</title>
+    <!-- Self-hosted brand fonts (served from /public/fonts/). Space Grotesk
+         is the body face; Syne is the display face for page/section titles;
+         JetBrains Mono for code; Instrument Serif italic for accents. Same
+         set frontend2 uses, so the two apps match visually. -->
+    <style>
+      @font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 400; src: url('/fonts/space-grotesk-400.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 500; src: url('/fonts/space-grotesk-500.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 600; src: url('/fonts/space-grotesk-600.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Space Grotesk'; font-style: normal; font-weight: 700; src: url('/fonts/space-grotesk-700.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Syne';          font-style: normal; font-weight: 700; src: url('/fonts/syne-700.woff2')          format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Syne';          font-style: normal; font-weight: 800; src: url('/fonts/syne-800.woff2')          format('woff2'); font-display: swap; }
+      @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; src: url('/fonts/jetbrains-mono-400.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 500; src: url('/fonts/jetbrains-mono-500.woff2') format('woff2'); font-display: swap; }
+      @font-face { font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; src: url('/fonts/instrument-serif-italic.woff2') format('woff2'); font-display: swap; }
+    </style>
+  </head>
+  <body class="bg-background text-foreground antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

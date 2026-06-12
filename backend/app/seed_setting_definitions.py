@@ -116,6 +116,21 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": True,
         "sort_order": 5,
     },
+    # Navigation enforcement. 'off' lets each user choose (and persists their
+    # choice locally); 'sidebar' / 'topbar' lock the primary-nav layout for
+    # every user in the tenant and hide the in-app switch control. Public so
+    # the unauthenticated/just-logged-in shell can read it without an admin
+    # round-trip.
+    "enforced_nav_mode": {
+        "category": "time_entry",
+        "data_type": "string",
+        "default_value": "off",
+        "validation": {"enum": ["off", "sidebar", "topbar"]},
+        "label": "Enforce navigation layout",
+        "description": "Lock the primary navigation layout for all users. 'off' lets each user choose their own (sidebar or top bar).",
+        "is_public": True,
+        "sort_order": 90,
+    },
     # ── time_off ───────────────────────────────────────────────────
     "time_off_past_days": {
         "category": "time_off",

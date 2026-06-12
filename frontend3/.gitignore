@@ -1,0 +1,25 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Stale compiled config: a `tsc -b` run can emit vite.config.js next to the
+# .ts source. Vite resolves .js before .ts, silently shadowing the real
+# config. Ignore the artifacts so it never happens again.
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
+# Frontend3 is local-only for now. The whole directory is gitignored at
+# the repo root in case the parent .gitignore misses something.

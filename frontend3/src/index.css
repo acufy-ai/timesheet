@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Token defaults. ThemeContext.applyThemeVariant() overrides every --* value
+ * at runtime, so these are just a sensible cyan-light fallback for the brief
+ * window before React mounts. Keep them visually close to Cyan Mist.
+ */
+:root {
+  --background: 165 76% 97%;
+  --foreground: 174 70% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 174 70% 13%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 174 70% 13%;
+  --primary: 192 91% 37%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 167 85% 89%;
+  --secondary-foreground: 174 70% 13%;
+  --muted: 166 76% 94%;
+  --muted-foreground: 174 33% 35%;
+  --accent: 192 91% 37%;
+  --accent-foreground: 0 0% 100%;
+  --border: 170 40% 80%;
+  --input: 170 40% 80%;
+  --ring: 192 91% 37%;
+  --radius: 0.625rem;
+}
+
+/* Loaded in main.tsx before React mounts. Keeps the pre-React frame from
+   flashing a different bg if the user lands on a dark theme. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Native <select> dropdown options. The open option list is painted by the OS,
+   which (on dark themes) defaults to a white panel — making white option text
+   invisible. color-scheme on <html> handles most browsers; this is the explicit
+   fallback so options always render on the popover surface with readable text,
+   matching the active theme. */
+option,
+optgroup {
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}
+
+/* Brand type recipe (matches frontend2): page titles (the single <h1> in
+   <main>) and section h2s use Syne for display impact; body stays Space
+   Grotesk. Syne needs weight 700-800 + negative tracking to read as the
+   brand voice. */
+main h1 {
+  font-family: 'Syne', 'Space Grotesk', system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+}
+main h2 {
+  font-family: 'Syne', 'Space Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Pill primitive — the design vocabulary all interactive nav uses.
+   Imported through utility classes so the theme tokens flow through. */
+@layer components {
+  .pill {
+    @apply inline-flex shrink-0 items-center gap-2 rounded-full px-3.5 py-1.5 text-sm font-medium transition-all duration-150;
+  }
+  .pill-active {
+    @apply bg-primary text-primary-foreground shadow-sm;
+  }
+  .pill-idle {
+    @apply text-muted-foreground hover:bg-primary/10 hover:text-primary;
+  }
+
+  /* Settings form primitives (ported from frontend2 so the ported settings
+     section components render identically). */
+  .field-input {
+    @apply h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
+  }
+  .field-textarea {
+    @apply w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
+  }
+  .action-button {
+    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold transition disabled:cursor-not-allowed;
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+  .action-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 25px hsl(var(--primary) / 0.30);
+  }
+  .action-button:disabled {
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    opacity: 0.5;
+    box-shadow: none;
+  }
+  .action-button-secondary {
+    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-foreground transition hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60;
+  }
+}

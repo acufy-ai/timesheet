@@ -97,3 +97,12 @@ audit/
 # moment of "intent to share." Without this rule a stray `git add .`
 # would re-track everything 9c09b8d removed.
 deploy-ldev/
+
+# Lightsail lprod deploy: same rules as deploy-ldev/. Operator-only,
+# never committed. See deploy-lprod/README.md for the cutover steps.
+deploy-lprod/
+
+# frontend3 is now the cutover prod UI (committed). Keep build artifacts out.
+frontend3/node_modules/
+frontend3/dist/
+frontend3/.vite/

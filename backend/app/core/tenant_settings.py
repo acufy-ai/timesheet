@@ -442,6 +442,9 @@ class TenantPolicy:
     min_submit_weekly_hours: float = 0.0
     allow_partial_week_submit: bool = False
     week_start_day: int = 0
+    # UI: lock the primary-nav layout for all users. 'off' = user choice.
+    # Catalog key: ``enforced_nav_mode`` (see app/seed_setting_definitions.py).
+    enforced_nav_mode: str = "off"
 
     # Time off
     time_off_past_days: int = 7

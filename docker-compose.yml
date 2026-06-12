@@ -107,22 +107,14 @@ services:
       retries: 3
       start_period: 30s
 
-  # ── Frontend (new UI, frontend2) ──────────────────────────
-  # Served at the root of the deployment path.
+  # ── Frontend (new UI, frontend3) ──────────────────────────
+  # frontend3 is the cutover UI. It talks to the API via a relative '/api'
+  # baseURL reverse-proxied inside its own nginx (see frontend3/nginx.conf),
+  # so it needs none of f2's VITE_API_BASE_URL / Auth0 / CSP build args.
+  # Rollback: set context back to ./frontend2 (+ restore its args) and rebuild.
   frontend:
     build:
-      context: ./frontend2
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:${BACKEND_PORT:-8000}}
-        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
-        VITE_AUTH0_DOMAIN: ${VITE_AUTH0_DOMAIN:-}
-        VITE_AUTH0_CLIENT_ID: ${VITE_AUTH0_CLIENT_ID:-}
-        VITE_AUTH0_AUDIENCE: ${VITE_AUTH0_AUDIENCE:-}
-        VITE_AUTH0_CONNECTION: ${VITE_AUTH0_CONNECTION:-Username-Password-Authentication}
-        # CSP connect-src extension. Dev (different ports for UI vs API)
-        # needs the API origin in the allowlist; prod (same origin) can
-        # leave this empty.
-        CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-http://localhost:${BACKEND_PORT:-8000}}
+      context: ./frontend3
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-5174}:80"
