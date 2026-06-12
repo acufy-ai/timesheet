@@ -699,14 +699,21 @@ class ManagerTeamMemberStatus(BaseModel):
 
     `working_days_in_week` is the count of weekdays (Mon-Fri) up to and
     including today. `submitted_days` is how many of those days the
-    employee already has a SUBMITTED or APPROVED time entry on. The
-    frontend renders the difference as `submitted/total` ("3/5 days").
+    employee already has a SUBMITTED or APPROVED time entry on (drives the
+    on-track / behind status). `logged_days` additionally counts DRAFT days
+    (any entry the employee has started), so the roster shows real in-progress
+    activity ("4/5 days logged") while the STATUS still reflects what's
+    actually been submitted for review.
     """
 
     user_id: int
     full_name: str
     working_days_in_week: int
     submitted_days: int
+    # Days with ANY entry (DRAFT + SUBMITTED + APPROVED). Drives the "X/5 days
+    # logged" display; submitted_days still drives the status label. Defaults to
+    # submitted_days for back-compat if an older API omits it.
+    logged_days: int = 0
     is_on_pto_today: bool
     is_on_pto_this_week: bool
     upcoming_pto_starts_at: Optional[date] = None

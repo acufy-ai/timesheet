@@ -7,6 +7,10 @@ export interface TeamMemberOverview {
   full_name: string;
   working_days_in_week: number;
   submitted_days: number;
+  // Days with ANY entry (draft + submitted + approved). Drives the "X/5 days
+  // logged" display; status (on-track/behind) still uses submitted_days.
+  // Optional + defaulted for back-compat with an older API.
+  logged_days?: number;
   is_on_pto_today: boolean;
   is_on_pto_this_week: boolean;
   upcoming_pto_starts_at: string | null;

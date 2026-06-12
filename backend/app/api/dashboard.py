@@ -785,7 +785,8 @@ async def get_manager_team_overview(
     )
     team_members = list(team_result.scalars().all())
 
-    # 1) Submitted-day counts per user, week-to-date.
+    # 1) Submitted-day counts per user, week-to-date. SUBMITTED + APPROVED
+    #    drive the on-track / behind STATUS (what the manager chases).
     submitted_result = await db.execute(
         select(TimeEntry.user_id, TimeEntry.entry_date)
         .where(
@@ -800,6 +801,25 @@ async def get_manager_team_overview(
     submitted_dates_by_user: dict[int, set[date]] = {}
     for user_id, entry_date in submitted_result.all():
         submitted_dates_by_user.setdefault(user_id, set()).add(entry_date)
+
+    # 1b) Logged-day counts per user, week-to-date. Includes DRAFT so the
+    #     roster's "X/5 days logged" reflects in-progress work the employee has
+    #     started but not yet submitted. This is display-only; it does NOT
+    #     change the on-track / behind status (that stays submission-based).
+    logged_result = await db.execute(
+        select(TimeEntry.user_id, TimeEntry.entry_date)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= week_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status.in_(
+                [TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+    )
+    logged_dates_by_user: dict[int, set[date]] = {}
+    for user_id, entry_date in logged_result.all():
+        logged_dates_by_user.setdefault(user_id, set()).add(entry_date)
 
     # 2) PTO data: SUBMITTED + APPROVED count as consuming capacity.
     active_pto_statuses = [TimeOffStatus.SUBMITTED, TimeOffStatus.APPROVED]
@@ -856,6 +876,7 @@ async def get_manager_team_overview(
     members: list[ManagerTeamMemberStatus] = []
     for member in team_members:
         submitted_dates = submitted_dates_by_user.get(member.id, set())
+        logged_dates = logged_dates_by_user.get(member.id, set())
         working_days = _working_days_between(week_start, today)
         is_repeatedly_late = member.id in late_user_ids
 
@@ -865,6 +886,7 @@ async def get_manager_team_overview(
                 full_name=member.full_name,
                 working_days_in_week=working_days,
                 submitted_days=len(submitted_dates),
+                logged_days=len(logged_dates),
                 is_on_pto_today=member.id in pto_today_users,
                 is_on_pto_this_week=member.id in pto_this_week_by_user,
                 upcoming_pto_starts_at=upcoming_pto_start_by_user.get(member.id),
@@ -1011,6 +1033,8 @@ async def get_manager_project_health(
 
     # 3) Hours-this-week per project, only for entries that count
     # against the budget (SUBMITTED + APPROVED).
+    # Include DRAFT so "Hours this week" reflects in-progress work the team has
+    # entered, not only what's been submitted (matches the roster's logged_days).
     hours_week_result = await db.execute(
         select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
         .where(
@@ -1019,7 +1043,7 @@ async def get_manager_project_health(
             TimeEntry.entry_date >= week_start,
             TimeEntry.entry_date <= today,
             TimeEntry.status.in_(
-                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+                [TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
             ),
         )
         .group_by(TimeEntry.project_id)

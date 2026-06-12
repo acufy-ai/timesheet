@@ -315,6 +315,10 @@ export function DashboardPage() {
               {rosterOpen ? (
                 <div className="divide-y divide-border">
                   {overview.members.map((m) => {
+                    // Status (on-track / behind) stays driven by SUBMITTED days
+                    // — that's what the manager chases. "Days logged" below
+                    // includes drafts so in-progress work is visible.
+                    const loggedDays = m.logged_days ?? m.submitted_days;
                     const onTrackMember = m.submitted_days >= m.working_days_in_week;
                     const none = m.submitted_days === 0;
                     const tone: 'info' | 'success' | 'danger' | 'warning' = m.is_on_pto_this_week ? 'info' : onTrackMember ? 'success' : none ? 'danger' : 'warning';
@@ -330,7 +334,8 @@ export function DashboardPage() {
                             {m.is_repeatedly_late ? <span className="ml-1.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-600 dark:text-amber-300">Late</span> : null}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {m.submitted_days}/{m.working_days_in_week} days logged this week
+                            {loggedDays}/{m.working_days_in_week} days logged this week
+                            {loggedDays > m.submitted_days ? ` · ${m.submitted_days} submitted` : ''}
                             {m.upcoming_pto_starts_at ? ` · PTO from ${m.upcoming_pto_starts_at}` : ''}
                           </p>
                         </div>
