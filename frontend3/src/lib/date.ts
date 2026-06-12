@@ -17,10 +17,22 @@ export function fromISODate(s: string): Date {
   return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
 
-/** Monday of the week containing `d`. */
-export function startOfWeek(d: Date): Date {
+/**
+ * Start of the week containing `d`, honoring the tenant's week-start day.
+ *   weekStartDay 1 = Monday-based (Mon … Sun)  [default]
+ *   weekStartDay 0 = Sunday-based (Sun … Sat)
+ *
+ * IMPORTANT: this must agree with the BACKEND's week boundary or weekly
+ * approval/submit fails ("must target one work week at a time"). The backend
+ * uses the tenant's `week_start_day` setting (0=Sunday DEFAULT, 1=Monday).
+ * Callers that group entries into weeks the backend will validate (approvals,
+ * My Time submit) MUST pass the tenant setting; pass nothing only for purely
+ * cosmetic local grouping.
+ */
+export function startOfWeek(d: Date, weekStartDay: 0 | 1 = 1): Date {
   const r = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dow = (r.getDay() + 6) % 7; // Mon=0 … Sun=6
+  // getDay(): 0=Sun … 6=Sat. Offset back to the configured start-of-week.
+  const dow = (r.getDay() - weekStartDay + 7) % 7;
   r.setDate(r.getDate() - dow);
   return r;
 }
@@ -31,9 +43,9 @@ export function addDays(d: Date, n: number): Date {
   return r;
 }
 
-/** The seven dates Mon–Sun for the week containing `d`. */
-export function weekDays(d: Date): Date[] {
-  const start = startOfWeek(d);
+/** The seven dates of the week containing `d`, honoring the week-start day. */
+export function weekDays(d: Date, weekStartDay: 0 | 1 = 1): Date[] {
+  const start = startOfWeek(d, weekStartDay);
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));
 }
 

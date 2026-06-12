@@ -3,6 +3,7 @@ import { Loader2, Pencil, Wrench } from 'lucide-react';
 
 import { Button, Card, Empty } from '@/components/ui';
 import { useMyEntriesFiltered } from '@/hooks/useTime';
+import { useWeekStartDay } from '@/hooks/useAdmin';
 import { formatDayLong, formatWeekRange, fromISODate, startOfWeek, toISODate } from '@/lib/date';
 import type { TimeEntry } from '@/types/time';
 
@@ -16,11 +17,12 @@ const num = (v: string | number) => (typeof v === 'string' ? parseFloat(v) : v) 
 export function ReworkTab({ onFix }: { onFix: (weekStartIso: string, dayIso: string) => void }) {
   const q = useMyEntriesFiltered({ status: 'REJECTED', sort_by: 'entry_date', sort_order: 'desc', limit: 500 });
   const rows = q.data ?? [];
+  const weekStartDay = useWeekStartDay();
 
   const groups = useMemo(() => {
     const m = new Map<string, { weekStart: string; entries: TimeEntry[]; hours: number; reason: string | null; firstDay: string }>();
     rows.forEach((e) => {
-      const ws = toISODate(startOfWeek(fromISODate(e.entry_date)));
+      const ws = toISODate(startOfWeek(fromISODate(e.entry_date), weekStartDay));
       const g = m.get(ws) ?? { weekStart: ws, entries: [], hours: 0, reason: null, firstDay: e.entry_date };
       g.entries.push(e);
       g.hours += num(e.hours);
@@ -34,7 +36,7 @@ export function ReworkTab({ onFix }: { onFix: (weekStartIso: string, dayIso: str
     const out = Array.from(m.values());
     out.forEach((g) => g.entries.sort((a, b) => a.entry_date.localeCompare(b.entry_date)));
     return out.sort((a, b) => b.weekStart.localeCompare(a.weekStart));
-  }, [rows]);
+  }, [rows, weekStartDay]);
 
   if (q.isLoading) {
     return <div className="grid place-items-center rounded-2xl border border-border bg-card py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;

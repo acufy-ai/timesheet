@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
 
 import { Card, Empty, Input, StatusBadge } from '@/components/ui';
-import { useTeamTimesheets } from '@/hooks/useAdmin';
+import { useTeamTimesheets, useWeekStartDay } from '@/hooks/useAdmin';
 import { groupPending, type EmployeeGroup } from '@/lib/approvalsGrouping';
 import { fromISODate, formatDayLong, formatTime12h } from '@/lib/date';
 import { cn } from '@/lib/cn';
@@ -32,7 +32,8 @@ export function TeamDraftsTab() {
   const entries = useMemo(() => (q.data ?? []) as TimeEntry[], [q.data]);
 
   const [search, setSearch] = useState('');
-  const employees = useMemo(() => groupPending(entries), [entries]);
+  const weekStartDay = useWeekStartDay();
+  const employees = useMemo(() => groupPending(entries, weekStartDay), [entries, weekStartDay]);
   const filtered = useMemo(
     () => employees.filter((e) => e.name.toLowerCase().includes(search.trim().toLowerCase())),
     [employees, search],

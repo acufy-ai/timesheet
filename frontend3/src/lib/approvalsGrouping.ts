@@ -44,7 +44,11 @@ export interface EmployeeGroup {
   weekCount: number;
 }
 
-export function groupPending(entries: TimeEntry[]): EmployeeGroup[] {
+// weekStartDay MUST match the tenant's backend setting (0=Sunday/1=Monday) or
+// the grouped "weeks" straddle the backend's week boundary and weekly approval
+// fails ("must target one work week at a time"). Default 1 (Monday) for callers
+// that don't pass it, but the approvals page always supplies the tenant value.
+export function groupPending(entries: TimeEntry[], weekStartDay: 0 | 1 = 1): EmployeeGroup[] {
   // employee -> week-start -> day -> entries
   const byEmp = new Map<number, TimeEntry[]>();
   for (const e of entries) {
@@ -57,7 +61,7 @@ export function groupPending(entries: TimeEntry[]): EmployeeGroup[] {
   for (const [userId, empEntries] of byEmp) {
     const byWeek = new Map<string, TimeEntry[]>();
     for (const e of empEntries) {
-      const ws = toISODate(startOfWeek(fromISODate(e.entry_date)));
+      const ws = toISODate(startOfWeek(fromISODate(e.entry_date), weekStartDay));
       const list = byWeek.get(ws) ?? [];
       list.push(e);
       byWeek.set(ws, list);

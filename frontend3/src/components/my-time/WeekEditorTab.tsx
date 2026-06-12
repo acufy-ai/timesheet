@@ -30,6 +30,7 @@ import {
   useUpdateEntry,
   useWeeklySubmitStatus,
 } from '@/hooks/useTime';
+import { useWeekStartDay } from '@/hooks/useAdmin';
 import {
   addDays,
   diffHours,
@@ -92,11 +93,14 @@ interface EntryDraft {
 
 export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: string; initialDay?: string } = {}) {
   const today = useMemo(() => new Date(), []);
+  // Week boundary MUST match the backend's week-start (the submit validator
+  // requires a whole week together); group by the tenant's week_start_day.
+  const weekStartDay = useWeekStartDay();
   const [weekAnchor, setWeekAnchor] = useState(() =>
     initialDay ? new Date(`${initialDay}T00:00:00`) : initialWeek ? new Date(`${initialWeek}T00:00:00`) : new Date(),
   );
-  const weekStart = useMemo(() => startOfWeek(weekAnchor), [weekAnchor]);
-  const days = useMemo(() => weekDays(weekStart), [weekStart]);
+  const weekStart = useMemo(() => startOfWeek(weekAnchor, weekStartDay), [weekAnchor, weekStartDay]);
+  const days = useMemo(() => weekDays(weekStart, weekStartDay), [weekStart, weekStartDay]);
   const weekStartIso = toISODate(days[0]);
   const weekEndIso = toISODate(days[6]);
 
@@ -104,9 +108,9 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
     // "Fix in editor" passes the exact rejected day — open it directly.
     if (initialDay) return new Date(`${initialDay}T00:00:00`);
     // Anchored to a specific (past) week with no day -> first day of that week.
-    if (initialWeek) return startOfWeek(new Date(`${initialWeek}T00:00:00`));
-    const inWeek = weekDays(startOfWeek(new Date())).some((d) => isSameDay(d, new Date()));
-    return inWeek ? new Date() : startOfWeek(new Date());
+    if (initialWeek) return startOfWeek(new Date(`${initialWeek}T00:00:00`), weekStartDay);
+    const inWeek = weekDays(startOfWeek(new Date(), weekStartDay), weekStartDay).some((d) => isSameDay(d, new Date()));
+    return inWeek ? new Date() : startOfWeek(new Date(), weekStartDay);
   });
   const selectedIso = toISODate(selectedDay);
 

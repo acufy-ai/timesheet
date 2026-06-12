@@ -43,7 +43,7 @@ import { fromISODate, formatDayLong, formatTime12h, formatWeekRange } from '@/li
 import { TimeOffApprovals } from '@/components/time-off/TimeOffApprovals';
 import { ApprovedTimesheetsTab } from '@/components/users/ApprovedTimesheetsTab';
 import { TeamDraftsTab } from '@/components/approvals/TeamDraftsTab';
-import { usePendingTimeOff } from '@/hooks/useAdmin';
+import { usePendingTimeOff, useWeekStartDay } from '@/hooks/useAdmin';
 import type { HistoryGroup } from '@/types/time';
 
 type Tab = 'timesheets' | 'timeoff' | 'team' | 'approved';
@@ -77,7 +77,11 @@ export function ApprovalsPage() {
   const [bulkRejectOpen, setBulkRejectOpen] = useState(false);
   const [bulkReason, setBulkReason] = useState('');
 
-  const employees = useMemo(() => groupPending(pending.data ?? []), [pending.data]);
+  // Group weeks using the tenant's week-start day so the boundaries match the
+  // backend's weekly-approval validator (otherwise approval fails: "must target
+  // one work week at a time").
+  const weekStartDay = useWeekStartDay();
+  const employees = useMemo(() => groupPending(pending.data ?? [], weekStartDay), [pending.data, weekStartDay]);
 
   const filtered = useMemo(
     () => employees.filter((e) => e.name.toLowerCase().includes(search.trim().toLowerCase())),

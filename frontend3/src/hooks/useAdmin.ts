@@ -457,6 +457,18 @@ export function usePublicTenantSettings(enabled = true) {
   });
 }
 
+// The tenant's week-start day (0=Sunday, 1=Monday) for week grouping. Read from
+// the PUBLIC settings (week_start_day is is_public=true) so MANAGERS — not just
+// admins — get it; the admin-only /tenant-settings would 403 for a manager.
+// Defaults to 0 (Sunday) to MATCH THE BACKEND DEFAULT — getting this wrong makes
+// weekly approval fail with "must target one work week at a time". Returns 1
+// only when the setting is explicitly 1.
+export function useWeekStartDay(): 0 | 1 {
+  const q = usePublicTenantSettings();
+  const v = (q.data as Record<string, unknown> | undefined)?.week_start_day;
+  return v === 1 || v === '1' ? 1 : 0;
+}
+
 export function useUpdateTenantSettings() {
   const qc = useQueryClient();
   return useMutation({
