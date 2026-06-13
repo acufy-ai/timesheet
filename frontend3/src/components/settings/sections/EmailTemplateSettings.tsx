@@ -88,7 +88,7 @@ const apiError = (err: unknown): string => {
     if (typeof detail === 'string') return detail;
   }
   if (err instanceof Error) return err.message;
-  return 'Request failed.';
+  return 'Couldn\'t save. Please try again.';
 };
 
 export const EmailTemplateSettings: React.FC = () => {

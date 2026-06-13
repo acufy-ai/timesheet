@@ -33,7 +33,7 @@ export function WorkforceSetupTab() {
 
   const errText = (e: unknown) => {
     const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-    return typeof d === 'string' ? d : 'Something went wrong.';
+    return typeof d === 'string' ? d : 'Something went wrong. Please try again.';
   };
 
   async function addDept(e: React.FormEvent) {

@@ -80,7 +80,7 @@ export function MailboxesPage() {
       const r = await test.mutateAsync(m.id);
       setTestResult((s) => ({ ...s, [m.id]: r.success ? `OK · ${r.message_count} msgs · ${r.latency_ms}ms` : (r.error ?? 'Failed') }));
     } catch (err) {
-      setTestResult((s) => ({ ...s, [m.id]: errText(err, 'Test failed') }));
+      setTestResult((s) => ({ ...s, [m.id]: errText(err, 'Connection test failed. Check the host and credentials.') }));
     }
   }
   async function removeMailbox(m: Mailbox) {

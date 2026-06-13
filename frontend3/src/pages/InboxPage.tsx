@@ -422,7 +422,7 @@ export function InboxPage() {
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped'] });
       setStatusTone(s === 'cancelled' ? 'info' : 'danger');
       setStatusMessage(
-        fetchStatus?.message || (s === 'cancelled' ? 'Fetch cancelled.' : 'Fetch job failed.'),
+        fetchStatus?.message || (s === 'cancelled' ? 'Email fetch cancelled.' : 'Email fetch failed.'),
       );
       setActiveJobId(null);
     }

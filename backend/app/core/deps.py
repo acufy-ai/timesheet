@@ -307,7 +307,7 @@ def require_role(*allowed_roles: str):
         if current_user.role.value not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"User role {current_user.role} is not authorized",
+                detail="You don't have permission to do that.",
             )
         return current_user
 
