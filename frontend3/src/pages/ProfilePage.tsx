@@ -24,8 +24,6 @@ export function ProfilePage() {
   const update = useUpdateProfile();
   const changePw = useChangePassword();
 
-  const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
-
   // Editable profile fields.
   const [fullName, setFullName] = useState('');
   const [username, setUsername] = useState('');
@@ -135,8 +133,12 @@ export function ProfilePage() {
             <Input value={username} onChange={(e) => setUsername(e.target.value)} />
           </div>
           <div>
-            <label className={labelClass}>Email{!isPlatformAdmin ? ' (read-only)' : ''}</label>
-            <Input value={user.email} disabled={!isPlatformAdmin} readOnly={!isPlatformAdmin} />
+            <label className={labelClass}>Email (read-only)</label>
+            {/* Email is display-only on the profile (no edit wiring here). A
+                platform admin changes a user's email from User management, not
+                their own profile — so always render read-only to avoid a
+                misleadingly-editable field and the controlled-without-onChange warning. */}
+            <Input value={user.email} disabled readOnly />
           </div>
           <div>
             <label className={labelClass}>Title</label>

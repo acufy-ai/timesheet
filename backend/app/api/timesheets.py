@@ -131,7 +131,10 @@ async def get_all_timesheets(
     """
     allowed = {UserRole.ADMIN, UserRole.PLATFORM_ADMIN, UserRole.VIEWER, UserRole.MANAGER}
     if current_user.role not in allowed:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        # NOTE: the `status` query param above shadows fastapi's `status` module
+        # inside this handler, so use the numeric code directly (status.HTTP_403_*
+        # would resolve to the param and raise AttributeError -> 500).
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Managers only see their reporting tree's entries, PLUS entries
     # that were materialised from inbox PDFs the manager personally
