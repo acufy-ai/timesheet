@@ -54,6 +54,44 @@ const SMTP_CREDENTIAL_KEYS = new Set([
   'smtp_from_address', 'smtp_from_name', 'smtp_use_tls',
 ]);
 
+// Friendly labels for the customization enum settings, so the raw stored
+// values (sidebar_collapsed, my-time, system, …) render as readable options.
+// The option value is what gets stored; the label is what the admin sees.
+const CUSTOMIZATION_LABELS: Record<string, Array<{ value: string | number; label: string }>> = {
+  default_nav_layout: [
+    { value: 'sidebar', label: 'Sidebar (expanded)' },
+    { value: 'sidebar_collapsed', label: 'Sidebar (collapsed icon rail)' },
+    { value: 'topbar', label: 'Top bar' },
+  ],
+  default_theme: [
+    { value: 'system', label: 'Follow system' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+  ],
+  default_palette: [
+    { value: '', label: 'App default' },
+    { value: 'violet-night', label: 'Violet Night' },
+    { value: 'emerald-night', label: 'Emerald Night' },
+    { value: 'amber-night', label: 'Amber Night' },
+    { value: 'cyan-light', label: 'Cyan Mist' },
+    { value: 'rose-light', label: 'Rose Dawn' },
+    { value: 'sapphire-light', label: 'Sapphire Cloud' },
+  ],
+  default_landing: [
+    { value: 'dashboard', label: 'Dashboard' },
+    { value: 'my-time', label: 'My time' },
+    { value: 'time-off', label: 'Time off' },
+    { value: 'calendar', label: 'Calendar' },
+    { value: 'approvals', label: 'Approvals' },
+  ],
+  default_page_size: [
+    { value: 10, label: '10 rows' },
+    { value: 25, label: '25 rows' },
+    { value: 50, label: '50 rows' },
+    { value: 100, label: '100 rows' },
+  ],
+};
+
 interface TenantSettingsFormProps {
   filterCategories?: string[];
   showHeader?: boolean;
@@ -307,6 +345,24 @@ const Widget: React.FC<WidgetProps> = ({ defn, value, onChange, labelId }) => {
   }
   if (defn.key === 'missing_yesterday_notify_after_hour' || defn.key === 'manager_missing_team_notify_after_hour') {
     return <HourOfDayWidget value={Number(value ?? 0)} onChange={onChange} />;
+  }
+  // Customization: friendly-labeled selects (so the raw enum values like
+  // ``sidebar_collapsed`` / ``my-time`` / ``system`` don't leak into the UI).
+  if (defn.key in CUSTOMIZATION_LABELS) {
+    const opts = CUSTOMIZATION_LABELS[defn.key];
+    const isInt = defn.data_type === 'int';
+    return (
+      <LabeledSelectWidget
+        value={value}
+        onChange={onChange}
+        labelId={labelId}
+        options={opts}
+        isInt={isInt}
+      />
+    );
+  }
+  if (defn.key === 'nav_switch_user_ids') {
+    return <NavSwitchExceptionsWidget value={value} onChange={onChange} />;
   }
 
   if (data_type === 'bool') {
@@ -683,6 +739,86 @@ const HourOfDayWidget: React.FC<{ value: number; onChange: (v: number) => void }
         className="field-input w-32"
       />
       <span className="text-xs text-muted-foreground">tenant time</span>
+    </div>
+  );
+};
+
+// Friendly-labeled <select> for the customization enum settings. Stores the
+// raw option value (string or int per the catalog data_type); shows the label.
+const LabeledSelectWidget: React.FC<{
+  value: SettingValue;
+  onChange: (v: SettingValue) => void;
+  labelId: string;
+  options: Array<{ value: string | number; label: string }>;
+  isInt: boolean;
+}> = ({ value, onChange, labelId, options, isInt }) => (
+  <select
+    id={labelId}
+    className="field-input"
+    value={String(value ?? '')}
+    onChange={(e) => onChange(isInt ? Number(e.target.value) : e.target.value)}
+  >
+    {options.map((opt) => (
+      <option key={String(opt.value)} value={String(opt.value)}>
+        {opt.label}
+      </option>
+    ))}
+  </select>
+);
+
+// Navigation-switch exception list. Stored value is a JSON array of user IDs
+// (as strings, to match the shell's ``includes(String(user.id))`` check). Only
+// non-admins are listed: admins can always switch and never need an exception.
+const NavSwitchExceptionsWidget: React.FC<{
+  value: SettingValue;
+  onChange: (v: SettingValue) => void;
+}> = ({ value, onChange }) => {
+  const usersQuery = useUsers();
+
+  const selectedIds = useMemo(() => {
+    const arr = Array.isArray(value) ? value : [];
+    return new Set(arr.map((v) => String(v)));
+  }, [value]);
+
+  const eligible = (usersQuery.data ?? [])
+    .filter((u) => u.is_active)
+    .filter((u) => u.role !== 'ADMIN' && u.role !== 'PLATFORM_ADMIN')
+    .sort((a, b) => a.full_name.localeCompare(b.full_name));
+
+  const toggleUser = (id: number) => {
+    const next = new Set(selectedIds);
+    const key = String(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onChange(Array.from(next));
+  };
+
+  return (
+    <div className="rounded-md border border-border bg-background max-h-44 overflow-y-auto divide-y divide-border">
+      {usersQuery.isLoading && (
+        <p className="px-3 py-2 text-xs text-muted-foreground">Loading users…</p>
+      )}
+      {!usersQuery.isLoading && eligible.length === 0 && (
+        <p className="px-3 py-2 text-xs text-muted-foreground">No eligible users.</p>
+      )}
+      {eligible.map((u) => {
+        const checked = selectedIds.has(String(u.id));
+        return (
+          <label
+            key={u.id}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-muted"
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => toggleUser(u.id)}
+              className="accent-primary"
+            />
+            <span className="text-foreground">{u.full_name}</span>
+            <span className="text-muted-foreground ml-auto">{u.email}</span>
+          </label>
+        );
+      })}
     </div>
   );
 };

@@ -191,6 +191,14 @@ class UserPreferences(BaseModel):
     # ISO-2 country code (or None for "All locations"). Drives the
     # calendar's holiday filter — see HolidayCountryFilter.
     holiday_calendar_country: Optional[str] = None
+    # UI defaults seeded from the tenant's customization settings on first
+    # login; once the user changes one, the saved value wins. theme:
+    # light/dark/system; palette: theme variant key or ""; landing: route
+    # slug; page_size: rows per list page.
+    theme: Optional[str] = None
+    palette: Optional[str] = None
+    landing: Optional[str] = None
+    page_size: Optional[int] = None
 
     model_config = {"extra": "allow"}
 
@@ -202,6 +210,10 @@ class UserPreferencesUpdate(BaseModel):
     still value-validates the known keys."""
     inbox_view_mode: Optional[str] = None
     holiday_calendar_country: Optional[str] = None
+    theme: Optional[str] = None
+    palette: Optional[str] = None
+    landing: Optional[str] = None
+    page_size: Optional[int] = None
 
     model_config = {"extra": "allow"}
 

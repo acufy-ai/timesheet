@@ -102,7 +102,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": 0,
         "validation": {"min": 0, "max": 1, "enum": [0, 1]},
         "label": "Week start day",
-        "description": "",
+        "description": "First day of the work week used to group timesheets (0 = Sunday, 1 = Monday).",
         "is_public": True,
         "sort_order": 80,
     },
@@ -116,20 +116,94 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": True,
         "sort_order": 5,
     },
-    # Navigation enforcement. 'off' lets each user choose (and persists their
-    # choice locally); 'sidebar' / 'topbar' lock the primary-nav layout for
-    # every user in the tenant and hide the in-app switch control. Public so
-    # the unauthenticated/just-logged-in shell can read it without an admin
-    # round-trip.
-    "enforced_nav_mode": {
-        "category": "time_entry",
+    # ── customization ──────────────────────────────────────────────
+    # Team-wide UI/UX defaults and the navigation-switch policy. All public
+    # so the just-logged-in shell can read them without an admin round-trip:
+    # the shell uses default_nav_layout / nav_switch_enabled / nav_switch_user_ids
+    # to decide each user's primary-nav layout and whether they may change it,
+    # and default_theme / default_palette / default_landing / default_page_size
+    # seed a brand-new user's preferences on first login.
+    "default_nav_layout": {
+        "category": "customization",
         "data_type": "string",
-        "default_value": "off",
-        "validation": {"enum": ["off", "sidebar", "topbar"]},
-        "label": "Enforce navigation layout",
-        "description": "Lock the primary navigation layout for all users. 'off' lets each user choose their own (sidebar or top bar).",
+        "default_value": "sidebar",
+        "validation": {"enum": ["sidebar", "sidebar_collapsed", "topbar"]},
+        "label": "Default navigation layout",
+        "description": "The navigation layout new users start with: expanded sidebar, collapsed icon rail, or top bar. Users who are allowed to switch can change their own afterward.",
         "is_public": True,
-        "sort_order": 90,
+        "sort_order": 10,
+    },
+    "nav_switch_enabled": {
+        "category": "customization",
+        "data_type": "bool",
+        "default_value": True,
+        "validation": {},
+        "label": "Let users switch their navigation layout",
+        "description": "When on, every user may choose their own navigation layout. When off, non-admins are locked to the default layout and the switch control is hidden (admins can always switch). Use the exception list below to allow specific users while this is off.",
+        "is_public": True,
+        "sort_order": 20,
+    },
+    "nav_switch_user_ids": {
+        "category": "customization",
+        "data_type": "json",
+        "default_value": [],
+        "validation": {},
+        "label": "Navigation switch exceptions",
+        "description": "Users who may switch their own navigation layout even when switching is turned off for the team. Admins can always switch and do not need to be listed.",
+        "is_public": True,
+        "sort_order": 30,
+    },
+    "default_theme": {
+        "category": "customization",
+        "data_type": "string",
+        "default_value": "system",
+        "validation": {"enum": ["light", "dark", "system"]},
+        "label": "Default theme",
+        "description": "The color theme new users start with. 'Follow system' matches the user's operating-system light/dark setting.",
+        "is_public": True,
+        "sort_order": 40,
+    },
+    "default_palette": {
+        "category": "customization",
+        "data_type": "string",
+        "default_value": "",
+        "validation": {
+            "enum": [
+                "",
+                "violet-night",
+                "emerald-night",
+                "amber-night",
+                "cyan-light",
+                "rose-light",
+                "sapphire-light",
+            ]
+        },
+        "label": "Default color palette",
+        "description": "Optional brand color palette new users start with. Leave blank to use the app default.",
+        "is_public": True,
+        "sort_order": 50,
+    },
+    "default_landing": {
+        "category": "customization",
+        "data_type": "string",
+        "default_value": "dashboard",
+        "validation": {
+            "enum": ["dashboard", "my-time", "time-off", "calendar", "approvals"]
+        },
+        "label": "Default landing page",
+        "description": "The page new users see first after they log in.",
+        "is_public": True,
+        "sort_order": 60,
+    },
+    "default_page_size": {
+        "category": "customization",
+        "data_type": "int",
+        "default_value": 25,
+        "validation": {"min": 10, "max": 200, "enum": [10, 25, 50, 100]},
+        "label": "Default page size",
+        "description": "How many rows new users see per page in lists and tables.",
+        "is_public": True,
+        "sort_order": 70,
     },
     # ── time_off ───────────────────────────────────────────────────
     "time_off_past_days": {
@@ -246,7 +320,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": False,
         "validation": {},
         "label": "Enable employee reminders",
-        "description": "",
+        "description": "Send timesheet deadline reminders to internal employees.",
         "is_public": False,
         "sort_order": 10,
     },
@@ -278,7 +352,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": False,
         "validation": {},
         "label": "Auto-lock after deadline",
-        "description": "",
+        "description": "Lock timesheets automatically once the submission deadline passes.",
         "is_public": False,
         "sort_order": 40,
     },
@@ -288,7 +362,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": "all",
         "validation": {},
         "label": "Recipients",
-        "description": "",
+        "description": "Who receives employee reminders: all eligible employees, or a chosen list.",
         "is_public": False,
         "sort_order": 50,
     },
@@ -298,7 +372,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": False,
         "validation": {},
         "label": "Enable contractor reminders",
-        "description": "",
+        "description": "Send timesheet deadline reminders to external contractors.",
         "is_public": False,
         "sort_order": 60,
     },
@@ -359,7 +433,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "default_value": 8,
         "validation": {"min": 0, "max": 23},
         "label": "Missing yesterday alert",
-        "description": "",
+        "description": "Hour of day (0-23) after which an employee is alerted about yesterday's missing time.",
         "is_public": False,
         "sort_order": 40,
     },

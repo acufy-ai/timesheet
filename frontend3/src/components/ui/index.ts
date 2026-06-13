@@ -9,3 +9,4 @@ export type { TileTone } from './StatTile';
 export { WorkspaceHeader } from './WorkspaceHeader';
 export { Empty } from './Empty';
 export { Modal } from './Modal';
+export { Tooltip } from './Tooltip';

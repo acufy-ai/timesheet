@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { AppShell } from '@/components/layout/AppShell';
+import { LandingRedirect } from '@/components/layout/LandingRedirect';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { ApprovalsPage } from '@/pages/ApprovalsPage';
@@ -73,7 +74,7 @@ export default function App() {
 
               {/* Authenticated app shell */}
               <Route element={<AppShell />}>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/" element={<LandingRedirect />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/my-time" element={<MyTimePage />} />
                 <Route path="/time-off" element={<TimeOffPage />} />

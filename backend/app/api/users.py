@@ -209,12 +209,52 @@ async def get_my_permissions(
 _INBOX_VIEW_MODES = {"cards", "table"}
 
 
+# UI preference keys that a brand-new user inherits from the tenant's
+# customization defaults on first login. Each maps a stored preference key to
+# the public setting that supplies its default. Only seeded when the user has
+# not already set that preference, so an explicit user choice always wins and
+# the value is never written back to the column (it stays a computed default
+# until the user saves their own).
+_PREF_DEFAULT_FROM_SETTING = {
+    "theme": "default_theme",
+    "palette": "default_palette",
+    "landing": "default_landing",
+    "page_size": "default_page_size",
+}
+
+
 @router.get("/me/preferences", response_model=UserPreferences)
 async def get_my_preferences(
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Return the caller's persisted UI preferences."""
-    return dict(current_user.preferences or {})
+    """Return the caller's persisted UI preferences.
+
+    For a brand-new user (a preference key not yet set), the tenant's
+    customization defaults (theme, palette, landing, page size) are merged in
+    so the user inherits the team default once. The defaults are computed, not
+    persisted: the moment the user saves their own choice it takes over.
+    """
+    prefs = dict(current_user.preferences or {})
+
+    if current_user.tenant_id is not None:
+        try:
+            from app.core.tenant_settings import get_public_settings
+
+            public = await get_public_settings(db, current_user.tenant_id)
+        except Exception:  # pragma: no cover - defensive; never block prefs read
+            public = {}
+        for pref_key, setting_key in _PREF_DEFAULT_FROM_SETTING.items():
+            if pref_key in prefs:
+                continue
+            value = public.get(setting_key)
+            # Skip empty/blank defaults (e.g. palette "" = app default) so the
+            # frontend falls back to its own default instead of an empty string.
+            if value is None or value == "":
+                continue
+            prefs[pref_key] = value
+
+    return prefs
 
 
 @router.patch("/me/preferences", response_model=UserPreferences)
@@ -237,7 +277,7 @@ async def update_my_preferences(
         if mode is not None and mode not in _INBOX_VIEW_MODES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"inbox_view_mode must be one of {sorted(_INBOX_VIEW_MODES)}",
+                detail='Inbox view must be either "cards" or "table".',
             )
 
     # Merge over the existing dict instead of replacing it so unrelated
@@ -529,7 +569,7 @@ async def update_tenant_settings(
         except KeyError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Unknown setting key: {key!r}",
+                detail=f"Unrecognized setting: {key}",
             )
         except ValueError as exc:
             raise HTTPException(
@@ -720,7 +760,12 @@ async def reset_user_password(
                 mark_email_verified=True,
             )
         except auth0_mgmt.Auth0MgmtError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+            # Don't surface raw Auth0 SDK error text to the user; log it instead.
+            logger.warning("Auth0 password set failed for user %s: %s", user.id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Couldn't update the password. Please try again.",
+            )
         # For Auth0 users, Auth0 is the source of truth. Write a random
         # throwaway hash locally so a future Auth0-disabled fallback can
         # never accept the user's *old* bcrypt as valid — and so this
