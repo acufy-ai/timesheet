@@ -497,6 +497,13 @@ export const meApi = {
     api.patch<ManagedUser>('/users/me/profile', data),
   changePassword: (current_password: string, new_password: string) =>
     api.post('/users/me/password', { current_password, new_password }),
+  // Per-user UI preferences (theme/palette/landing/page_size/inbox_view_mode/…).
+  // GET merges in the tenant's customization defaults for a brand-new user, so
+  // the returned object is the user's EFFECTIVE preferences. PATCH merges only
+  // the sent keys; sending null deletes a key.
+  preferences: () => api.get<Record<string, unknown>>('/users/me/preferences'),
+  updatePreferences: (patch: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>('/users/me/preferences', patch),
 };
 
 export const holidaysApi = {
@@ -520,7 +527,8 @@ export const tenantSettingsApi = {
   catalog: () => api.get<SettingDefinition[]>('/users/tenant-settings/catalog'),
   values: () => api.get<Record<string, SettingValue>>('/users/tenant-settings'),
   // Public subset (is_public=true), readable by ANY authenticated user (not
-  // just admins). Used by the shell to read enforced_nav_mode for everyone.
+  // just admins). Used by the shell to read the navigation policy
+  // (default_nav_layout / nav_switch_enabled / nav_switch_user_ids) for everyone.
   publicValues: () => api.get<Record<string, SettingValue>>('/users/tenant-settings/public'),
   update: (patch: Record<string, SettingValue>) =>
     api.patch<Record<string, SettingValue>>('/users/tenant-settings', patch),

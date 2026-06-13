@@ -19,12 +19,12 @@ import {
 export function TopNav({
   onDockToSidebar,
   ingestionEnabled,
-  enforced = false,
+  canSwitch = true,
 }: {
   onDockToSidebar: () => void;
   ingestionEnabled: boolean;
-  // When the admin has locked the nav layout, hide the "Sidebar" switch.
-  enforced?: boolean;
+  // When the user may not change their layout, hide the "Sidebar" switch.
+  canSwitch?: boolean;
 }) {
   const { user } = useAuth();
   const sections = buildNavigation(user, ingestionEnabled);
@@ -42,7 +42,7 @@ export function TopNav({
         )}
       </nav>
       <div className="flex flex-1 items-center justify-end">
-        {!enforced && (
+        {canSwitch && (
           <>
             <div className="mr-2 h-6 w-px bg-border" />
             <button

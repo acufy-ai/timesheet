@@ -15,6 +15,10 @@ interface ThemeContextValue {
   theme: ThemeMode;
   toggleTheme: () => void;
   setTheme: (mode: ThemeMode) => void;
+  /** True once the user has explicitly picked a theme (a value is stored). */
+  hasStoredChoice: boolean;
+  /** Apply a team-default variant, but ONLY if the user hasn't chosen one. */
+  applyDefaultVariant: (key: ThemeVariantKey) => void;
 }
 
 function currentVariant(key: ThemeVariantKey) {
@@ -59,6 +63,20 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTheme(theme === 'dark' ? 'light' : 'dark');
   }, [theme, setTheme]);
 
+  // Apply a tenant-default variant for a brand-new user. No-op once the user
+  // has made (and stored) their own choice, so the team default only seeds the
+  // first visit and never overrides a deliberate pick. Does NOT write to
+  // localStorage — the default stays "soft" until the user explicitly chooses.
+  const applyDefaultVariant = useCallback((key: ThemeVariantKey) => {
+    if (typeof window === 'undefined') return;
+    if (window.localStorage.getItem(STORAGE_KEY)) return; // user already chose
+    if (!(key in THEME_VARIANTS)) return;
+    setVariantKey(key);
+  }, []);
+
+  const hasStoredChoice =
+    typeof window !== 'undefined' && Boolean(window.localStorage.getItem(STORAGE_KEY));
+
   return (
     <ThemeContext.Provider
       value={{
@@ -69,6 +87,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         theme,
         toggleTheme,
         setTheme,
+        hasStoredChoice,
+        applyDefaultVariant,
       }}
     >
       {children}

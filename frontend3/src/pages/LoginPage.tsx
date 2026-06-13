@@ -15,9 +15,11 @@ import { useTheme } from '@/contexts/ThemeContext';
 // Where a freshly-authenticated user lands when they didn't deep-link to a
 // specific protected page. Platform admins have no tenant, so the team
 // dashboard is meaningless (and 400s) for them — send them to the platform
-// console instead.
+// console instead. Tenant users go to the index ("/"), which LandingRedirect
+// resolves to their preferred landing page (the tenant's default_landing
+// setting, overridable per-user), falling back to the dashboard.
 const defaultDestForRole = (role: string | undefined): string =>
-  role === 'PLATFORM_ADMIN' ? '/platform' : '/dashboard';
+  role === 'PLATFORM_ADMIN' ? '/platform' : '/';
 
 export function LoginPage() {
   const { isAuthenticated, isInitializing, login, user } = useAuth();

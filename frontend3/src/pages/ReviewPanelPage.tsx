@@ -539,7 +539,7 @@ const ChainCandidatesPanel: React.FC<{
       try {
         await onAssign({ name: candidate.name, email: candidate.email });
       } catch (exc) {
-        setError(getApiErrorMessage(exc, 'Assignment failed'));
+        setError(getApiErrorMessage(exc, 'Couldn\'t assign the client. Try again.'));
       }
       return;
     }
@@ -554,7 +554,7 @@ const ChainCandidatesPanel: React.FC<{
       setEditingIdx(null);
       setEmailInput('');
     } catch (exc) {
-      setError(getApiErrorMessage(exc, 'Assignment failed'));
+      setError(getApiErrorMessage(exc, 'Couldn\'t assign the client. Try again.'));
     }
   };
 
@@ -1086,7 +1086,7 @@ export function ReviewPanelPage() {
           );
         }
       } catch (error: unknown) {
-        failures.push(`Week #${id}: ${getApiErrorMessage(error, 'Approval failed')}`);
+        failures.push(`Week #${id}: ${getApiErrorMessage(error, 'Couldn\'t approve this timesheet.')}`);
       }
     }
 
@@ -1245,7 +1245,7 @@ export function ReviewPanelPage() {
         )}
         {reprocessDone && (
           <span className={cn('text-xs font-medium', reprocessStatus?.status === 'completed' ? 'text-sky-600' : 'text-rose-500')}>
-            {reprocessStatus?.status === 'completed' ? 'Done.' : 'Failed. Please try again.'}
+            {reprocessStatus?.status === 'completed' ? 'Done.' : 'Reprocessing failed. Please try again.'}
           </span>
         )}
         <div className="flex shrink-0 items-center gap-2">

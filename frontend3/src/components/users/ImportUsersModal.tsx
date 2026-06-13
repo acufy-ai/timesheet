@@ -118,7 +118,7 @@ export function ImportUsersModal({ open, onClose, onDone }: { open: boolean; onC
       res.data.rows.filter((r) => r.status === 'conflict').forEach((r) => { seed[String(r.row_index)] = 'skip'; });
       setResolutions(seed);
       setStep('validate');
-    } catch (e) { setError(err(e, 'Validation failed.')); }
+    } catch (e) { setError(err(e, 'Couldn\'t validate the import. Try again.')); }
     finally { setBusy(false); }
   }
 

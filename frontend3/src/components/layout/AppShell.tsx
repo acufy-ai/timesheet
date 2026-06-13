@@ -11,6 +11,7 @@ import { UtilityBar } from './UtilityBar';
 import { TopNav } from './TopNav';
 import { Sidebar } from './Sidebar';
 import { PortalPickerModal } from './PortalPickerModal';
+import { PreferencesDefaultsSync } from './PreferencesDefaultsSync';
 import { FloatingTimer } from '@/components/timer/FloatingTimer';
 import type { UserRole } from '@/types/user';
 
@@ -20,17 +21,35 @@ import type { UserRole } from '@/types/user';
 // are bounced to /login; the initial session-restore probe shows a spinner.
 export function AppShell() {
   const { isAuthenticated, isInitializing, user, needsRolePick, dismissRolePick, switchRole } = useAuth();
-  // Admins can lock the nav layout via the `enforced_nav_mode` tenant setting
-  // ('off' | 'sidebar' | 'topbar'). When locked, useNavMode forces that mode
-  // and reports `enforced`, which hides the in-app switch control. Read from
-  // the PUBLIC settings endpoint so enforcement applies to every role, not
-  // just admins (the full /tenant-settings endpoint is admin-only).
+  // Team navigation policy (customization settings). Read from the PUBLIC
+  // settings endpoint so it applies to every role, not just admins (the full
+  // /tenant-settings endpoint is admin-only):
+  //   default_nav_layout   — the layout new users start with
+  //   nav_switch_enabled   — whether non-admins may change their own layout
+  //   nav_switch_user_ids  — per-user exceptions when switching is off
+  // canSwitch = admin OR switching allowed for all OR user is an exception.
+  // When a user can't switch, useNavMode pins them to the team default and the
+  // nav components hide the switch controls.
   const tenantSettings = usePublicTenantSettings(isAuthenticated);
-  const enforcedNavMode =
-    typeof tenantSettings.data?.enforced_nav_mode === 'string'
-      ? (tenantSettings.data.enforced_nav_mode as string)
-      : null;
-  const { mode, collapsed, enforced, setMode, toggleCollapsed } = useNavMode(enforcedNavMode);
+  const settings = tenantSettings.data ?? {};
+  const teamLayout =
+    typeof settings.default_nav_layout === 'string'
+      ? (settings.default_nav_layout as string)
+      : 'sidebar';
+  const switchAllowed = settings.nav_switch_enabled !== false; // default on
+  const exceptionIds = Array.isArray(settings.nav_switch_user_ids)
+    ? (settings.nav_switch_user_ids as unknown[]).map((v) => String(v))
+    : [];
+  const isAdminRole = user?.role === 'ADMIN' || user?.role === 'PLATFORM_ADMIN';
+  const inException = Boolean(user && exceptionIds.includes(String(user.id)));
+  const canSwitch = Boolean(isAdminRole || switchAllowed || inException);
+  const defaultMode = teamLayout === 'topbar' ? 'topbar' : 'sidebar';
+  const defaultCollapsed = teamLayout === 'sidebar_collapsed';
+  const { mode, collapsed, setMode, toggleCollapsed } = useNavMode({
+    canSwitch,
+    defaultMode,
+    defaultCollapsed,
+  });
   const location = useLocation();
   const navigate = useNavigate();
   const [pickPending, setPickPending] = useState(false);
@@ -73,21 +92,21 @@ export function AppShell() {
 
   // Shell layout for both modes: the UtilityBar is always on top. Below it,
   // either a horizontal nav row (topbar) over full-width content, or a vertical
-  // sidebar beside the content. The sidebar row is `relative` so the sidebar's
-  // absolute hover-flyout is bounded to the content area, not the viewport.
+  // sidebar beside the content. The sidebar is in-flow (click-to-pin; it no
+  // longer floats on hover), so the content simply sits beside it.
   return (
     <TimerProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <UtilityBar />
 
       {mode === 'sidebar' ? (
-        <div className="relative flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1">
           <Sidebar
             collapsed={collapsed}
             onToggleCollapsed={toggleCollapsed}
             onSwitchToTopbar={() => setMode('topbar')}
             ingestionEnabled={ingestionEnabled}
-            enforced={enforced}
+            canSwitch={canSwitch}
           />
           <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="w-full px-5 py-6 sm:px-6 lg:px-8">
@@ -97,7 +116,7 @@ export function AppShell() {
         </div>
       ) : (
         <>
-          <TopNav onDockToSidebar={() => setMode('sidebar')} ingestionEnabled={ingestionEnabled} enforced={enforced} />
+          <TopNav onDockToSidebar={() => setMode('sidebar')} ingestionEnabled={ingestionEnabled} canSwitch={canSwitch} />
           <main className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1800px] px-5 py-6 sm:px-6 lg:px-8">
               <Outlet />
@@ -119,6 +138,10 @@ export function AppShell() {
 
       {/* Live timer floating widget (visible whenever a timer is active). */}
       <FloatingTimer />
+
+      {/* Applies the tenant's appearance defaults (theme/palette) to a
+          brand-new user once their preferences load. Renders nothing. */}
+      <PreferencesDefaultsSync enabled={isAuthenticated} />
     </div>
     </TimerProvider>
   );

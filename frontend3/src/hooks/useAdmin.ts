@@ -446,8 +446,9 @@ export function useTenantSettings(enabled = true) {
 }
 
 // Public (is_public=true) tenant settings, readable by every authenticated
-// user. The shell uses this to read enforced_nav_mode for all roles, since
-// the full /tenant-settings endpoint is admin-only.
+// user. The shell uses this to read the navigation policy (default_nav_layout
+// / nav_switch_enabled / nav_switch_user_ids) for all roles, since the full
+// /tenant-settings endpoint is admin-only.
 export function usePublicTenantSettings(enabled = true) {
   return useQuery({
     queryKey: ['tenant-settings', 'public'],
