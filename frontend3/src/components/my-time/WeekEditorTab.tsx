@@ -73,7 +73,7 @@ const isEditableStatus = (s: TimeEntry['status']) => s === 'DRAFT' || s === 'REJ
 
 function extractError(err: unknown): string {
   const e = err as { response?: { data?: { detail?: string } }; message?: string };
-  return e?.response?.data?.detail ?? e?.message ?? 'Something went wrong.';
+  return e?.response?.data?.detail ?? e?.message ?? 'Something went wrong. Please try again.';
 }
 
 // Draft row state. Negative tempId for not-yet-saved rows; entryId set once it
@@ -160,9 +160,6 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
   // ── Local edit state + flash ──────────────────────────────────────
   const [editing, setEditing] = useState<Record<string, EntryDraft>>({});
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
-  // When editing an EXISTING entry the backend requires a real edit reason +
-  // history summary (auditable). We prompt for it instead of fabricating one.
-  const [reasonPrompt, setReasonPrompt] = useState<{ key: string; reason: string } | null>(null);
   const flashAndFade = (tone: 'ok' | 'err', text: string) => {
     setFlash({ tone, text });
     window.setTimeout(() => setFlash(null), 4000);
@@ -239,6 +236,13 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
 
   // ── Row helpers ───────────────────────────────────────────────────
   function startEdit(entry: TimeEntry) {
+    const start = trimSeconds(entry.start_time);
+    const end = trimSeconds(entry.end_time);
+    // Treat hours as "manually overridden" (dirty) ONLY when they don't match
+    // what the saved start/end derive. When they DO match, hours were
+    // auto-derived, so editing the time should re-derive them (not stay stale).
+    const derived = start && end ? diffHours(start, end) : 0;
+    const overridden = derived > 0 && Math.abs(derived - toNum(entry.hours)) > 0.001;
     setEditing((prev) => ({
       ...prev,
       [`e${entry.id}`]: {
@@ -249,9 +253,9 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
         hours: String(entry.hours),
         is_billable: !!entry.is_billable,
         description: entry.description ?? '',
-        start_time: trimSeconds(entry.start_time),
-        end_time: trimSeconds(entry.end_time),
-        hours_dirty: true,
+        start_time: start,
+        end_time: end,
+        hours_dirty: overridden,
       },
     }));
   }
@@ -283,8 +287,10 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
     setEditing((prev) => (prev[key] ? { ...prev, [key]: { ...prev[key], ...patch } } : prev));
   }
 
-  // Validate the draft; for an EXISTING entry, open the edit-reason prompt
-  // (the backend requires a real reason). New entries save immediately.
+  // Validate then save. Drafts (and rejected entries being reworked) save
+  // immediately — no edit-reason gate. The audit reason is only meaningful for
+  // already-submitted entries, which aren't editable here anyway (the backend
+  // only allows editing DRAFT/REJECTED), so we never prompt.
   function saveRow(key: string) {
     const draft = editing[key];
     if (!draft) return;
@@ -297,16 +303,12 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
       if (derived > 0) hours = derived;
     }
     if (hours <= 0) { flashAndFade('err', 'Hours must be greater than zero.'); return; }
-    if (draft.entryId) {
-      setReasonPrompt({ key, reason: '' });
-    } else {
-      void commitSave(key);
-    }
+    void commitSave(key);
   }
 
-  // Persist the draft. For edits, edit_reason + history_summary come from the
-  // prompt (required by the backend); for creates they're omitted.
-  async function commitSave(key: string, editReason?: string) {
+  // Persist the draft. Draft/rejected edits go straight through with no
+  // edit-reason (the field is optional server-side); creates omit it too.
+  async function commitSave(key: string) {
     const draft = editing[key];
     if (!draft) return;
     let hours = toNum(draft.hours);
@@ -320,7 +322,6 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
     const endToSend = endStr ? toApiTime(endStr) : null;
     try {
       if (draft.entryId) {
-        const reason = (editReason ?? '').trim();
         await update.mutateAsync({
           id: draft.entryId,
           data: {
@@ -332,8 +333,6 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
             hours,
             description: draft.description,
             is_billable: draft.is_billable,
-            edit_reason: reason,
-            history_summary: reason,
           },
         });
       } else {
@@ -348,7 +347,6 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
           is_billable: draft.is_billable,
         });
       }
-      setReasonPrompt(null);
       cancelEdit(key);
       flashAndFade('ok', 'Saved.');
     } catch (err) {
@@ -678,10 +676,10 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
             <div className="overflow-x-auto">
               <table className="w-full table-fixed text-sm">
                 <colgroup>
-                  <col style={{ width: '110px' }} />
-                  <col style={{ width: '110px' }} />
-                  <col />
-                  <col />
+                  <col style={{ width: '132px' }} />
+                  <col style={{ width: '132px' }} />
+                  <col style={{ width: '200px' }} />
+                  <col style={{ width: '150px' }} />
                   <col style={{ width: '64px' }} />
                   <col style={{ width: '52px' }} />
                   <col />
@@ -811,30 +809,6 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
         </div>
       </div>
 
-      {/* Edit-reason prompt: required when editing an existing entry (the
-          backend records edit_reason + history_summary for the audit trail). */}
-      {reasonPrompt ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={() => setReasonPrompt(null)}>
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-foreground">Reason for this edit</h3>
-            <p className="mt-1 text-xs text-muted-foreground">A short note is recorded with the change so it's auditable.</p>
-            <input
-              autoFocus
-              value={reasonPrompt.reason}
-              onChange={(e) => setReasonPrompt((p) => (p ? { ...p, reason: e.target.value } : p))}
-              onKeyDown={(e) => { if (e.key === 'Enter' && reasonPrompt.reason.trim()) void commitSave(reasonPrompt.key, reasonPrompt.reason); }}
-              placeholder="e.g. Corrected hours, fixed project"
-              className="mt-3 h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setReasonPrompt(null)}>Cancel</Button>
-              <Button size="sm" disabled={!reasonPrompt.reason.trim() || update.isPending} onClick={() => void commitSave(reasonPrompt.key, reasonPrompt.reason)}>
-                {update.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Save edit
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

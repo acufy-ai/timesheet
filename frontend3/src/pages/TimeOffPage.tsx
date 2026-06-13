@@ -10,24 +10,21 @@ import {
   StatusBadge,
   WorkspaceHeader,
 } from '@/components/ui';
-import { useAuth } from '@/contexts/AuthContext';
 import {
   useCreateTimeOff,
   useDeleteTimeOff,
   useLeaveTypes,
   useMyTimeOff,
-  usePendingTimeOff,
   useSubmitTimeOff,
   useTimeOffUsage,
   useUpdateTimeOff,
 } from '@/hooks/useAdmin';
-import { TimeOffApprovals } from '@/components/time-off/TimeOffApprovals';
 import { addDays, formatDayLong, fromISODate, toISODate } from '@/lib/date';
 import { cn } from '@/lib/cn';
 import { timesheetStatusKey } from '@/types/time';
 import type { LeaveType, TimeOffRequest } from '@/types/admin';
 
-type Tab = 'mine' | 'approvals';
+type Tab = 'mine' | 'history';
 
 const num = (v: string | number) => (typeof v === 'string' ? parseFloat(v) : v) || 0;
 
@@ -53,8 +50,10 @@ function extractError(err: unknown, fallback: string): string {
 }
 
 export function TimeOffPage() {
-  const { user } = useAuth();
-  const isManager = user?.role === 'MANAGER' || user?.role === 'ADMIN';
+  // This page is the user's OWN time off (request + history). Team time-off
+  // APPROVALS are NOT here — they live on the Approvals page (Time Off tab).
+  // Previously this page showed the team-approval queue, which leaked the
+  // manager's reports' pending requests onto their personal page.
   const [tab, setTab] = useState<Tab>('mine');
 
   const leaveTypesQ = useLeaveTypes();
@@ -64,41 +63,29 @@ export function TimeOffPage() {
   }, [leaveTypesQ.data]);
   const labelFor = (code: string) => leaveTypes.find((t) => t.code === code)?.label ?? code;
 
-  const pendingApprovals = usePendingTimeOff(isManager && tab === 'approvals');
-
   return (
     <div className="space-y-5">
       <WorkspaceHeader
         title="Time Off"
-        description={isManager ? 'Request leave and review your team\'s requests.' : 'Request PTO, sick days, and other leave.'}
+        description="Request PTO, sick days, and other leave, and review your past requests."
       />
 
-      {isManager ? (
-        <div className="flex items-center gap-1.5 border-b border-border pb-3">
-          <TabPill active={tab === 'mine'} onClick={() => setTab('mine')}>My time off</TabPill>
-          <TabPill active={tab === 'approvals'} onClick={() => setTab('approvals')}>
-            Approvals
-            {(pendingApprovals.data?.length ?? 0) > 0 ? (
-              <span className={cn('ml-1 rounded-full px-1.5 text-[10px]', tab === 'approvals' ? 'bg-white/20' : 'bg-muted')}>
-                {pendingApprovals.data?.length}
-              </span>
-            ) : null}
-          </TabPill>
-        </div>
-      ) : null}
+      <div className="flex items-center gap-1.5 border-b border-border pb-3">
+        <TabPill active={tab === 'mine'} onClick={() => setTab('mine')}>My time off</TabPill>
+        <TabPill active={tab === 'history'} onClick={() => setTab('history')}>History</TabPill>
+      </div>
 
-      {tab === 'approvals' && isManager ? (
-        <TimeOffApprovals enabled={tab === 'approvals'} />
-      ) : (
-        <MyTimeOff leaveTypes={leaveTypes} labelFor={labelFor} />
-      )}
+      <MyTimeOff mode={tab === 'history' ? 'history' : 'mine'} leaveTypes={leaveTypes} labelFor={labelFor} />
     </div>
   );
 }
 
 // ─── Employee self-service ──────────────────────────────────────────
 
-function MyTimeOff({ leaveTypes, labelFor }: { leaveTypes: LeaveType[]; labelFor: (c: string) => string }) {
+function MyTimeOff({ mode, leaveTypes, labelFor }: { mode: 'mine' | 'history'; leaveTypes: LeaveType[]; labelFor: (c: string) => string }) {
+  // 'mine' = active/in-flight (Draft + Submitted) + the request form + balances.
+  // 'history' = decided (Approved + Rejected), read-only.
+  const isHistory = mode === 'history';
   const usage = useTimeOffUsage();
   const requests = useMyTimeOff();
   const create = useCreateTimeOff();
@@ -115,7 +102,10 @@ function MyTimeOff({ leaveTypes, labelFor }: { leaveTypes: LeaveType[]; labelFor
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const rows = requests.data ?? [];
+  const allRows = requests.data ?? [];
+  // Split the user's OWN requests: active (draft/submitted) vs decided history.
+  const ACTIVE = new Set(['DRAFT', 'SUBMITTED']);
+  const rows = allRows.filter((r) => isHistory ? !ACTIVE.has(r.status) : ACTIVE.has(r.status));
   const drafts = rows.filter((r) => r.status === 'DRAFT').map((r) => r.id);
 
   function openCreate() {
@@ -171,15 +161,19 @@ function MyTimeOff({ leaveTypes, labelFor }: { leaveTypes: LeaveType[]; labelFor
 
   return (
     <div className="space-y-5">
+      {/* New request + live balances belong to the active "My time off" view,
+          not the read-only History view. */}
+      {!isHistory ? (
       <div className="flex justify-end">
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4" />
           New request
         </Button>
       </div>
+      ) : null}
 
-      {/* Balance cards */}
-      {usage.isLoading ? (
+      {/* Balance cards (active view only) */}
+      {isHistory ? null : usage.isLoading ? (
         <div className="grid place-items-center rounded-2xl border border-border bg-card py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" />
         </div>
@@ -199,7 +193,7 @@ function MyTimeOff({ leaveTypes, labelFor }: { leaveTypes: LeaveType[]; labelFor
       {/* Requests, grouped by status */}
       <Card>
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <p className="text-sm font-semibold text-foreground">My requests</p>
+          <p className="text-sm font-semibold text-foreground">{isHistory ? 'Past requests' : 'My requests'}</p>
           {drafts.length > 0 ? (
             <Button size="sm" variant="secondary" onClick={() => submit.mutate(drafts)} disabled={submit.isPending}>
               Submit {drafts.length} draft{drafts.length === 1 ? '' : 's'}
@@ -212,13 +206,22 @@ function MyTimeOff({ leaveTypes, labelFor }: { leaveTypes: LeaveType[]; labelFor
             <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" />
           </div>
         ) : rows.length === 0 ? (
-          <Empty
-            Icon={Plus}
-            title="No time-off requests yet"
-            description="Request PTO, a sick day, or other leave to get started."
-            action={<Button size="sm" onClick={openCreate}>New request</Button>}
-            className="border-0"
-          />
+          isHistory ? (
+            <Empty
+              Icon={Plus}
+              title="No past time off"
+              description="Approved and rejected time-off requests will appear here."
+              className="border-0"
+            />
+          ) : (
+            <Empty
+              Icon={Plus}
+              title="No time-off requests yet"
+              description="Request PTO, a sick day, or other leave to get started."
+              action={<Button size="sm" onClick={openCreate}>New request</Button>}
+              className="border-0"
+            />
+          )
         ) : (
           <div className="divide-y divide-border">
             {STATUS_ORDER.map(({ key, label }) => {

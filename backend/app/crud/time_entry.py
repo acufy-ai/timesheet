@@ -283,10 +283,14 @@ async def update_time_entry(
     update_data = entry_update.model_dump(exclude_unset=True)
     edit_reason = (update_data.pop("edit_reason", None) or "").strip()
     history_summary = (update_data.pop("history_summary", None) or "").strip()
+    # Employee self-edits of their own DRAFT/REJECTED entries don't require an
+    # edit reason — they own the timesheet until it's submitted, and this is the
+    # only path that reaches here (update is restricted to DRAFT/REJECTED above).
+    # We still record a non-null audit summary so the history isn't blank.
     if not edit_reason:
-        raise ValueError("Edit reason is required")
+        edit_reason = "Edited by employee"
     if not history_summary:
-        raise ValueError("History summary is required")
+        history_summary = edit_reason
 
     target_entry_date = update_data.get("entry_date", entry.entry_date)
     target_hours = update_data.get("hours", entry.hours)
