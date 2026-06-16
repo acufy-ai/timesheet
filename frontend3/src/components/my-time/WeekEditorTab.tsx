@@ -673,8 +673,8 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
               onCopyLastWeek={() => copyFromDay(toISODate(addDays(selectedDay, -7)))}
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full table-fixed text-sm">
+            <div className="scroll-x-visible">
+              <table className="w-full table-fixed text-sm min-w-[900px]">
                 <colgroup>
                   <col style={{ width: '132px' }} />
                   <col style={{ width: '132px' }} />

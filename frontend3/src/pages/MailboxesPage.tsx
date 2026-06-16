@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Mail, Plus, RotateCcw, Trash2, Zap } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { Button, Card, Empty, Input, Modal, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
 import {
@@ -9,8 +10,16 @@ import {
   useResetMailboxCursor,
   useTestMailbox,
 } from '@/hooks/useAdmin';
-import { mailboxesApi } from '@/api/client';
+import { API_BASE, mailboxesApi } from '@/api/client';
 import type { Mailbox, MailboxCreateBody } from '@/types/admin';
+
+// Origin the OAuth callback popup posts back from (the API origin). Used to
+// validate the postMessage. API_BASE may be a relative '/api' (same origin) or
+// an absolute URL; resolve it against the current location either way.
+const API_ORIGIN = (() => {
+  try { return new URL(API_BASE, window.location.origin).origin; }
+  catch { return window.location.origin; }
+})();
 
 function errText(err: unknown, fb: string): string {
   const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -28,6 +37,7 @@ function relTime(iso: string | null): string {
 // Mailbox configuration for email ingestion: connect Gmail/Outlook via OAuth,
 // or add an IMAP mailbox with credentials. Per-row test / reset-cursor / delete.
 export function MailboxesPage() {
+  const qc = useQueryClient();
   const q = useMailboxes();
   const create = useCreateMailbox();
   const del = useDeleteMailbox();
@@ -37,18 +47,64 @@ export function MailboxesPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const [testResult, setTestResult] = useState<Record<number, string>>({});
+  const [connecting, setConnecting] = useState<null | 'google' | 'microsoft'>(null);
   const flashAndFade = (tone: 'ok' | 'err', text: string) => { setFlash({ tone, text }); window.setTimeout(() => setFlash(null), 5000); };
+
+  // Handle to the OAuth popup so we can poll for the user closing it manually.
+  const popupRef = useRef<Window | null>(null);
 
   // IMAP add form.
   const [form, setForm] = useState({ label: '', host: '', port: '993', username: '', password: '', use_ssl: true });
 
   const mailboxes = q.data ?? [];
 
+  // Listen for the OAuth callback popup's postMessage (the backend posts
+  // { type: 'mailbox-oauth', status, message } then auto-closes). On success we
+  // refetch the mailbox list so the new mailbox shows without a manual reload.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== API_ORIGIN) return;
+      const data = e.data as { type?: string; status?: string; message?: string } | null;
+      if (!data || data.type !== 'mailbox-oauth') return;
+      setConnecting(null);
+      if (data.status === 'success') {
+        qc.invalidateQueries({ queryKey: ['mailboxes'] });
+        flashAndFade('ok', data.message || 'Mailbox connected.');
+      } else {
+        flashAndFade('err', data.message || 'Could not connect the mailbox.');
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function connectOAuth(provider: 'google' | 'microsoft') {
     try {
+      // Open the popup synchronously (inside the click) so the browser doesn't
+      // block it, then point it at the auth URL once we have it.
+      const popup = window.open('about:blank', 'mailbox-oauth', 'width=520,height=680');
       const res = await mailboxesApi.oauthConnect(provider);
-      window.location.href = res.data.auth_url;
+      if (popup && !popup.closed) {
+        popup.location.href = res.data.auth_url;
+        popupRef.current = popup;
+        setConnecting(provider);
+        // If the user closes the popup without finishing, clear the busy state.
+        const timer = window.setInterval(() => {
+          if (!popupRef.current || popupRef.current.closed) {
+            window.clearInterval(timer);
+            setConnecting((c) => (c === provider ? null : c));
+            // Refetch in case the connection succeeded right before close.
+            qc.invalidateQueries({ queryKey: ['mailboxes'] });
+          }
+        }, 800);
+      } else {
+        // Popup blocked — fall back to same-tab navigation (old behavior).
+        window.location.href = res.data.auth_url;
+      }
     } catch (err) {
+      popupRef.current?.close();
+      setConnecting(null);
       flashAndFade('err', errText(err, `Could not start ${provider} connection.`));
     }
   }
@@ -101,8 +157,12 @@ export function MailboxesPage() {
         description="Connect inboxes so timesheet emails are processed automatically."
         primary={
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => connectOAuth('google')}>Connect Gmail</Button>
-            <Button variant="secondary" onClick={() => connectOAuth('microsoft')}>Connect Outlook</Button>
+            <Button variant="secondary" onClick={() => connectOAuth('google')} disabled={connecting !== null}>
+              {connecting === 'google' ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</> : 'Connect Gmail'}
+            </Button>
+            <Button variant="secondary" onClick={() => connectOAuth('microsoft')} disabled={connecting !== null}>
+              {connecting === 'microsoft' ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</> : 'Connect Outlook'}
+            </Button>
             <Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add IMAP</Button>
           </div>
         }
