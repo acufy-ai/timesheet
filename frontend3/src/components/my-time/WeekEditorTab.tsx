@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar,
   Check,
@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import { Button, Card } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import { timeApi } from '@/api/client';
 import {
   useCreateEntry,
@@ -865,6 +866,52 @@ function EmptyDay({
   );
 }
 
+// Description cell: clamps to 3 lines and shows a "Show more"/"Show less"
+// toggle ONLY when the text actually overflows that clamp. Overflow is measured
+// against the collapsed (clamped) element, so the button never appears for
+// short descriptions. Re-measures on text/width changes.
+function DescriptionCell({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      // When collapsed, the element is line-clamped, so scrollHeight >
+      // clientHeight means there's hidden text worth a "Show more".
+      if (!expanded) setOverflows(el.scrollHeight - el.clientHeight > 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, expanded]);
+
+  if (!text) return <span className="text-muted-foreground">—</span>;
+
+  return (
+    <div>
+      <p
+        ref={ref}
+        className={cn('whitespace-pre-wrap break-words text-foreground', !expanded && 'line-clamp-3')}
+      >
+        {text}
+      </p>
+      {(overflows || expanded) ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-0.5 text-xs font-medium text-primary hover:underline"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ViewRow({
   entry,
   projectName,
@@ -894,7 +941,7 @@ function ViewRow({
           <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-border text-muted-foreground"><X className="h-3 w-3" /></span>
         )}
       </td>
-      <td className="whitespace-pre-wrap break-words px-1.5 py-2">{entry.description}</td>
+      <td className="px-1.5 py-2"><DescriptionCell text={entry.description} /></td>
       <td className="px-1.5 py-2 text-right">
         <div className="inline-flex items-center gap-0.5">
           <button
