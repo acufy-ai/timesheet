@@ -108,3 +108,31 @@ main h2 {
     @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-foreground transition hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60;
   }
 }
+
+/* Always-visible horizontal scrollbar for overflow-x containers that would
+   otherwise use the OS's auto-hiding overlay scrollbar (macOS/trackpad), where
+   users can miss that there's more content to the right (e.g. the week-editor
+   row's Description/Action columns on narrow screens). */
+.scroll-x-visible {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+.scroll-x-visible::-webkit-scrollbar {
+  height: 10px;
+}
+.scroll-x-visible::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.4);
+  border-radius: 999px;
+}
+.scroll-x-visible::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.45);
+  border-radius: 999px;
+}
+.scroll-x-visible::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.7);
+}
+/* Firefox */
+.scroll-x-visible {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.45) hsl(var(--muted) / 0.4);
+}
