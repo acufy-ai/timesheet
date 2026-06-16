@@ -30,6 +30,9 @@ export function ProjectFormModal({
   const [rate, setRate] = useState('');
   const [budget, setBudget] = useState('');
   const [estHours, setEstHours] = useState('');
+  // Budget auto-fills to rate x est. hours until the user types their own
+  // budget; from then on their value wins and rate/hours changes leave it alone.
+  const [budgetDirty, setBudgetDirty] = useState(false);
   const [currency, setCurrency] = useState('USD');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -41,13 +44,30 @@ export function ProjectFormModal({
   const numStr = (v: string | number | null | undefined) =>
     v == null || v === '' ? '' : String(typeof v === 'string' ? v : v);
 
+  // rate x hours as a clean budget string, or '' when either side is missing.
+  const autoBudget = (r: string, h: string): string => {
+    const rn = parseFloat(r);
+    const hn = parseFloat(h);
+    if (!Number.isFinite(rn) || !Number.isFinite(hn) || rn <= 0 || hn <= 0) return '';
+    // Round to 2dp, then drop a trailing .00 so it reads as a whole number.
+    const v = Math.round(rn * hn * 100) / 100;
+    return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  };
+
   useEffect(() => {
     if (!open) return;
+    const r = numStr(project?.billable_rate);
+    const h = numStr(project?.estimated_hours);
+    const b = numStr(project?.budget_amount);
     setName(project?.name ?? '');
     setCode(project?.code ?? '');
-    setRate(numStr(project?.billable_rate));
-    setBudget(numStr(project?.budget_amount));
-    setEstHours(numStr(project?.estimated_hours));
+    setRate(r);
+    setBudget(b);
+    setEstHours(h);
+    // Treat an existing budget as "manually set" only when it doesn't match
+    // rate x hours. A blank budget, or one that equals the computed value,
+    // stays in auto mode so edits to rate/hours keep it in sync.
+    setBudgetDirty(b !== '' && b !== autoBudget(r, h));
     setCurrency(project?.currency ?? 'USD');
     setStartDate(project?.start_date ?? '');
     setEndDate(project?.end_date ?? '');
@@ -56,6 +76,21 @@ export function ProjectFormModal({
     setActive(project?.is_active ?? true);
     setError(null);
   }, [open, project]);
+
+  // When rate or est. hours change and the user hasn't overridden Budget,
+  // keep Budget synced to rate x hours.
+  const onRateChange = (v: string) => {
+    setRate(v);
+    if (!budgetDirty) setBudget(autoBudget(v, estHours));
+  };
+  const onHoursChange = (v: string) => {
+    setEstHours(v);
+    if (!budgetDirty) setBudget(autoBudget(rate, v));
+  };
+  const onBudgetChange = (v: string) => {
+    setBudget(v);
+    setBudgetDirty(true); // user took control; stop auto-syncing
+  };
 
   const saving = create.isPending || update.isPending;
 
@@ -114,11 +149,14 @@ export function ProjectFormModal({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label className={labelClass}>Billable rate *</label>
-              <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="150" required />
+              <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => onRateChange(e.target.value)} placeholder="150" required />
             </div>
             <div>
               <label className={labelClass}>Budget</label>
-              <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Optional" />
+              <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => onBudgetChange(e.target.value)} placeholder="Optional" />
+              {!budgetDirty && autoBudget(rate, estHours) ? (
+                <p className="mt-1 text-[10.5px] text-muted-foreground">Auto: rate × est. hours. Edit to override.</p>
+              ) : null}
             </div>
             <div>
               <label className={labelClass}>Currency</label>
@@ -128,7 +166,7 @@ export function ProjectFormModal({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label className={labelClass}>Est. hours</label>
-              <Input type="number" step="1" min="0" value={estHours} onChange={(e) => setEstHours(e.target.value)} placeholder="Optional" />
+              <Input type="number" step="1" min="0" value={estHours} onChange={(e) => onHoursChange(e.target.value)} placeholder="Optional" />
             </div>
             <div>
               <label className={labelClass}>Start date</label>
