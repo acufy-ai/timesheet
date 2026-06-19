@@ -45,7 +45,11 @@ class UserBase(BaseModel):
     # Plain str on the response so synthetic @local.invalid placeholders
     # round-trip; inbound paths still use EmailStr.
     email: str
-    username: str = Field(..., min_length=3, max_length=255)
+    # No min_length here: this is the RESPONSE base (UserResponse), and a
+    # legitimately short existing username (e.g. initials "ap") must not 500
+    # the whole list on serialization. Length is enforced on INPUT only
+    # (UserCreate / UserUpdate / UserSelfUpdate keep min_length=3).
+    username: str = Field(..., max_length=255)
     full_name: str
     title: Optional[str] = None
     department: Optional[str] = None
