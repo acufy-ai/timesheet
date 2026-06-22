@@ -427,6 +427,18 @@ async def update_timesheet_entry(
                 detail="Selected task does not belong to selected project",
             )
 
+    # Validate the time block against the MERGED state. The schema validator
+    # only sees the payload, so a partial patch (e.g. only start_time) could
+    # otherwise produce a reversed range against the entry's existing end_time.
+    fields_set = entry_update.model_fields_set
+    eff_start = entry_update.start_time if "start_time" in fields_set else entry.start_time
+    eff_end = entry_update.end_time if "end_time" in fields_set else entry.end_time
+    if eff_start is not None and eff_end is not None and eff_end <= eff_start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end_time must be after start_time",
+        )
+
     try:
         updated_entry = await update_time_entry(
             db, entry, entry_update, edited_by=current_user.id)

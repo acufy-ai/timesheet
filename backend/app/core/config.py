@@ -179,6 +179,18 @@ class Settings(BaseModel):
         default=False,
         description="Enable debug mode; accepts booleans and legacy env values like debug/release. Defaults to False so production environments are safe-by-default; local dev opts in via DEBUG=true in .env."
     )
+    # Request body-size caps (bytes). JSON/form bodies are tiny; only file
+    # uploads (multipart) legitimately need room. Tight JSON cap kills the
+    # unauthenticated large-payload DoS (e.g. a 100MB login body bcrypt'd in
+    # memory) while still allowing real uploads.
+    max_json_body_bytes: int = Field(
+        default=1_048_576,  # 1 MB
+        description="Max bytes for non-multipart request bodies (JSON/form)."
+    )
+    max_upload_body_bytes: int = Field(
+        default=26_214_400,  # 25 MB
+        description="Max bytes for multipart/form-data (file upload) requests."
+    )
     backend_host: str = Field(
         default="127.0.0.1",
         description="Backend server host"
@@ -568,11 +580,21 @@ _INSECURE_KEYS = {"", "dev-secret-key-change-in-production", "changeme", "secret
 
 if settings.secret_key in _INSECURE_KEYS:
     if settings.debug:
+        import secrets as _secrets
         import warnings
-        settings.secret_key = "dev-secret-key-DO-NOT-USE-IN-PRODUCTION"
+        # Use a RANDOM per-process key, never a hardcoded constant. The old
+        # behaviour substituted a publicly-known string ("dev-secret-key-DO-
+        # NOT-USE-IN-PRODUCTION"), which let anyone forge valid admin/PA tokens
+        # against a debug instance using only open-source code. A random key
+        # keeps local dev zero-config (no need to set SECRET_KEY) while making
+        # tokens unforgeable; the trade-off is that tokens don't survive an API
+        # restart in dev (just log in again).
+        settings.secret_key = _secrets.token_urlsafe(48)
         warnings.warn(
-            "SECRET_KEY is not set — using an insecure default. "
-            "Set SECRET_KEY in your environment before deploying to production.",
+            "SECRET_KEY is not set — generated a random ephemeral key for this "
+            "debug process. Tokens will not survive a restart. Set a stable "
+            "SECRET_KEY in your environment for persistent sessions, and always "
+            "set a strong SECRET_KEY before deploying to production.",
             stacklevel=1,
         )
     else:

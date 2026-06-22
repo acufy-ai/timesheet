@@ -31,6 +31,49 @@ DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION_MINUTES = 15
 
 
+# ── HttpOnly refresh-token cookie ───────────────────────────────────
+# The refresh token moves out of JS-readable storage into an HttpOnly
+# cookie so XSS can't exfiltrate it. The short-lived access token still
+# travels in the Authorization header (the SPA needs to read it), but the
+# long-lived refresh token is now invisible to JavaScript.
+#
+# Path=/ (not /auth): the dev Vite proxy serves the API under /api/* and
+# rewrites /api away before it hits the backend, so the browser sees the
+# refresh request as /api/auth/refresh. A Path=/auth cookie would never be
+# sent on that URL. Path=/ is reliably sent everywhere; HttpOnly keeps it
+# unreadable regardless of which requests carry it. SameSite=Lax blocks it
+# on cross-site subrequests; Secure (prod only) keeps it off plaintext HTTP.
+REFRESH_COOKIE_NAME = "refresh_token"
+REFRESH_COOKIE_PATH = "/"
+REFRESH_COOKIE_MAX_AGE_SECONDS = settings.refresh_token_expire_days * 24 * 60 * 60
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    """Write the refresh token as an HttpOnly cookie. Secure only outside
+    debug so the flow still works over http://localhost in dev."""
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=REFRESH_COOKIE_MAX_AGE_SECONDS,
+        path=REFRESH_COOKIE_PATH,
+        httponly=True,
+        secure=not settings.debug,
+        samesite="lax",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    """Delete the refresh cookie. Must target the same Path it was set with,
+    or the browser keeps the original and 'logout' doesn't log out."""
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path=REFRESH_COOKIE_PATH,
+        httponly=True,
+        secure=not settings.debug,
+        samesite="lax",
+    )
+
+
 # ── Platform-admin refresh-token storage (Redis-backed) ─────────────
 # PA refresh tokens cannot live in the shared `refresh_tokens` table
 # because that table FKs to `users(id)` and PA ids live in the separate
@@ -115,12 +158,17 @@ def _build_token_payload(
     realm: str,
     tenant_slug: str | None,
     active_role: str | None = None,
+    token_version: int | None = None,
 ) -> dict:
     """Assemble the JWT payload for access and refresh tokens.
 
     Single source of truth so login + refresh agree on claim shape.
     ``active_role`` is the per-token role for multi-role users; lets
     two tabs of the same user act as different roles independently.
+    ``token_version`` (claim ``tv``) is the user's force-logout counter:
+    get_current_user rejects a token whose ``tv`` is below the user's
+    current value. Omitted for control-plane (PA) tokens, which have no
+    per-tenant user row.
     """
     payload = {
         "sub": str(user_id),
@@ -131,6 +179,8 @@ def _build_token_payload(
     }
     if active_role is not None:
         payload["active_role"] = active_role
+    if token_version is not None:
+        payload["tv"] = token_version
     return payload
 
 
@@ -161,6 +211,7 @@ async def _lockout_policy(db: AsyncSession, tenant_id: int | None) -> tuple[int,
 async def _login_with_auth0(
     *,
     request: Request,
+    response: Response,
     email: str,
     password: str,
     db: AsyncSession,
@@ -253,6 +304,7 @@ async def _login_with_auth0(
         can_review=user.can_review,
         realm=realm,
         tenant_slug=tenant_slug,
+        token_version=user.token_version,
     )
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
@@ -329,9 +381,9 @@ async def _login_with_auth0(
     else:
         user = await get_user_by_email(db, user.email)
 
+    _set_refresh_cookie(response, refresh_token)
     return {
         "access_token": access_token,
-        "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": user,
         "previous_last_login_at": (
@@ -412,6 +464,7 @@ async def register(
 async def login(
     request: Request,
     login_request: LoginRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Login with email + password.
@@ -518,9 +571,9 @@ async def login(
         # Redis TTL matches the refresh-token expiry so revocation also
         # happens automatically when the token would naturally expire.
         await _pa_refresh_remember(pa_jti, pa_row.id, pa_expires)
+        _set_refresh_cookie(response, pa_refresh)
         return {
             "access_token": pa_access,
-            "refresh_token": pa_refresh,
             "token_type": "bearer",
             "user": {
                 "id": pa_row.id,
@@ -552,6 +605,7 @@ async def login(
     if settings.auth0_enabled:
         auth0_result = await _login_with_auth0(
             request=request,
+            response=response,
             email=login_request.email,
             password=login_request.password,
             db=db,
@@ -672,6 +726,7 @@ async def login(
         can_review=user.can_review,
         realm=realm,
         tenant_slug=tenant_slug,
+        token_version=user.token_version,
     )
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
@@ -735,9 +790,11 @@ async def login(
     else:
         user = await get_user_by_email(db, user.email)
 
+    # Refresh token rides in an HttpOnly cookie, not the JSON body, so JS
+    # (and therefore XSS) can't read it.
+    _set_refresh_cookie(response, refresh_token)
     return {
         "access_token": access_token,
-        "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": user,
         "previous_last_login_at": (
@@ -750,6 +807,7 @@ async def login(
 @limiter.limit("20/minute")
 async def refresh_token(
     request: Request,
+    response: Response,
     body: RefreshRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -758,7 +816,9 @@ async def refresh_token(
     from app.crud.user import get_user_by_id
     from app.db_tenant import tenant_session
 
-    token = body.refresh_token if body else None
+    # Prefer the HttpOnly cookie; fall back to the request body for API-only
+    # clients (and during the frontend transition).
+    token = request.cookies.get(REFRESH_COOKIE_NAME) or (body.refresh_token if body else None)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token provided")
 
@@ -811,9 +871,9 @@ async def refresh_token(
         new_access = create_access_token(pa_payload)
         new_refresh, new_jti, new_expires = create_refresh_token(pa_payload)
         await _pa_refresh_remember(new_jti, pa_row.id, new_expires)
+        _set_refresh_cookie(response, new_refresh)
         return {
             "access_token": new_access,
-            "refresh_token": new_refresh,
             "token_type": "bearer",
             "user": {
                 "id": pa_row.id,
@@ -877,6 +937,7 @@ async def refresh_token(
             realm=realm,
             tenant_slug=token_tenant_slug,
             active_role=token_active_role,
+            token_version=user.token_version,
         )
         new_access = create_access_token(token_payload)
         new_refresh, new_jti, new_expires = create_refresh_token(token_payload)
@@ -894,9 +955,9 @@ async def refresh_token(
     else:
         user, access_token, new_refresh_token, _ = await _do_refresh(db)
 
+    _set_refresh_cookie(response, new_refresh_token)
     return {
         "access_token": access_token,
-        "refresh_token": new_refresh_token,
         "token_type": "bearer",
         "user": user,
     }
@@ -1105,11 +1166,13 @@ async def change_password(
 
 @router.post("/logout")
 async def logout(
+    request: Request,
+    response: Response,
     body: RefreshRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Revoke the current refresh token (logout).
+    """Revoke the current refresh token AND the access token (logout).
 
     Tenant users' RefreshToken rows live in their per-tenant DB, so we
     route based on the refresh token's ``tenant_slug`` claim before
@@ -1117,9 +1180,24 @@ async def logout(
     slug claim) fall back to the shared DB.
     """
     from app.core.security import decode_token
+    from app.core.token_denylist import revoke_access_jti
     from app.db_tenant import tenant_session
 
-    token = body.refresh_token if body else None
+    # Always clear the refresh cookie, on every exit path. Done first so the
+    # browser drops it even when there's no token to revoke server-side.
+    _clear_refresh_cookie(response)
+
+    # Immediately revoke the access token that authorized this request, so it
+    # can't be reused for the rest of its TTL. get_current_user stashed its
+    # jti/exp on request.state. Done first so logout kills the access token
+    # even when no refresh token is supplied.
+    await revoke_access_jti(
+        getattr(request.state, "access_jti", None),
+        getattr(request.state, "access_exp", None),
+    )
+
+    # Prefer the cookie; fall back to the body for API-only clients.
+    token = request.cookies.get(REFRESH_COOKIE_NAME) or (body.refresh_token if body else None)
     if not token:
         return {"message": "Logged out successfully"}
 
@@ -1190,6 +1268,13 @@ async def revoke_all_user_tokens(
                 RefreshToken.revoked == False,  # noqa: E712
             )
             .values(revoked=True)
+        )
+        # Bump token_version so every outstanding access token is invalidated
+        # immediately, not just blocked from refreshing.
+        await session.execute(
+            update(User)
+            .where(User.id == current_user.id)
+            .values(token_version=User.token_version + 1)
         )
         await session.commit()
 
@@ -1346,6 +1431,15 @@ async def admin_revoke_user_tokens(
             )
             .values(revoked=True)
         )
+        # Bump token_version so the user's outstanding ACCESS tokens are
+        # rejected immediately (refresh revocation alone leaves access tokens
+        # valid until expiry). This is the "force-logout actually works now"
+        # part: one increment invalidates every device/tab at once.
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(token_version=User.token_version + 1)
+        )
         await session.commit()
         await record_activity_events(session, [build_activity_event(
             activity_type="USER_TOKENS_REVOKED",
@@ -1376,6 +1470,7 @@ async def admin_revoke_user_tokens(
 @limiter.limit("30/minute")
 async def switch_role(
     request: Request,
+    response: Response,
     body: RoleSwitchRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1467,6 +1562,7 @@ async def switch_role(
         realm=realm,
         tenant_slug=token_tenant_slug,
         active_role=requested_role_value,
+        token_version=target.token_version,
     )
     access = create_access_token(payload)
     refresh, jti, expires_at = create_refresh_token(payload)
@@ -1479,9 +1575,11 @@ async def switch_role(
         db.add(RefreshToken(user_id=target.id, jti=jti, expires_at=expires_at))
         await db.commit()
 
+    # Set the HttpOnly cookie. The new-tab handoff shares the same-origin
+    # cookie, so the refresh token no longer needs to ride in the body.
+    _set_refresh_cookie(response, refresh)
     return {
         "access_token": access,
-        "refresh_token": refresh,
         "token_type": "bearer",
         "user": target,
     }
@@ -1608,6 +1706,7 @@ async def exchange_role_handoff(
         realm=realm,
         tenant_slug=target_tenant_slug,
         active_role=target_role_value,
+        token_version=target.token_version,
     )
     access = create_access_token(payload)
     refresh, jti, expires_at = create_refresh_token(payload)

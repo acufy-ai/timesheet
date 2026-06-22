@@ -13,6 +13,35 @@ import logging
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
+# ── CLIENT-role allowlist (fail-closed) ──────────────────────────────────────
+# Paths a CLIENT user is permitted to reach. Everything else is denied by
+# get_current_user. Entries match by exact path or as a prefix (so the whole
+# client-portal API is covered without listing each route). Keep this list
+# tight: the security of the client portal rests on it being an allowlist, not
+# a denylist. Self-service entries let a client manage their own session.
+_CLIENT_ALLOWED_EXACT = frozenset({
+    "/auth/me",
+    "/auth/logout",
+    "/auth/change-password",
+    "/auth/switch-role",          # harmless: a CLIENT has only the CLIENT role
+    "/users/me/permissions",
+    "/users/me/preferences",
+})
+_CLIENT_ALLOWED_PREFIXES = (
+    "/client-portal",             # the entire client-portal API surface
+    "/users/me/",                 # self-service profile/preferences subpaths
+)
+
+
+def _client_path_allowed(path: str) -> bool:
+    """True if a CLIENT user may reach this request path. Fail-closed: anything
+    not explicitly allowed is denied. A trailing-slash-insensitive match keeps
+    behaviour stable across route definitions."""
+    p = path.rstrip("/") or "/"
+    if p in _CLIENT_ALLOWED_EXACT or path in _CLIENT_ALLOWED_EXACT:
+        return True
+    return any(path.startswith(prefix) for prefix in _CLIENT_ALLOWED_PREFIXES)
+
 
 def _decode_or_raise(credentials: HTTPAuthorizationCredentials) -> dict:
     """Decode the JWT or raise 401. Shared by every dep that needs the
@@ -96,6 +125,20 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Reject access tokens that were revoked on logout / force-logout.
+        # Stash the jti+exp on request.state so the logout handler can revoke
+        # the very token that authorized the request.
+        access_jti = payload.get("jti")
+        request.state.access_jti = access_jti
+        request.state.access_exp = payload.get("exp")
+        from app.core.token_denylist import is_access_jti_revoked
+        if await is_access_jti_revoked(access_jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
@@ -226,6 +269,23 @@ async def get_current_user(
                 detail="Inactive user",
             )
 
+        # Force-logout check: every access token carries the token_version it
+        # was minted at. An admin force-logout (or revoke-all-sessions) bumps
+        # user.token_version, instantly invalidating every outstanding token.
+        # Tokens predating this feature have no `tv` claim; treat them as
+        # version 0 so they keep working until they expire (≤30 min).
+        token_tv = payload.get("tv", 0)
+        if token_tv < (user.token_version or 0):
+            logger.warning(
+                "Stale token_version for user_id=%s (token tv=%s < current %s)",
+                user_id, token_tv, user.token_version,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been revoked. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # active_role on the token is the role this request acts as.
         # Must still be in the user's allowed roles — a token cannot
         # grant a role the user isn't authorized for.
@@ -287,6 +347,21 @@ async def get_current_user(
                     detail="Invalid authentication credentials",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+
+        # ── Fail-closed gate for the CLIENT role ──────────────────────────────
+        # A CLIENT (external client-portal person) may reach ONLY an explicit
+        # allowlist of paths: the client-portal API + a handful of self-service
+        # endpoints. Every other authenticated route — including the many that
+        # have no require_role gate — is denied by default. New routes are
+        # auto-denied to CLIENT unless added to the allowlist, so this can't
+        # silently leak. Enforced here because every authenticated request
+        # funnels through get_current_user.
+        if user.role == UserRole.CLIENT and not _client_path_allowed(request.url.path):
+            logger.warning("CLIENT user %s blocked from %s", user_id, request.url.path)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Client accounts can only access the client portal.",
+            )
 
         logger.debug("User validated successfully")
         request.state.current_user = user

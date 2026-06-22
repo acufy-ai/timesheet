@@ -1,6 +1,12 @@
-"""H5: the refresh-token cookie helpers should set HttpOnly + Secure
-(in prod) + SameSite=Lax + Path=/auth + the right TTL, and clearing
-should target the same Path so the browser actually drops the cookie.
+"""The refresh-token cookie helpers should set HttpOnly + Secure (in prod)
++ SameSite=Lax + Path=/ + the right TTL, and clearing should target the
+same Path so the browser actually drops the cookie.
+
+Path is "/" (not "/auth"): the dev Vite proxy serves the API under /api/*
+and rewrites /api away before the backend sees it, so the browser issues
+the refresh request as /api/auth/refresh. A Path=/auth cookie would never
+be sent on that URL. Path=/ is reliably sent; HttpOnly keeps it unreadable
+regardless of which requests carry it.
 
 These pin the helper contract — if the values ever drift (e.g. someone
 loosens SameSite to None without thinking through the cross-origin
@@ -33,10 +39,10 @@ def test_set_refresh_cookie_pins_httponly_lax_path():
     assert len(headers) == 1
     h = headers[0]
     assert h.startswith(f"{REFRESH_COOKIE_NAME}=tok-1")
-    assert "HttpOnly" in h
-    assert "SameSite=lax" in h.lower() or "SameSite=Lax" in h
-    assert f"Path={REFRESH_COOKIE_PATH}" in h
-    assert f"Max-Age={REFRESH_COOKIE_MAX_AGE_SECONDS}" in h
+    assert "httponly" in h.lower()
+    assert "samesite=lax" in h.lower()
+    assert f"path={REFRESH_COOKIE_PATH}".lower() in h.lower()
+    assert f"max-age={REFRESH_COOKIE_MAX_AGE_SECONDS}" in h.lower()
 
 
 def test_set_refresh_cookie_secure_in_prod_mode(monkeypatch):

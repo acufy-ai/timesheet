@@ -3,7 +3,7 @@
 // actually consume in step 4 / 6 / 7. Add fields here as pages start
 // needing them.
 
-export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'VIEWER' | 'ADMIN' | 'PLATFORM_ADMIN';
+export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'VIEWER' | 'ADMIN' | 'PLATFORM_ADMIN' | 'CLIENT';
 
 export interface User {
   id: number;
@@ -29,7 +29,10 @@ export interface User {
 
 export interface LoginResponse {
   access_token: string;
-  refresh_token: string;
+  // No longer returned in the body — the refresh token is set as an HttpOnly
+  // cookie. Kept optional for backward compatibility with any caller still
+  // reading it.
+  refresh_token?: string;
   token_type: 'bearer';
   user: User;
 }

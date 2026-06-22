@@ -173,10 +173,19 @@ class LineItemUpdate(BaseModel):
     project_code: str | None = None
     project_id: int | None = None
 
+    @field_validator("hours")
+    @classmethod
+    def _bounded_hours(cls, v: Decimal | None) -> Decimal | None:
+        # A reviewer edit must not push nonsensical hours into an approved,
+        # billable time entry. Bound to a single calendar day.
+        if v is not None and not (Decimal("0") < v <= Decimal("24")):
+            raise ValueError("hours must be greater than 0 and at most 24")
+        return v
+
 
 class LineItemCreate(BaseModel):
     work_date: date
-    hours: Decimal = Field(..., gt=0)
+    hours: Decimal = Field(..., gt=0, le=24)
     description: str | None = None
     project_code: str | None = None
     project_id: int | None = None

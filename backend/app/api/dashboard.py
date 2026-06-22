@@ -33,7 +33,19 @@ from app.schemas import (
     ManagerTeamCapacityEntry,
     ManagerTeamMemberStatus,
     ManagerTeamOverviewResponse,
+    TeamBillableRow,
+    TeamBillableStatsResponse,
+    TeamOnTimeRow,
+    TeamOnTimeStatsResponse,
+    TeamOnTimeWeek,
+    TeamProjectMatrixCell,
+    TeamProjectMatrixProject,
+    TeamProjectMatrixResponse,
+    TeamProjectMatrixRow,
     TeamDailyOverviewResponse,
+    TeamRejectionReason,
+    TeamRejectionRow,
+    TeamRejectionStatsResponse,
     UserResponse,
 )
 
@@ -290,6 +302,7 @@ async def get_dashboard_team(
         .options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
         .order_by(User.full_name.asc())
     )
@@ -445,6 +458,22 @@ async def get_dashboard_analytics(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Bound the date span. Without this an attacker could request
+    # 1900-01-01..2100-12-31 and force a full-table scan/aggregate. 366 days
+    # matches the `days_back <= 365` cap the other dashboard endpoints use.
+    # Numeric code on purpose: a local var named ``status`` shadows the
+    # fastapi.status import elsewhere in this module (see note above).
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="end_date must be on or after start_date.",
+        )
+    if (end_date - start_date).days > 366:
+        raise HTTPException(
+            status_code=400,
+            detail="Date range too large; limit analytics to at most 366 days.",
+        )
+
     target_user_ids = [current_user.id]
     if current_user.role in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         scoped_user_ids = await _get_scoped_employee_ids(db, current_user)
@@ -463,6 +492,11 @@ async def get_dashboard_analytics(
         TimeEntry.user_id.in_(target_user_ids),
         TimeEntry.entry_date >= start_date,
         TimeEntry.entry_date <= end_date,
+        # Exclude REJECTED entries: rejected time is not real work and must not
+        # inflate logged/billable totals. DRAFT and SUBMITTED stay in — for a
+        # personal "my hours" view, in-progress work the user has logged is
+        # expected to count.
+        TimeEntry.status != TimeEntryStatus.REJECTED,
     ]
     if project_id is not None:
         filters.append(TimeEntry.project_id == project_id)
@@ -864,10 +898,18 @@ async def get_manager_team_overview(
 
     late_user_ids: set[int] = set()
     if current_user.tenant_id is not None:
+        # latest_closed_period depends only on the user's cadence (internal vs
+        # external), not the individual user, and each call re-reads several
+        # tenant settings. Memoize by cadence key so this resolves at most
+        # twice for the whole team instead of once per member (N+1 -> ~2).
+        period_cache: dict[bool, object] = {}
         for member in team_members:
-            period = await latest_closed_period(
-                db, current_user.tenant_id, member, today, tenant_timezone
-            )
+            cache_key = bool(member.is_external)
+            if cache_key not in period_cache:
+                period_cache[cache_key] = await latest_closed_period(
+                    db, current_user.tenant_id, member, today, tenant_timezone
+                )
+            period = period_cache[cache_key]
             if period is None:
                 continue
             if await is_user_late_for_period(db, member, period):
@@ -1119,3 +1161,476 @@ async def get_manager_project_health(
     health_order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
     rows.sort(key=lambda r: (health_order.get(r.health, 9), r.project_name.lower()))
     return ManagerProjectHealthResponse(rows=rows)
+
+
+@router.get("/team-rejection-stats", response_model=TeamRejectionStatsResponse)
+async def get_team_rejection_stats(
+    days_back: int = Query(90, ge=1, le=365),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-employee rejection rate and the team's top rejection reasons over a
+    lookback window. Computed entirely from existing time entries; no new data.
+
+    Authorization mirrors the other manager dashboard endpoints: MANAGER /
+    VIEWER / ADMIN. EMPLOYEE and PLATFORM_ADMIN get 403.
+
+    Definition of "rejection rate": of an employee's time entries that reached
+    a terminal decision (APPROVED or REJECTED) with an ``entry_date`` inside the
+    window, the share that are currently REJECTED. An entry that was rejected
+    then resubmitted and approved counts as approved (current status), which is
+    the honest "how often does work get sent back and stay back" reading. The
+    rate is None (undefined) when an employee had no decided entries, never a
+    misleading 0.
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    today = now_for_tenant(tenant_timezone).date()
+    window_start = today - timedelta(days=days_back)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return TeamRejectionStatsResponse(
+            days_back=days_back, rows=[], top_reasons=[], team_rejection_rate_pct=None
+        )
+
+    members_result = await db.execute(
+        select(User.id, User.full_name)
+        .where(User.id.in_(team_member_ids))
+        .order_by(User.full_name.asc())
+    )
+    members = list(members_result.all())
+
+    # Per-user decided/rejected counts. Only terminal statuses count toward the
+    # denominator; DRAFT/SUBMITTED are in-flight and excluded.
+    decided_statuses = [TimeEntryStatus.APPROVED, TimeEntryStatus.REJECTED]
+    counts_result = await db.execute(
+        select(TimeEntry.user_id, TimeEntry.status, func.count(TimeEntry.id))
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status.in_(decided_statuses),
+        )
+        .group_by(TimeEntry.user_id, TimeEntry.status)
+    )
+    decided_by_user: dict[int, int] = {}
+    rejected_by_user: dict[int, int] = {}
+    for user_id, status, cnt in counts_result.all():
+        decided_by_user[user_id] = decided_by_user.get(user_id, 0) + int(cnt)
+        if status == TimeEntryStatus.REJECTED:
+            rejected_by_user[user_id] = rejected_by_user.get(user_id, 0) + int(cnt)
+
+    rows: list[TeamRejectionRow] = []
+    for user_id, full_name in members:
+        decided = decided_by_user.get(user_id, 0)
+        rejected = rejected_by_user.get(user_id, 0)
+        rate = round(rejected / decided * 100) if decided > 0 else None
+        rows.append(
+            TeamRejectionRow(
+                user_id=user_id,
+                full_name=full_name,
+                decided_count=decided,
+                rejected_count=rejected,
+                rejection_rate_pct=rate,
+            )
+        )
+    # Highest-rejection employees first; undefined rates sort last.
+    rows.sort(key=lambda r: (r.rejection_rate_pct is None, -(r.rejection_rate_pct or 0), -r.rejected_count))
+
+    # Top rejection reasons across the team. Normalize whitespace/case so
+    # "Missing detail" and "missing detail " collapse together; blank reasons
+    # bucket as "(no reason given)".
+    reasons_result = await db.execute(
+        select(TimeEntry.rejection_reason, func.count(TimeEntry.id))
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status == TimeEntryStatus.REJECTED,
+        )
+        .group_by(TimeEntry.rejection_reason)
+    )
+    reason_tally: dict[str, int] = {}
+    for reason, cnt in reasons_result.all():
+        key = (reason or "").strip() or "(no reason given)"
+        reason_tally[key] = reason_tally.get(key, 0) + int(cnt)
+    top_reasons = [
+        TeamRejectionReason(reason=r, count=c)
+        for r, c in sorted(reason_tally.items(), key=lambda kv: -kv[1])
+    ][:8]
+
+    total_decided = sum(decided_by_user.values())
+    total_rejected = sum(rejected_by_user.values())
+    team_rate = round(total_rejected / total_decided * 100) if total_decided > 0 else None
+
+    return TeamRejectionStatsResponse(
+        days_back=days_back,
+        rows=rows,
+        top_reasons=top_reasons,
+        team_rejection_rate_pct=team_rate,
+    )
+
+
+@router.get("/team-billable-stats", response_model=TeamBillableStatsResponse)
+async def get_team_billable_stats(
+    days_back: int = Query(90, ge=1, le=365),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-employee billable split over a lookback window. Of an employee's
+    APPROVED hours in the window, the share marked billable. Computed from
+    existing time entries; no new data and no rates involved (this is an hours
+    ratio, not a revenue figure).
+
+    Authorization mirrors the other manager dashboard endpoints: MANAGER /
+    VIEWER / ADMIN. The percentage is None when an employee logged no approved
+    hours in the window (undefined, not 0).
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    today = now_for_tenant(tenant_timezone).date()
+    window_start = today - timedelta(days=days_back)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return TeamBillableStatsResponse(
+            days_back=days_back, rows=[], team_billable_pct=None,
+            team_approved_hours=Decimal("0"), team_billable_hours=Decimal("0"),
+        )
+
+    members_result = await db.execute(
+        select(User.id, User.full_name)
+        .where(User.id.in_(team_member_ids))
+        .order_by(User.full_name.asc())
+    )
+    members = list(members_result.all())
+
+    # Approved hours per user, split by billable flag. Only APPROVED time
+    # counts (consistent with the financial source-of-truth rule).
+    hours_result = await db.execute(
+        select(
+            TimeEntry.user_id,
+            TimeEntry.is_billable,
+            func.coalesce(func.sum(TimeEntry.hours), 0),
+        )
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+        .group_by(TimeEntry.user_id, TimeEntry.is_billable)
+    )
+    approved_by_user: dict[int, Decimal] = {}
+    billable_by_user: dict[int, Decimal] = {}
+    for user_id, is_billable, hrs in hours_result.all():
+        h = Decimal(str(hrs or 0))
+        approved_by_user[user_id] = approved_by_user.get(user_id, Decimal("0")) + h
+        if is_billable:
+            billable_by_user[user_id] = billable_by_user.get(user_id, Decimal("0")) + h
+
+    rows: list[TeamBillableRow] = []
+    for user_id, full_name in members:
+        approved = approved_by_user.get(user_id, Decimal("0"))
+        billable = billable_by_user.get(user_id, Decimal("0"))
+        pct = round(billable / approved * 100) if approved > 0 else None
+        rows.append(
+            TeamBillableRow(
+                user_id=user_id,
+                full_name=full_name,
+                approved_hours=approved,
+                billable_hours=billable,
+                billable_pct=pct,
+            )
+        )
+    # Lowest billable share first (most attention-worthy); undefined last.
+    rows.sort(key=lambda r: (r.billable_pct is None, r.billable_pct if r.billable_pct is not None else 0))
+
+    team_approved = sum(approved_by_user.values(), Decimal("0"))
+    team_billable = sum(billable_by_user.values(), Decimal("0"))
+    team_pct = round(team_billable / team_approved * 100) if team_approved > 0 else None
+
+    return TeamBillableStatsResponse(
+        days_back=days_back,
+        rows=rows,
+        team_billable_pct=team_pct,
+        team_approved_hours=team_approved,
+        team_billable_hours=team_billable,
+    )
+
+
+_DEADLINE_WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+@router.get("/team-on-time-stats", response_model=TeamOnTimeStatsResponse)
+async def get_team_on_time_stats(
+    days_back: int = Query(90, ge=7, le=365),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-employee on-time submission trend at weekly grain over the window.
+
+    For each employee and each Mon-Sun week that has any of their time entries,
+    the week is "on time" if their latest submission for that week's entries
+    happened on or before the week's submission deadline (from the tenant's
+    `reminder_internal_deadline_day` / `reminder_internal_deadline_time`
+    settings, defaulting to Friday 17:00). On-time rate = on-time weeks / weeks
+    with activity. None when the employee had no active weeks (undefined, not 0).
+
+    Reuses the same deadline settings as the reminder/late logic so this trend
+    agrees with the existing single-period "is late" signal. Authorization
+    mirrors the other manager dashboard endpoints.
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    # Resolve the tenant deadline day/time once (same keys as submission_period).
+    deadline_dow = 4  # Friday
+    deadline_time = time(17, 0)
+    if current_user.tenant_id is not None:
+        from app.core.tenant_settings import get_setting
+        try:
+            day_raw = await get_setting(db, current_user.tenant_id, "reminder_internal_deadline_day")
+            if isinstance(day_raw, str) and day_raw.lower() in _DEADLINE_WEEKDAYS:
+                deadline_dow = _DEADLINE_WEEKDAYS[day_raw.lower()]
+        except (KeyError, ValueError):
+            pass
+        try:
+            time_raw = await get_setting(db, current_user.tenant_id, "reminder_internal_deadline_time")
+            if isinstance(time_raw, str) and ":" in time_raw:
+                hh, mm = time_raw.split(":", 1)
+                deadline_time = time(hour=int(hh), minute=int(mm))
+        except (KeyError, ValueError):
+            pass
+
+    today = now_for_tenant(tenant_timezone).date()
+    window_start = today - timedelta(days=days_back)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return TeamOnTimeStatsResponse(days_back=days_back, rows=[], team_on_time_pct=None)
+
+    members_result = await db.execute(
+        select(User.id, User.full_name)
+        .where(User.id.in_(team_member_ids))
+        .order_by(User.full_name.asc())
+    )
+    members = list(members_result.all())
+
+    # Pull the entries we need: any entry in the window that was ever submitted
+    # (submitted_at not null). A draft-only week is not counted as "activity"
+    # for the on-time measure since there is nothing to be on time about.
+    entries_result = await db.execute(
+        select(TimeEntry.user_id, TimeEntry.entry_date, TimeEntry.submitted_at)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.submitted_at.is_not(None),
+        )
+    )
+
+    # Bucket by (user, week-Monday) -> latest submitted_at for that week.
+    week_latest_submit: dict[tuple[int, date], datetime] = {}
+    for user_id, entry_date, submitted_at in entries_result.all():
+        if submitted_at is None:
+            continue
+        week_monday = entry_date - timedelta(days=entry_date.weekday())
+        key = (user_id, week_monday)
+        prev = week_latest_submit.get(key)
+        if prev is None or submitted_at > prev:
+            week_latest_submit[key] = submitted_at
+
+    # For each bucket, the week is on-time if latest submit <= that week's
+    # deadline. Track the per-(user, week) status so we can also render a recent
+    # trend, not just the aggregate.
+    active_weeks_by_user: dict[int, int] = {}
+    on_time_weeks_by_user: dict[int, int] = {}
+    week_status: dict[tuple[int, date], str] = {}  # 'on_time' | 'late'
+    for (user_id, week_monday), latest_submit in week_latest_submit.items():
+        deadline_at = combine_tenant(
+            week_monday + timedelta(days=deadline_dow), deadline_time, tenant_timezone
+        )
+        active_weeks_by_user[user_id] = active_weeks_by_user.get(user_id, 0) + 1
+        if latest_submit <= deadline_at:
+            on_time_weeks_by_user[user_id] = on_time_weeks_by_user.get(user_id, 0) + 1
+            week_status[(user_id, week_monday)] = "on_time"
+        else:
+            week_status[(user_id, week_monday)] = "late"
+
+    # Build the most-recent run of weeks (oldest->newest) for the sparkline. We
+    # show up to RECENT_WEEKS calendar weeks ending at the current week; a week
+    # the employee had no submitted activity in shows as 'none'.
+    RECENT_WEEKS = 8
+    this_monday = today - timedelta(days=today.weekday())
+    recent_mondays = [this_monday - timedelta(weeks=(RECENT_WEEKS - 1 - i)) for i in range(RECENT_WEEKS)]
+
+    rows: list[TeamOnTimeRow] = []
+    for user_id, full_name in members:
+        active = active_weeks_by_user.get(user_id, 0)
+        on_time = on_time_weeks_by_user.get(user_id, 0)
+        pct = round(on_time / active * 100) if active > 0 else None
+        recent = [
+            TeamOnTimeWeek(
+                week_start=wm,
+                status=week_status.get((user_id, wm), "none"),
+            )
+            for wm in recent_mondays
+        ]
+        rows.append(
+            TeamOnTimeRow(
+                user_id=user_id,
+                full_name=full_name,
+                weeks_with_activity=active,
+                on_time_weeks=on_time,
+                on_time_pct=pct,
+                recent_weeks=recent,
+            )
+        )
+    # Lowest on-time share first (most attention-worthy); undefined last.
+    rows.sort(key=lambda r: (r.on_time_pct is None, r.on_time_pct if r.on_time_pct is not None else 0))
+
+    total_active = sum(active_weeks_by_user.values())
+    total_on_time = sum(on_time_weeks_by_user.values())
+    team_pct = round(total_on_time / total_active * 100) if total_active > 0 else None
+
+    return TeamOnTimeStatsResponse(days_back=days_back, rows=rows, team_on_time_pct=team_pct)
+
+
+@router.get("/team-project-matrix", response_model=TeamProjectMatrixResponse)
+async def get_team_project_matrix(
+    days_back: int = Query(30, ge=1, le=365),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Approved hours per employee per project over the window: the data behind a
+    "who is working on what" matrix. Computed from existing time entries; no new
+    data. Authorization mirrors the other manager dashboard endpoints.
+
+    Only projects the scoped team actually logged approved time to appear as
+    columns (no tenant-wide project noise). Default window is 30 days (a
+    workload snapshot), shorter than the 90-day quality metrics.
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    today = now_for_tenant(tenant_timezone).date()
+    window_start = today - timedelta(days=days_back)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return TeamProjectMatrixResponse(
+            days_back=days_back, projects=[], rows=[], grand_total_hours=Decimal("0")
+        )
+
+    members_result = await db.execute(
+        select(User.id, User.full_name)
+        .where(User.id.in_(team_member_ids))
+        .order_by(User.full_name.asc())
+    )
+    members = list(members_result.all())
+
+    # Approved hours grouped by (user, project), with project + client names.
+    grid_result = await db.execute(
+        select(
+            TimeEntry.user_id,
+            TimeEntry.project_id,
+            Project.name,
+            Client.name,
+            func.coalesce(func.sum(TimeEntry.hours), 0),
+        )
+        .join(Project, TimeEntry.project_id == Project.id)
+        .join(Client, Project.client_id == Client.id)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+        .group_by(TimeEntry.user_id, TimeEntry.project_id, Project.name, Client.name)
+    )
+
+    project_totals: dict[int, Decimal] = {}
+    project_meta: dict[int, tuple[str, str]] = {}
+    cell_hours: dict[tuple[int, int], Decimal] = {}
+    for user_id, project_id, project_name, client_name, hrs in grid_result.all():
+        h = Decimal(str(hrs or 0))
+        cell_hours[(user_id, project_id)] = h
+        project_totals[project_id] = project_totals.get(project_id, Decimal("0")) + h
+        project_meta[project_id] = (project_name, client_name)
+
+    # Project columns sorted by total hours desc (busiest project first).
+    ordered_project_ids = sorted(project_totals, key=lambda pid: -project_totals[pid])
+    projects = [
+        TeamProjectMatrixProject(
+            project_id=pid,
+            project_name=project_meta[pid][0],
+            client_name=project_meta[pid][1],
+            total_hours=project_totals[pid],
+        )
+        for pid in ordered_project_ids
+    ]
+
+    rows: list[TeamProjectMatrixRow] = []
+    for user_id, full_name in members:
+        cells: list[TeamProjectMatrixCell] = []
+        row_total = Decimal("0")
+        for pid in ordered_project_ids:
+            h = cell_hours.get((user_id, pid), Decimal("0"))
+            cells.append(TeamProjectMatrixCell(project_id=pid, hours=h))
+            row_total += h
+        rows.append(
+            TeamProjectMatrixRow(
+                user_id=user_id, full_name=full_name, total_hours=row_total, cells=cells
+            )
+        )
+    # Busiest employee first; people with no hours fall to the bottom.
+    rows.sort(key=lambda r: -r.total_hours)
+
+    grand_total = sum(project_totals.values(), Decimal("0"))
+
+    return TeamProjectMatrixResponse(
+        days_back=days_back, projects=projects, rows=rows, grand_total_hours=grand_total
+    )

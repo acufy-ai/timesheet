@@ -2082,6 +2082,16 @@ async def hold_timesheet(
     if not timesheet:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
 
+    # An approved timesheet has already synced to real time entries. Moving it
+    # back to on_hold would desync the record (it would read "not approved"
+    # while APPROVED entries persist) and re-open it for edit/re-approval.
+    # Block it, matching the approve/reject/edit guards.
+    if timesheet.status == IngestionTimesheetStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Timesheet is already approved and cannot be placed on hold.",
+        )
+
     timesheet.status = IngestionTimesheetStatus.on_hold
     timesheet.reviewer_id = current_user.id
     timesheet.updated_at = datetime.now(timezone.utc)

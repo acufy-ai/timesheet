@@ -187,7 +187,12 @@ async def create_time_off_item(
             detail="A time entry already exists for this date. Cannot add time off on the same day.",
         )
 
-    return await create_time_off_request(db, current_user.id, current_user.tenant_id, payload)
+    try:
+        return await create_time_off_request(db, current_user.id, current_user.tenant_id, payload)
+    except ValueError as exc:
+        # Unknown/inactive leave type, out-of-range dates, etc. — a client
+        # input problem, not a server error.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.put("/{request_id}", response_model=TimeOffRequestResponse)
@@ -208,7 +213,10 @@ async def update_time_off_item(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Can only edit DRAFT requests")
 
-    return await update_time_off_request(db, item, payload, updated_by=current_user.id)
+    try:
+        return await update_time_off_request(db, item, payload, updated_by=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.delete("/{request_id}", status_code=status.HTTP_204_NO_CONTENT)

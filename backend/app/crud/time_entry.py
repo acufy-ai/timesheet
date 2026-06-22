@@ -127,6 +127,41 @@ async def get_time_entries_by_ids(db: AsyncSession, entry_ids: list[int], tenant
     return list(result.scalars().all())
 
 
+async def count_protected_entries_for_project(
+    db: AsyncSession, project_id: int, tenant_id: Optional[int] = None
+) -> int:
+    """Count time entries on a project that must not be silently destroyed.
+
+    Anything beyond a personal DRAFT is billing-relevant history (submitted,
+    approved, or rejected). Used to block destructive project/client deletes.
+    """
+    query = select(func.count(TimeEntry.id)).where(
+        TimeEntry.project_id == project_id,
+        TimeEntry.status != TimeEntryStatus.DRAFT,
+    )
+    if tenant_id is not None:
+        query = query.where(TimeEntry.tenant_id == tenant_id)
+    return int((await db.execute(query)).scalar_one())
+
+
+async def count_protected_entries_for_client(
+    db: AsyncSession, client_id: int, tenant_id: Optional[int] = None
+) -> int:
+    """Count non-DRAFT time entries across every project under a client."""
+    query = (
+        select(func.count(TimeEntry.id))
+        .select_from(TimeEntry)
+        .join(Project, Project.id == TimeEntry.project_id)
+        .where(
+            Project.client_id == client_id,
+            TimeEntry.status != TimeEntryStatus.DRAFT,
+        )
+    )
+    if tenant_id is not None:
+        query = query.where(TimeEntry.tenant_id == tenant_id)
+    return int((await db.execute(query)).scalar_one())
+
+
 async def create_time_entry(db: AsyncSession, user_id: int, tenant_id: int, entry_create: TimeEntryCreate) -> TimeEntry:
     """Create a new time entry."""
     min_date, max_date, past_days, future_days = await _entry_window(db, tenant_id)

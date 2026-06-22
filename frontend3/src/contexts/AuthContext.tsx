@@ -99,10 +99,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const raw = window.localStorage.getItem(HANDOFF_KEY);
       if (!raw) return;
       window.localStorage.removeItem(HANDOFF_KEY);
-      const h = JSON.parse(raw) as { access_token: string; refresh_token: string; user: User };
+      // Only the access token + user need to cross tabs now: the refresh token
+      // lives in the HttpOnly cookie, which is shared across tabs of the same
+      // origin, so the new tab can already refresh on its own.
+      const h = JSON.parse(raw) as { access_token: string; user: User };
       if (h?.access_token) {
         window.sessionStorage.setItem(TOKEN_KEY, h.access_token);
-        window.sessionStorage.setItem(REFRESH_KEY, h.refresh_token);
+        window.sessionStorage.removeItem(REFRESH_KEY);
         const u = applyActiveRole(h.user, h.access_token);
         writeCachedUser(u);
       }
@@ -173,7 +176,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const res = await authApi.login(email, password);
     const data = res.data as LoginResponse;
     window.sessionStorage.setItem(TOKEN_KEY, data.access_token);
-    window.sessionStorage.setItem(REFRESH_KEY, data.refresh_token);
+    // Refresh token is set as an HttpOnly cookie by the backend; nothing to
+    // store in JS. Purge any refresh token left by an older build.
+    window.sessionStorage.removeItem(REFRESH_KEY);
     writeCachedUser(data.user);
     setUser(data.user);
     // Fresh login: multi-role users must pick a portal before the dashboard
@@ -183,9 +188,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    const refresh = window.sessionStorage.getItem(REFRESH_KEY) ?? undefined;
     try {
-      await authApi.logout(refresh);
+      // The refresh cookie (sent via withCredentials) is what the backend
+      // revokes + clears; no token to pass in the body.
+      await authApi.logout();
     } catch {
       /* best-effort */
     }
@@ -200,7 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const res = await authApi.switchRole(role);
     const data = res.data as LoginResponse;
     window.sessionStorage.setItem(TOKEN_KEY, data.access_token);
-    window.sessionStorage.setItem(REFRESH_KEY, data.refresh_token);
+    // switch-role also refreshes the HttpOnly cookie server-side.
     const u = applyActiveRole(data.user, data.access_token) as User;
     writeCachedUser(u);
     setUser(u);
@@ -215,7 +221,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const res = await authApi.switchRole(role);
       const data = res.data as LoginResponse;
-      window.localStorage.setItem(HANDOFF_KEY, JSON.stringify({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user }));
+      // Don't stage the refresh token in localStorage — the new tab shares the
+      // HttpOnly refresh cookie. Only the access token + user need to hand off.
+      window.localStorage.setItem(HANDOFF_KEY, JSON.stringify({ access_token: data.access_token, user: data.user }));
       // Include the deploy base path so the new tab lands on
       // /apps/timesheet/dashboard, not the host root /dashboard.
       const dest = withOrigin('/dashboard');

@@ -16,6 +16,9 @@ from app.api import (
     auth,
     _invitation_endpoints,
     clients,
+    client_extras,
+    client_portal,
+    contracts,
     dashboard,
     departments,
     holidays,
@@ -70,16 +73,27 @@ async def lifespan(app: FastAPI):
 
 
 # Create FastAPI app
+# Interactive docs and the OpenAPI schema expose the full API surface to anyone
+# who can reach the host. Serve them only in debug/dev; disable in production
+# (DEBUG unset/false) so an anonymous caller can't enumerate every route.
 app = FastAPI(
     title="Timesheet API",
     description="Time tracking and approval system for IT consulting",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+    openapi_url="/openapi.json" if settings.debug else None,
 )
 
-# Rate limiting
+# Rate limiting. SlowAPIMiddleware makes the limiter's default_limits apply to
+# EVERY route (not just the ones with an explicit @limiter.limit decorator), so
+# lists/exports/dashboards can no longer be hammered freely.
+from slowapi.middleware import SlowAPIMiddleware
+
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Configure CORS — explicitly list allowed methods and headers
 app.add_middleware(
@@ -103,7 +117,7 @@ app.add_middleware(
     # Without ETag here, axios sees response.headers.etag as undefined
     # and the conditional-GET cache never gets populated. X-Request-Id
     # is exposed so the frontend can correlate logs with backend traces.
-    expose_headers=["ETag", "X-Request-Id"],
+    expose_headers=["ETag", "X-Request-Id", "X-Total-Count"],
 )
 
 
@@ -149,6 +163,38 @@ async def request_logging(request: Request, call_next):
         request_id,
     )
     return response
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    """Reject oversized request bodies via the declared Content-Length, before
+    the body is read into memory.
+
+    Without this an unauthenticated caller could POST a 100MB body (e.g. to
+    /auth/login) and pin a worker + buffer it in memory — a cheap DoS. JSON
+    and form bodies are capped tight; multipart (file uploads) gets a larger
+    ceiling. We deliberately only inspect the Content-Length header and do NOT
+    consume the request stream here: reading + re-supplying the body conflicts
+    with Starlette's BaseHTTPMiddleware request lifecycle. Real HTTP clients
+    always send Content-Length for a buffered body, so this covers the attack;
+    the password field length cap backstops the rare chunked case.
+    """
+    from fastapi.responses import JSONResponse
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    is_multipart = content_type.startswith("multipart/form-data")
+    limit = settings.max_upload_body_bytes if is_multipart else settings.max_json_body_bytes
+
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            declared = int(cl)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if declared > limit:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -204,6 +250,9 @@ app.include_router(auth.router)
 app.include_router(_invitation_endpoints.router)
 app.include_router(users.router)
 app.include_router(clients.router)
+app.include_router(contracts.router)
+app.include_router(client_extras.router)
+app.include_router(client_portal.router)
 app.include_router(departments.router)
 app.include_router(holidays.router)
 app.include_router(leave_types.router)
@@ -227,17 +276,22 @@ app.include_router(attention_signals.router)
 
 
 @app.get("/health")
+@limiter.exempt
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint. Exempt from rate limiting so load-balancer and
+    container health probes (which poll frequently) are never throttled."""
     return {"status": "ok"}
 
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
-    return {
-        "name": "Timesheet API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "openapi": "/openapi.json",
-    }
+    """Root endpoint. In production this is intentionally terse — no version
+    or docs URLs are disclosed to anonymous callers. Use /health for liveness."""
+    if settings.debug:
+        return {
+            "name": "Timesheet API",
+            "version": "1.0.0",
+            "docs": "/docs",
+            "openapi": "/openapi.json",
+        }
+    return {"status": "ok"}

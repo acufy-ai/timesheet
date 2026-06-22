@@ -5,6 +5,11 @@ import type {
   DashboardSummary,
   ManagerProjectHealth,
   ManagerTeamOverview,
+  TeamBillableStats,
+  TeamDailyOverview,
+  TeamOnTimeStats,
+  TeamProjectMatrix,
+  TeamRejectionStats,
 } from '@/types/dashboard';
 import type {
   CreateTenantBody,
@@ -36,6 +41,16 @@ import type {
   AuditEvent,
   Client,
   ClientBody,
+  ClientTeamMember,
+  ClientTeamBody,
+  Contract,
+  ContractBody,
+  ClientContact,
+  ClientContactBody,
+  ClientRoleRate,
+  ClientRoleRateBody,
+  ClientNote,
+  ClientNoteBody,
   CreateUserBody,
   Department,
   CreateUserResult,
@@ -62,6 +77,13 @@ import type {
   Mailbox,
   MailboxCreateBody,
   ManagedUser,
+  UserListParams,
+  UserPage,
+  ClientCapability,
+  ClientGrant,
+  ClientPortalUser,
+  ClientInviteBody,
+  PortalProject,
   UserProfile,
   ProjectBody,
   SettingDefinition,
@@ -79,17 +101,20 @@ import type {
 // works locally and (eventually) in production behind nginx.
 //
 // Storage:
-//   - access token in sessionStorage at TOKEN_KEY
-//   - refresh token in sessionStorage at REFRESH_KEY (will move to
-//     HttpOnly cookie in a later phase per the parked memory note)
+//   - access token in sessionStorage at TOKEN_KEY (short-lived; the SPA must
+//     read it to set the Authorization header)
+//   - refresh token: NOT stored in JS. It lives in an HttpOnly cookie the
+//     backend sets on login/refresh, so XSS can't exfiltrate it. The browser
+//     sends it automatically on /auth/refresh and /auth/logout (withCredentials).
 //
-// Auth flow is minimal in step 4:
-//   1. POST /auth/login -> tokens + user
+// Auth flow:
+//   1. POST /auth/login -> access token + user in body; refresh token in cookie
 //   2. Interceptor adds Authorization: Bearer on every subsequent request
-//   3. On 401 we clear tokens; the caller decides what to do (usually
-//      AuthContext catches the rejection and routes to /login)
+//   3. On 401 we POST /auth/refresh (cookie carries the refresh token) to mint
+//      a new access token; on failure the caller routes to /login
 
 export const TOKEN_KEY = 'accessToken';
+// Kept only to purge any refresh token left in storage by a previous build.
 export const REFRESH_KEY = 'refreshToken';
 
 // API base. Dev + same-origin-proxy deploys use the relative '/api' (the Vite
@@ -101,6 +126,10 @@ export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined
 export const api = axios.create({
   baseURL: API_BASE,
   timeout: 20_000,
+  // Send the HttpOnly refresh cookie on auth requests. Same-origin in dev (via
+  // the Vite proxy) and prod (nginx), so this is safe; CORS allow-credentials
+  // is set on the backend for the cross-origin case.
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -141,7 +170,10 @@ async function tokenIsDead(): Promise<boolean> {
   const token = window.sessionStorage.getItem(TOKEN_KEY);
   if (!token) return true;
   try {
-    await axios.get(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+    await axios.get(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      withCredentials: true,
+    });
     return false; // /auth/me works -> token is valid, the 403 was a permission denial
   } catch (e) {
     const s = (e as { response?: { status?: number } })?.response?.status;
@@ -150,15 +182,13 @@ async function tokenIsDead(): Promise<boolean> {
 }
 
 async function runRefresh(): Promise<string | null> {
-  const refresh = window.sessionStorage.getItem(REFRESH_KEY);
-  if (!refresh) return null;
+  // The refresh token rides in the HttpOnly cookie; withCredentials sends it.
+  // No token is read from JS storage anymore.
   try {
-    const res = await axios.post(`${API_BASE}/auth/refresh`, { refresh_token: refresh });
-    const data = res.data as { access_token?: string; refresh_token?: string };
+    const res = await axios.post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true });
+    const data = res.data as { access_token?: string };
     if (!data?.access_token) return null;
     window.sessionStorage.setItem(TOKEN_KEY, data.access_token);
-    // Rotation: persist the new refresh token if the backend rotated it.
-    if (data.refresh_token) window.sessionStorage.setItem(REFRESH_KEY, data.refresh_token);
     return data.access_token;
   } catch {
     return null;
@@ -175,20 +205,19 @@ api.interceptors.response.use(
     const isAuthCall = /\/auth\/(refresh|login|logout|me)/.test(url);
     const hasToken = Boolean(window.sessionStorage.getItem(TOKEN_KEY));
 
-    // 401: access token expired/invalid. Try one refresh + retry; if that
-    // fails, the session is dead.
+    // 401: access token expired/invalid. Try one refresh + retry; the refresh
+    // token is in the HttpOnly cookie (not visible to JS), so we always attempt
+    // the refresh and let the backend decide — if it fails, the session is dead.
     if (status === 401 && original && !original._retried && !isAuthCall) {
-      if (window.sessionStorage.getItem(REFRESH_KEY)) {
-        original._retried = true;
-        if (!refreshInFlight) {
-          refreshInFlight = runRefresh().finally(() => { refreshInFlight = null; });
-        }
-        const newToken = await refreshInFlight;
-        if (newToken) {
-          original.headers = original.headers ?? {};
-          (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
-          return api(original);
-        }
+      original._retried = true;
+      if (!refreshInFlight) {
+        refreshInFlight = runRefresh().finally(() => { refreshInFlight = null; });
+      }
+      const newToken = await refreshInFlight;
+      if (newToken) {
+        original.headers = original.headers ?? {};
+        (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+        return api(original);
       }
       forceLogout();
       return Promise.reject(error);
@@ -215,12 +244,12 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
   me: () => api.get('/auth/me'),
-  logout: (refresh_token?: string) =>
-    api.post('/auth/logout', refresh_token ? { refresh_token } : {}),
-  // Single-use refresh (the interceptor calls this directly via bare axios; the
-  // method is here for completeness / explicit refreshes).
-  refresh: (refresh_token: string) =>
-    api.post<{ access_token: string; refresh_token: string }>('/auth/refresh', { refresh_token }),
+  // Logout: the refresh token is in the HttpOnly cookie (sent via
+  // withCredentials), so no body is needed. The backend clears the cookie.
+  logout: () => api.post('/auth/logout', {}),
+  // Single-use refresh. The refresh token rides in the cookie; no body needed.
+  refresh: () =>
+    api.post<{ access_token: string }>('/auth/refresh', {}),
   // Re-send the email-verification link for an unverified account.
   resendVerification: (email: string) =>
     api.post<{ message: string }>('/auth/resend-verification', { email }),
@@ -257,7 +286,7 @@ export const authApi = {
   // Multi-role: flip the active role to one already in user.roles. Mints a
   // fresh access + refresh pair the caller swaps in.
   switchRole: (role: string) =>
-    api.post<{ access_token: string; refresh_token: string; user: unknown }>('/auth/switch-role', { role }),
+    api.post<{ access_token: string; user: unknown }>('/auth/switch-role', { role }),
 };
 
 export const dashboardApi = {
@@ -265,6 +294,24 @@ export const dashboardApi = {
     api.get<ManagerTeamOverview>('/dashboard/manager-team-overview'),
   managerProjectHealth: () =>
     api.get<ManagerProjectHealth>('/dashboard/manager-project-health'),
+  teamDailyOverview: () =>
+    api.get<TeamDailyOverview>('/dashboard/team-daily-overview'),
+  teamRejectionStats: (days_back = 90) =>
+    api.get<TeamRejectionStats>('/dashboard/team-rejection-stats', {
+      params: { days_back },
+    }),
+  teamBillableStats: (days_back = 90) =>
+    api.get<TeamBillableStats>('/dashboard/team-billable-stats', {
+      params: { days_back },
+    }),
+  teamOnTimeStats: (days_back = 90) =>
+    api.get<TeamOnTimeStats>('/dashboard/team-on-time-stats', {
+      params: { days_back },
+    }),
+  teamProjectMatrix: (days_back = 30) =>
+    api.get<TeamProjectMatrix>('/dashboard/team-project-matrix', {
+      params: { days_back },
+    }),
 };
 
 export const timeApi = {
@@ -331,6 +378,13 @@ export const approvalsApi = {
 
 export const usersApi = {
   list: () => api.get<ManagedUser[]>('/users'),
+  // Paged + searchable list. Reads the total match count from X-Total-Count
+  // so the rail can render a numbered pager without loading the whole roster.
+  listPaged: async (params: UserListParams = {}): Promise<UserPage> => {
+    const res = await api.get<ManagedUser[]>('/users', { params });
+    const total = Number(res.headers['x-total-count'] ?? res.data.length);
+    return { items: res.data, total: Number.isFinite(total) ? total : res.data.length };
+  },
   // Users an admin/manager may assign as a manager (role-scoped server-side).
   assignable: () => api.get<ManagedUser[]>('/users/assignable'),
   create: (data: CreateUserBody) => api.post<CreateUserResult>('/users', data),
@@ -378,6 +432,32 @@ export const usersApi = {
   removeClient: (id: number, clientId: number) => api.delete(`/users/${id}/clients/${clientId}`),
 };
 
+// Client Portal Access. The /client-portal/* calls are what a CLIENT user
+// makes; the /client-grants/* calls are PM/admin grant management.
+export const clientPortalApi = {
+  // CLIENT side
+  myProjects: () => api.get<PortalProject[]>('/client-portal/projects'),
+  updateTask: (taskId: number, body: { status?: string; description?: string }) =>
+    api.patch<{ id: number; status: string; description: string | null }>(`/client-portal/tasks/${taskId}`, body),
+  createTask: (body: { project_id: number; name: string; description?: string }) =>
+    api.post<{ id: number; project_id: number; name: string; status: string }>('/client-portal/tasks', body),
+  deleteTask: (taskId: number) => api.delete(`/client-portal/tasks/${taskId}`),
+  updateProject: (projectId: number, body: { description?: string }) =>
+    api.patch<{ id: number; description: string | null }>(`/client-portal/projects/${projectId}`, body),
+  // PM / admin side
+  userGrants: (userId: number) => api.get<ClientGrant[]>(`/client-grants/user/${userId}`),
+  clientUsers: (clientId: number) => api.get<ClientPortalUser[]>(`/client-grants/client/${clientId}`),
+  createGrant: (body: { user_id: number; project_id?: number | null; task_id?: number | null; capabilities: ClientCapability[] }) =>
+    api.post<ClientGrant>('/client-grants', body),
+  updateGrant: (grantId: number, capabilities: ClientCapability[]) =>
+    api.put<ClientGrant>(`/client-grants/${grantId}`, { capabilities }),
+  revokeGrant: (grantId: number) => api.delete(`/client-grants/${grantId}`),
+  toggleProject: (projectId: number, enabled: boolean) =>
+    api.patch<{ id: number; client_access_enabled: boolean }>(`/client-grants/project/${projectId}/toggle`, { client_access_enabled: enabled }),
+  invite: (body: ClientInviteBody) =>
+    api.post<{ user_id: number; email: string; invited: boolean; message: string }>('/client-grants/invite', body),
+};
+
 export const clientsApi = {
   list: () => api.get<Client[]>('/clients'),
   create: (data: ClientBody) => api.post<Client>('/clients', data),
@@ -388,6 +468,55 @@ export const clientsApi = {
   // the assignment to pending timesheets from that domain.
   createFromDomain: (name: string, domain: string) =>
     api.post<{ client: Client; domain: string; cascaded_count: number }>('/clients/from-domain', { name, domain }),
+  // Client team roster (PMs + members with assignment_role).
+  team: (id: number) => api.get<ClientTeamMember[]>(`/clients/${id}/team`),
+  setTeam: (id: number, data: ClientTeamBody) =>
+    api.put<ClientTeamMember[]>(`/clients/${id}/team`, data),
+};
+
+// Client contracts (Phase B). Nested under a client.
+export const contractsApi = {
+  list: (clientId: number) => api.get<Contract[]>(`/clients/${clientId}/contracts`),
+  create: (clientId: number, data: ContractBody) =>
+    api.post<Contract>(`/clients/${clientId}/contracts`, data),
+  update: (clientId: number, id: number, data: ContractBody) =>
+    api.put<Contract>(`/clients/${clientId}/contracts/${id}`, data),
+  remove: (clientId: number, id: number) =>
+    api.delete(`/clients/${clientId}/contracts/${id}`),
+  uploadDocument: (clientId: number, id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<Contract>(`/clients/${clientId}/contracts/${id}/document`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  deleteDocument: (clientId: number, id: number) =>
+    api.delete<Contract>(`/clients/${clientId}/contracts/${id}/document`),
+  // Download URL for the attached document (opened/fetched with auth interceptor).
+  documentUrl: (clientId: number, id: number) =>
+    `/clients/${clientId}/contracts/${id}/document`,
+  downloadDocument: (clientId: number, id: number) =>
+    api.get<Blob>(`/clients/${clientId}/contracts/${id}/document`, { responseType: 'blob' }),
+};
+
+// Phase C: client contacts, role rates, notes (all nested under a client).
+export const clientContactsApi = {
+  list: (cid: number) => api.get<ClientContact[]>(`/clients/${cid}/contacts2`),
+  create: (cid: number, data: ClientContactBody) => api.post<ClientContact>(`/clients/${cid}/contacts2`, data),
+  update: (cid: number, id: number, data: ClientContactBody) => api.put<ClientContact>(`/clients/${cid}/contacts2/${id}`, data),
+  remove: (cid: number, id: number) => api.delete(`/clients/${cid}/contacts2/${id}`),
+};
+export const roleRatesApi = {
+  list: (cid: number) => api.get<ClientRoleRate[]>(`/clients/${cid}/role-rates`),
+  create: (cid: number, data: ClientRoleRateBody) => api.post<ClientRoleRate>(`/clients/${cid}/role-rates`, data),
+  update: (cid: number, id: number, data: ClientRoleRateBody) => api.put<ClientRoleRate>(`/clients/${cid}/role-rates/${id}`, data),
+  remove: (cid: number, id: number) => api.delete(`/clients/${cid}/role-rates/${id}`),
+};
+export const clientNotesApi = {
+  list: (cid: number) => api.get<ClientNote[]>(`/clients/${cid}/notes`),
+  create: (cid: number, data: ClientNoteBody) => api.post<ClientNote>(`/clients/${cid}/notes`, data),
+  update: (cid: number, id: number, data: ClientNoteBody) => api.put<ClientNote>(`/clients/${cid}/notes/${id}`, data),
+  remove: (cid: number, id: number) => api.delete(`/clients/${cid}/notes/${id}`),
 };
 
 export const auditApi = {
