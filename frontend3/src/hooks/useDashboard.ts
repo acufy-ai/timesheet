@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { dashboardApi, dashboardSummaryApi } from '@/api/client';
+// useTeamRejectionStats is exported below alongside the other manager hooks.
 // (useDashboardSummary retained for any future use; the dashboard now uses the
 // analytics-driven widget grid for the personal view.)
 
@@ -21,6 +22,58 @@ export function useManagerProjectHealth(enabled = true) {
   return useQuery({
     queryKey: ['dashboard', 'manager-project-health'],
     queryFn: () => dashboardApi.managerProjectHealth().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// Daily standup view of yesterday's submissions. Short stale window like the
+// team overview so it reflects late submissions made this morning.
+export function useTeamDailyOverview(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-daily-overview'],
+    queryFn: () => dashboardApi.teamDailyOverview().then((r) => r.data),
+    enabled,
+    staleTime: 5_000,
+  });
+}
+
+// Rejection rate + top reasons over a lookback window (default 90 days).
+// Historical/aggregate view, so a longer stale window is fine.
+export function useTeamRejectionStats(daysBack = 90, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-rejection-stats', daysBack],
+    queryFn: () => dashboardApi.teamRejectionStats(daysBack).then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// Billable share of approved hours per employee over a window (default 90 days).
+export function useTeamBillableStats(daysBack = 90, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-billable-stats', daysBack],
+    queryFn: () => dashboardApi.teamBillableStats(daysBack).then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// On-time submission trend (weekly grain) over a window (default 90 days).
+export function useTeamOnTimeStats(daysBack = 90, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-on-time-stats', daysBack],
+    queryFn: () => dashboardApi.teamOnTimeStats(daysBack).then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// Per-employee per-project approved hours matrix (default 30-day window).
+export function useTeamProjectMatrix(daysBack = 30, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-project-matrix', daysBack],
+    queryFn: () => dashboardApi.teamProjectMatrix(daysBack).then((r) => r.data),
     enabled,
     staleTime: 60_000,
   });

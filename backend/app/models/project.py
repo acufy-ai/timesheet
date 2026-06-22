@@ -1,10 +1,18 @@
+import enum
 from datetime import date
 
-from sqlalchemy import String, Boolean, ForeignKey, Numeric, Date, Text, Integer
+from sqlalchemy import String, Boolean, ForeignKey, Numeric, Date, Text, Integer, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
 from decimal import Decimal
 from .base import Base, TimestampMixin
+
+
+class ProjectStatus(str, enum.Enum):
+    planning = "planning"
+    in_progress = "in_progress"
+    on_hold = "on_hold"
+    completed = "completed"
 
 
 class Project(Base, TimestampMixin):
@@ -37,11 +45,26 @@ class Project(Base, TimestampMixin):
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
+    # Per-project PM toggle: when true, this project may be shared with CLIENT
+    # users via ClientAccessGrant. Off by default (feature dark until opted in).
+    client_access_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    status: Mapped[ProjectStatus] = mapped_column(
+        SAEnum(ProjectStatus, name="projectstatus"), nullable=False,
+        default=ProjectStatus.planning, server_default="planning")
+    # The internal user (a manager) who runs this project. Constrained in the
+    # app to the client's assigned PMs; FK only enforces a real user.
+    manager_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="projects")
     client: Mapped["Client"] = relationship(
         "Client", back_populates="projects")
+    manager: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[manager_id])
+    managers: Mapped[List["ProjectManager"]] = relationship(
+        "ProjectManager", back_populates="project", cascade="all, delete-orphan")
     user_access: Mapped[List["UserProjectAccess"]] = relationship(
         "UserProjectAccess",
         back_populates="project",

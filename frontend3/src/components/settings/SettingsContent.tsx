@@ -9,6 +9,7 @@ import { MailboxesSettings } from './sections/MailboxesSettings';
 import { EmailTemplateSettings } from './sections/EmailTemplateSettings';
 import { BrandingSettings } from './sections/BrandingSettings';
 import { CustomizationSettings } from './sections/CustomizationSettings';
+import { ClientPortalSettings } from './sections/ClientPortalSettings';
 
 // Legacy ``email-smtp`` aliases ``outbound-email``: the standalone
 // Email / SMTP page used to show the same SMTP credentials that Outbound
@@ -26,6 +27,7 @@ const sectionMap: Record<string, React.FC> = {
   'email-templates': EmailTemplateSettings,
   'branding':        BrandingSettings,
   'customization':   CustomizationSettings,
+  'client-portal':   ClientPortalSettings,
 };
 
 interface Props {

@@ -6,7 +6,7 @@ from .project import Project
 from .task import Task
 from .time_entry import TimeEntry, TimeEntryEditHistory
 from .time_off_request import TimeOffRequest
-from .assignments import EmployeeManagerAssignment, UserProjectAccess
+from .assignments import EmployeeManagerAssignment, UserProjectAccess, UserTaskAccess, TaskAssignee, ProjectManager
 from .notification import UserNotificationDismissal, UserNotificationState
 from .sync_log import SyncLog, SyncDirection, SyncEntityType, SyncStatus
 from .service_token import ServiceToken
@@ -30,13 +30,17 @@ from .role_assignment import RoleAssignment
 from .dismissed_attention_signal import DismissedAttentionSignal
 from .user_email_alias import UserEmailAlias
 from .user_client_assignment import UserClientAssignment
+from .contract import Contract, ContractStatus
+from .client_extras import ClientContact, ClientRoleRate, ClientNote
+from .client_access_grant import ClientAccessGrant
 from .holiday import Holiday, HolidayType
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
-           "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
+           "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserTaskAccess", "TaskAssignee", "ProjectManager", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
            "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
            "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment",
            "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
-           "Holiday", "HolidayType"]
+           "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
+           "Holiday", "HolidayType", "ClientAccessGrant"]

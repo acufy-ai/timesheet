@@ -14,6 +14,7 @@ export interface ManagedUser {
   timezone?: string | null;
   manager_id?: number | null;
   project_ids?: number[];
+  task_ids?: number[];
   default_client_id?: number | null;
   phones?: string[];
   is_active: boolean;
@@ -40,6 +41,7 @@ export interface CreateUserBody {
   is_active?: boolean;
   manager_id?: number | null;
   project_ids?: number[];
+  task_ids?: number[];
   default_client_id?: number | null;
   can_review?: boolean;
   phones?: string[];
@@ -60,8 +62,89 @@ export interface UpdateUserBody {
   is_external?: boolean;
   manager_id?: number | null;
   project_ids?: number[];
+  task_ids?: number[];
   default_client_id?: number | null;
   phones?: string[];
+}
+
+// Query params for the paged/searchable user list (GET /users).
+export interface UserListParams {
+  skip?: number;
+  limit?: number;
+  q?: string;
+  role?: string;
+  status?: 'active' | 'inactive';
+  audience?: 'internal' | 'external';
+  no_manager?: boolean;
+  unverified?: boolean;
+}
+
+// A page of users plus the server's total match count (from X-Total-Count).
+export interface UserPage {
+  items: ManagedUser[];
+  total: number;
+}
+
+// ── Client Portal Access ──
+export type ClientCapability = 'create' | 'read' | 'update' | 'delete';
+
+export interface ClientGrant {
+  id: number;
+  user_id: number;
+  project_id?: number | null;
+  task_id?: number | null;
+  capabilities: ClientCapability[];
+  created_by?: number | null;
+  created_at?: string | null;
+}
+
+export interface PortalTask {
+  id: number;
+  project_id: number;
+  name: string;
+  description?: string | null;
+  status?: string | null;
+  capabilities: ClientCapability[];
+}
+
+export interface PortalProject {
+  id: number;
+  name: string;
+  code?: string | null;
+  client_id: number;
+  client_name?: string | null;
+  status?: string | null;
+  description?: string | null;
+  capabilities: ClientCapability[];
+  tasks: PortalTask[];
+}
+
+export interface ClientPortalUser {
+  user_id: number;
+  full_name: string;
+  email: string;
+  label?: string | null;
+  grants: ClientGrant[];
+}
+
+// One scoped grant in an invite: a whole project XOR a specific task, each with
+// its own capabilities. Mirrors the invite modal's per-project mode.
+export interface ClientGrantSpec {
+  scope: 'project' | 'task';
+  project_id?: number | null;
+  task_id?: number | null;
+  capabilities: ClientCapability[];
+}
+
+export interface ClientInviteBody {
+  full_name: string;
+  email: string;
+  label?: string | null;
+  grants?: ClientGrantSpec[];
+  // Legacy flat form (every project gets the same caps); used only when
+  // `grants` is omitted.
+  project_ids?: number[];
+  capabilities?: ClientCapability[];
 }
 
 // An extra email address on a user (GET /users/{id}/email-aliases).
@@ -123,10 +206,16 @@ export interface CreateUserResult {
   verification_email_sent?: boolean;
 }
 
+// Client lifecycle status (migration 071). Wire values are snake_case.
+export type ClientStatus = 'active' | 'prospect' | 'on_hold' | 'churned';
+
 export interface Client {
   id: number;
   name: string;
   client_type: string; // "internal" | "external"
+  status?: ClientStatus;
+  company?: string | null;
+  since?: string | null; // ISO date
   quickbooks_customer_id?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
@@ -137,11 +226,109 @@ export interface Client {
 export interface ClientBody {
   name: string;
   client_type: string;
+  status?: ClientStatus;
+  company?: string | null;
+  since?: string | null;
   quickbooks_customer_id?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
   contact_phone?: string | null;
 }
+
+// A member of a client's team (GET /clients/{id}/team). assignment_role marks
+// PMs vs. plain members on this client; role is the user's org role.
+export interface ClientTeamMember {
+  user_id: number;
+  full_name: string;
+  role: string;
+  assignment_role: 'pm' | 'member';
+}
+
+// PUT /clients/{id}/team body.
+export interface ClientTeamBody {
+  pm_ids: number[];
+  member_ids: number[];
+}
+
+// Contract lifecycle status (migration 075). Wire values are snake_case.
+export type ContractStatus = 'draft' | 'active' | 'on_hold' | 'completed' | 'churned';
+
+// A client agreement (GET /clients/{id}/contracts). The document is stored via
+// the storage service; has_document signals an attachment exists.
+export interface Contract {
+  id: number;
+  client_id: number;
+  title: string;
+  kind?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  value?: string | number | null;
+  status: ContractStatus;
+  document_name?: string | null;
+  document_size?: number | null;
+  has_document: boolean;
+}
+
+// POST/PUT /clients/{id}/contracts body.
+export interface ContractBody {
+  title?: string;
+  kind?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  value?: number | null;
+  status?: ContractStatus;
+}
+
+// ── Phase C: client contacts / role rates / notes ───────────────────────────
+export interface ContactChannel { label?: string | null; address?: string; number?: string }
+
+export interface ClientContact {
+  id: number;
+  client_id: number;
+  name: string;
+  role?: string | null;
+  emails: ContactChannel[];
+  phones: ContactChannel[];
+}
+export interface ClientContactBody {
+  name?: string;
+  role?: string | null;
+  emails?: ContactChannel[];
+  phones?: ContactChannel[];
+}
+
+export interface ClientRoleRate {
+  id: number;
+  client_id: number;
+  role: string;
+  rate: string | number;
+  currency: string;
+  effective_date?: string | null;
+}
+export interface ClientRoleRateBody {
+  role?: string;
+  rate?: number;
+  currency?: string;
+  effective_date?: string | null;
+}
+
+export interface ClientNote {
+  id: number;
+  client_id: number;
+  author?: string | null;
+  body: string;
+  note_date?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface ClientNoteBody {
+  author?: string | null;
+  body?: string;
+  note_date?: string | null;
+}
+
+// Project lifecycle status (migration 071). Wire values are snake_case.
+export type ProjectStatus = 'planning' | 'in_progress' | 'on_hold' | 'completed';
 
 // Full project shape from /projects (ProjectResponse). billable_rate is a
 // Decimal serialised as a string on the wire.
@@ -159,6 +346,11 @@ export interface FullProject {
   budget_amount?: string | number | null;
   currency?: string | null;
   is_active: boolean;
+  client_access_enabled?: boolean; // per-project client-portal exposure toggle
+  status?: ProjectStatus;
+  manager_id?: number | null; // first PM, back-compat
+  manager_ids?: number[]; // project managers (user ids)
+  resource_ids?: number[]; // project roster (user ids), from user_project_access
 }
 
 // POST/PUT /projects body. billable_rate required on create.
@@ -175,7 +367,14 @@ export interface ProjectBody {
   budget_amount?: number | null;
   currency?: string | null;
   is_active?: boolean;
+  status?: ProjectStatus;
+  manager_id?: number | null;
+  manager_ids?: number[]; // when set, replaces the project's managers
+  resource_ids?: number[]; // when set, replaces the project roster
 }
+
+export type TaskPriority = 'low' | 'medium' | 'high';
+export type TaskStatus = 'to_do' | 'in_progress' | 'done';
 
 // Task shape from /tasks (TaskResponse / TaskWithProject).
 export interface FullTask {
@@ -185,6 +384,9 @@ export interface FullTask {
   code?: string | null;
   description?: string | null;
   is_active: boolean;
+  priority?: TaskPriority;
+  status?: TaskStatus;
+  assignee_ids?: number[]; // task_assignees (user ids)
 }
 
 // POST/PUT /tasks body.
@@ -194,6 +396,9 @@ export interface TaskBody {
   code?: string | null;
   description?: string | null;
   is_active?: boolean;
+  priority?: TaskPriority;
+  status?: TaskStatus;
+  assignee_ids?: number[]; // when set, replaces the task's assignees
 }
 
 export interface AuditEvent {

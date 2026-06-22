@@ -107,6 +107,23 @@ main h2 {
   .action-button-secondary {
     @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-foreground transition hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60;
   }
+
+  /* User Management redesign primitives (rail pager, icon buttons, tree). */
+  .icon-btn-sm {
+    @apply grid h-[30px] w-[30px] place-items-center rounded-lg border border-border bg-card text-foreground transition hover:border-primary/30 hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .icon-btn-danger {
+    @apply hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-600;
+  }
+  .pager-btn {
+    @apply grid h-[26px] w-[26px] place-items-center rounded-md border border-border bg-card text-foreground transition hover:border-primary/30 hover:bg-primary/10 disabled:cursor-default disabled:opacity-40;
+  }
+  .pager-num {
+    @apply h-[26px] min-w-[26px] rounded-md border border-transparent px-1.5 text-xs font-semibold tabular-nums text-foreground transition hover:bg-primary/10;
+  }
+  .pager-num-active {
+    @apply border-primary bg-primary font-bold text-primary-foreground hover:bg-primary;
+  }
 }
 
 /* Always-visible horizontal scrollbar for overflow-x containers that would

@@ -46,7 +46,8 @@ const buildNav = (ingestionEnabled: boolean): NavGroup[] => {
     {
       title: 'Access & security',
       items: [
-        { key: 'security',    label: 'Security',    icon: <LockIcon /> },
+        { key: 'security',      label: 'Security',      icon: <LockIcon /> },
+        { key: 'client-portal', label: 'Client portal', icon: <LockIcon /> },
       ],
     },
     {

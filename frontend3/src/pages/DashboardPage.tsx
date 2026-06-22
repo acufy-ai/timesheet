@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  CalendarClock,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -16,6 +17,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   useManagerProjectHealth,
   useManagerTeamOverview,
+  useTeamBillableStats,
+  useTeamDailyOverview,
+  useTeamOnTimeStats,
+  useTeamProjectMatrix,
+  useTeamRejectionStats,
 } from '@/hooks/useDashboard';
 import { useIngestionTimesheets } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
@@ -24,7 +30,13 @@ import { EmployeeWidgets } from '@/components/dashboard/EmployeeWidgets';
 import { QuickLogButton } from '@/components/my-time/QuickLogButton';
 import { AdminOrgStats } from '@/components/dashboard/AdminOrgStats';
 import { ManagerConversation } from '@/components/dashboard/ManagerConversation';
-import type { ProjectHealth } from '@/types/dashboard';
+import type {
+  ProjectHealth,
+  TeamRejectionStats,
+  TeamBillableStats,
+  TeamOnTimeStats,
+  TeamProjectMatrix,
+} from '@/types/dashboard';
 
 // Manager dashboard per deck #dashboard: WorkspaceHeader + attention banner +
 // tone-tinted stat tiles + project health table. Wired to the live
@@ -56,11 +68,267 @@ function describeAge(hours: number | null): string {
   return `oldest ${days}d ago`;
 }
 
+// One column of the daily check-in widget: a count, a label, and the names
+// behind it. Tone tints the count to read at a glance (green good, amber
+// in-progress, rose needs-attention).
+const DAILY_TONE: Record<'emerald' | 'amber' | 'rose', string> = {
+  emerald: 'text-emerald-600 dark:text-emerald-400',
+  amber: 'text-amber-600 dark:text-amber-400',
+  rose: 'text-rose-600 dark:text-rose-400',
+};
+
+function DailyGroup({
+  tone,
+  label,
+  count,
+  names,
+}: {
+  tone: 'emerald' | 'amber' | 'rose';
+  label: string;
+  count: number;
+  names: string[];
+}) {
+  return (
+    <div className="bg-card px-4 py-3">
+      <div className="flex items-baseline justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className={cn('text-lg font-semibold tabular-nums', DAILY_TONE[tone])}>
+          {count}
+        </p>
+      </div>
+      {names.length > 0 ? (
+        <p className="mt-1 text-xs text-muted-foreground" title={names.join(', ')}>
+          {names.slice(0, 4).join(', ')}
+          {names.length > 4 ? ` +${names.length - 4} more` : ''}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-muted-foreground/60">None</p>
+      )}
+    </div>
+  );
+}
+
+// Small card shell for the team-quality stats (consistent header + body).
+function StatCard({ icon, title, meta, children }: { icon: React.ReactNode; title: string; meta?: string; children: React.ReactNode }) {
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          {icon}
+          <p className="text-sm font-semibold text-foreground">{title}</p>
+        </div>
+        {meta ? <p className="text-xs text-muted-foreground">{meta}</p> : null}
+      </div>
+      {children}
+    </Card>
+  );
+}
+
+// Rejections — collapses to a single "all clear" line when the team had zero
+// rejections in the window (no point listing a column of 0%s).
+function RejectionsCard({ data }: { data: TeamRejectionStats }) {
+  const decidedRows = data.rows.filter((r) => r.decided_count > 0);
+  const anyRejections = decidedRows.some((r) => r.rejected_count > 0);
+  const meta = `last ${data.days_back}d${data.team_rejection_rate_pct != null ? ` · team ${data.team_rejection_rate_pct}%` : ''}`;
+  return (
+    <StatCard icon={<AlertTriangle className="h-4 w-4 text-muted-foreground" />} title="Rejections" meta={meta}>
+      {!anyRejections ? (
+        <p className="px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">No rejections across {decidedRows.length} {decidedRows.length === 1 ? 'person' : 'people'} in this window.</p>
+      ) : (
+        <div className="px-4 py-3">
+          {/* Only people who actually had a rejection — keeps it scannable. */}
+          <div className="space-y-1.5">
+            {decidedRows.filter((r) => r.rejected_count > 0).map((r) => (
+              <div key={r.user_id} className="flex items-center justify-between text-sm">
+                <span className="text-foreground">{r.full_name}</span>
+                <span
+                  className={cn('tabular-nums font-semibold', (r.rejection_rate_pct ?? 0) >= 25 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}
+                  title={`${r.rejected_count} rejected of ${r.decided_count} decided`}
+                >
+                  {r.rejection_rate_pct}% ({r.rejected_count}/{r.decided_count})
+                </span>
+              </div>
+            ))}
+          </div>
+          {data.top_reasons.length > 0 ? (
+            <div className="mt-3 border-t border-border pt-2.5">
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Top reasons</p>
+              <div className="space-y-1">
+                {data.top_reasons.slice(0, 4).map((tr) => (
+                  <div key={tr.reason} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-foreground" title={tr.reason}>{tr.reason}</span>
+                    <span className="tabular-nums text-muted-foreground">{tr.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </StatCard>
+  );
+}
+
+// Billable — collapses to one line when the whole team is 100% billable (or
+// uniformly the same), since per-person bars add nothing then.
+function BillableCard({ data }: { data: TeamBillableStats }) {
+  const rows = data.rows.filter((r) => Number(r.approved_hours) > 0);
+  const allFull = rows.length > 0 && rows.every((r) => (r.billable_pct ?? 0) >= 100);
+  const meta = `last ${data.days_back}d${data.team_billable_pct != null ? ` · team ${data.team_billable_pct}%` : ''}`;
+  return (
+    <StatCard icon={<Clock className="h-4 w-4 text-muted-foreground" />} title="Billable split" meta={meta}>
+      {allFull ? (
+        <p className="px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">
+          All {Number(data.team_billable_hours)}h approved this window are billable (100%).
+        </p>
+      ) : (
+        <div className="px-4 py-3">
+          <div className="space-y-2">
+            {rows.map((r) => {
+              const pct = r.billable_pct ?? 0;
+              return (
+                <div key={r.user_id} className="text-sm">
+                  <div className="mb-0.5 flex items-center justify-between">
+                    <span className="text-foreground">{r.full_name}</span>
+                    <span className="tabular-nums text-muted-foreground" title={`${Number(r.billable_hours)}h billable of ${Number(r.approved_hours)}h approved`}>
+                      {r.billable_pct}% · {Number(r.billable_hours)}/{Number(r.approved_hours)}h
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={cn('h-full rounded-full', pct >= 70 ? 'bg-emerald-500' : pct >= 40 ? 'bg-amber-500' : 'bg-rose-500')}
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </StatCard>
+  );
+}
+
+// One on-time week dot. Filled green = on time, red = late, hollow = no activity.
+function WeekDot({ status, label }: { status: 'on_time' | 'late' | 'none'; label: string }) {
+  return (
+    <span
+      title={label}
+      className={cn(
+        'inline-block h-2.5 w-2.5 rounded-full',
+        status === 'on_time' ? 'bg-emerald-500' : status === 'late' ? 'bg-rose-500' : 'border border-border bg-transparent',
+      )}
+    />
+  );
+}
+
+// On-time — recent-weeks sparkline (dots) per person so a manager sees who's
+// slipping NOW, plus the overall % for context.
+function OnTimeCard({ data }: { data: TeamOnTimeStats }) {
+  const rows = data.rows.filter((r) => r.weeks_with_activity > 0);
+  const meta = `${data.team_on_time_pct != null ? `team ${data.team_on_time_pct}% · ` : ''}recent weeks`;
+  const fmtWeek = (iso: string) => {
+    const d = new Date(iso + 'T00:00:00');
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+  return (
+    <StatCard icon={<CheckCircle2 className="h-4 w-4 text-muted-foreground" />} title="On-time submissions" meta={meta}>
+      <div className="px-4 py-3">
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.user_id} className="flex items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 flex-1 truncate text-foreground">{r.full_name}</span>
+              <span className="flex shrink-0 items-center gap-1">
+                {r.recent_weeks.map((w) => (
+                  <WeekDot key={w.week_start} status={w.status} label={`Week of ${fmtWeek(w.week_start)}: ${w.status === 'on_time' ? 'on time' : w.status === 'late' ? 'late' : 'no activity'}`} />
+                ))}
+              </span>
+              <span
+                className={cn('w-10 shrink-0 text-right tabular-nums font-semibold', (r.on_time_pct ?? 0) >= 80 ? 'text-emerald-600 dark:text-emerald-400' : (r.on_time_pct ?? 0) >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400')}
+                title={`${r.on_time_weeks} on-time of ${r.weeks_with_activity} active weeks (all-time in window)`}
+              >
+                {r.on_time_pct}%
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </StatCard>
+  );
+}
+
+// Project matrix — heat-shaded cells (opacity scales with hours vs the busiest
+// cell) so heavy allocations stand out; project totals header + grand total.
+function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
+  const rows = data.rows.filter((r) => Number(r.total_hours) > 0);
+  // Max single-cell hours drives the heat scale.
+  let maxCell = 0;
+  for (const r of rows) for (const c of r.cells) maxCell = Math.max(maxCell, Number(c.hours));
+  const heat = (h: number): React.CSSProperties =>
+    h > 0 && maxCell > 0 ? { backgroundColor: `hsl(var(--primary) / ${(0.08 + 0.32 * (h / maxCell)).toFixed(3)})` } : {};
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <p className="text-sm font-semibold text-foreground">Project hours by person</p>
+        <p className="text-xs text-muted-foreground">last {data.days_back}d · approved · {Number(data.grand_total_hours)}h total</p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+              <th className="px-4 py-2 font-semibold">Person</th>
+              {data.projects.map((p) => (
+                <th key={p.project_id} className="px-3 py-2 text-right font-semibold" title={`${p.project_name} (${p.client_name}) · ${Number(p.total_hours)}h`}>
+                  {p.project_name}
+                </th>
+              ))}
+              <th className="px-4 py-2 text-right font-semibold">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.user_id} className="border-b border-border/60">
+                <td className="px-4 py-2 text-foreground">{r.full_name}</td>
+                {r.cells.map((c) => {
+                  const h = Number(c.hours);
+                  return (
+                    <td key={c.project_id} className={cn('px-3 py-2 text-right tabular-nums', h > 0 ? 'text-foreground' : 'text-muted-foreground/30')} style={heat(h)}>
+                      {h > 0 ? `${h}h` : '·'}
+                    </td>
+                  );
+                })}
+                <td className="px-4 py-2 text-right font-semibold tabular-nums text-foreground">{Number(r.total_hours)}h</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-border text-[11px] text-muted-foreground">
+              <td className="px-4 py-2 font-semibold uppercase tracking-wider">Project total</td>
+              {data.projects.map((p) => (
+                <td key={p.project_id} className="px-3 py-2 text-right tabular-nums">{Number(p.total_hours)}h</td>
+              ))}
+              <td className="px-4 py-2 text-right font-semibold tabular-nums text-foreground">{Number(data.grand_total_hours)}h</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const team = useManagerTeamOverview();
+  const rejections = useTeamRejectionStats();
+  const billable = useTeamBillableStats();
+  const onTime = useTeamOnTimeStats();
+  const projectMatrix = useTeamProjectMatrix();
   const projects = useManagerProjectHealth();
+  const daily = useTeamDailyOverview();
   // VIEWER sees the same team roster/tiles/health as a manager (read-only,
   // whole-tenant) but NOT the manager action card (no approvals/reminders).
   const isViewer = user?.role === 'VIEWER';
@@ -237,6 +505,52 @@ export function DashboardPage() {
             />
           </div>
 
+          {/* Daily standup: yesterday's submission status. Sourced from
+              /dashboard/team-daily-overview (manager-scoped). Hidden until the
+              data loads; an empty team renders the "nobody assigned" hint. */}
+          {daily.data && daily.data.team_size > 0 ? (
+            <Card>
+              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-sm font-semibold text-foreground">
+                    Daily check-in
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(daily.data.date).toLocaleDateString(undefined, {
+                    weekday: 'long',
+                    month: 'short',
+                    day: 'numeric',
+                  })}
+                  {daily.data.has_time_remaining_until_deadline
+                    ? ` · deadline ${new Date(daily.data.submission_deadline_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+                    : ' · deadline passed'}
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
+                <DailyGroup
+                  tone="emerald"
+                  label="Submitted"
+                  count={daily.data.submitted_yesterday_count}
+                  names={daily.data.submitted_yesterday.map((m) => m.full_name)}
+                />
+                <DailyGroup
+                  tone="amber"
+                  label={daily.data.has_time_remaining_until_deadline ? 'Still drafting' : 'Drafting'}
+                  count={daily.data.draft_yesterday_count}
+                  names={daily.data.draft_yesterday.map((m) => m.full_name)}
+                />
+                <DailyGroup
+                  tone="rose"
+                  label={daily.data.has_time_remaining_until_deadline ? 'Not started' : 'Missed deadline'}
+                  count={daily.data.missing_yesterday_count}
+                  names={daily.data.missing_yesterday.map((m) => m.full_name)}
+                />
+              </div>
+            </Card>
+          ) : null}
+
           {/* Project health */}
           <Card>
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -295,6 +609,29 @@ export function DashboardPage() {
               </div>
             )}
           </Card>
+
+          {/* Team quality stats — Rejections, Billable, On-time in a denser
+              2-up grid. Each collapses to a one-line summary when there's no
+              variation worth a full list (all-billable, zero rejections). */}
+          {(rejections.data || billable.data || onTime.data) ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {rejections.data && rejections.data.rows.some((r) => r.decided_count > 0)
+                ? <RejectionsCard data={rejections.data} />
+                : null}
+              {billable.data && billable.data.rows.some((r) => Number(r.approved_hours) > 0)
+                ? <BillableCard data={billable.data} />
+                : null}
+              {onTime.data && onTime.data.rows.some((r) => r.weeks_with_activity > 0)
+                ? <OnTimeCard data={onTime.data} />
+                : null}
+            </div>
+          ) : null}
+
+          {/* Project hours matrix: approved hours per person per project, heat-
+              shaded so heavy allocations pop. Full width below the 2-up grid. */}
+          {projectMatrix.data && projectMatrix.data.projects.length > 0 ? (
+            <ProjectMatrixCard data={projectMatrix.data} />
+          ) : null}
 
           {/* Team roster — collapsible, per-person status with summary pills.
               Rows link to My Team for follow-up. */}

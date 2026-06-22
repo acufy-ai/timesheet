@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from datetime import datetime, date, time
 from decimal import Decimal
 from typing import Any, Optional, List
@@ -12,6 +12,7 @@ class UserRole(str, Enum):
     VIEWER = "VIEWER"
     ADMIN = "ADMIN"
     PLATFORM_ADMIN = "PLATFORM_ADMIN"
+    CLIENT = "CLIENT"
 
 
 class TimeEntryStatus(str, Enum):
@@ -58,6 +59,7 @@ class UserBase(BaseModel):
     is_active: bool = True
     manager_id: Optional[int] = None
     project_ids: List[int] = Field(default_factory=list)
+    task_ids: List[int] = Field(default_factory=list)
     default_client_id: Optional[int] = None
 
 
@@ -74,6 +76,7 @@ class UserCreate(BaseModel):
     is_active: bool = True
     manager_id: Optional[int] = None
     project_ids: List[int] = Field(default_factory=list)
+    task_ids: List[int] = Field(default_factory=list)
     default_client_id: Optional[int] = None
     password: Optional[str] = Field(None, min_length=8)
     can_review: bool = False
@@ -106,6 +109,7 @@ class UserUpdate(BaseModel):
     is_external: Optional[bool] = None
     manager_id: Optional[int] = None
     project_ids: Optional[List[int]] = None
+    task_ids: Optional[List[int]] = None
     default_client_id: Optional[int] = None
     phones: Optional[List[str]] = None
 
@@ -242,6 +246,9 @@ class MessageResponse(BaseModel):
 class ClientBase(BaseModel):
     name: str
     client_type: str = "external"
+    status: str = "active"
+    company: Optional[str] = None
+    since: Optional[date] = None
     quickbooks_customer_id: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
@@ -255,6 +262,9 @@ class ClientCreate(ClientBase):
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
     client_type: Optional[str] = None
+    status: Optional[str] = None
+    company: Optional[str] = None
+    since: Optional[date] = None
     quickbooks_customer_id: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
@@ -274,13 +284,155 @@ class UserClientAssignmentResponse(BaseModel):
     client_id: int
     client_name: str
     client_type: str
+    assignment_role: str = "member"
 
+    model_config = {"from_attributes": True}
+
+
+# A member of a client's team (for the client team roster).
+class ClientTeamMember(BaseModel):
+    user_id: int
+    full_name: str
+    role: str  # the user's org role (e.g. MANAGER / EMPLOYEE)
+    assignment_role: str  # 'pm' | 'member' on this client
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================================
+# Contract Schemas
+# ============================================================================
+
+class ContractBase(BaseModel):
+    title: str
+    kind: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    value: Optional[Decimal] = None
+    status: str = "draft"
+
+
+class ContractCreate(ContractBase):
+    pass
+
+
+class ContractUpdate(BaseModel):
+    title: Optional[str] = None
+    kind: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    value: Optional[Decimal] = None
+    status: Optional[str] = None
+
+
+class ContractResponse(ContractBase):
+    id: int
+    client_id: int
+    document_name: Optional[str] = None
+    document_size: Optional[int] = None
+    has_document: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================================
+# Client Contact / Role-rate / Note Schemas (Phase C)
+# ============================================================================
+
+class ContactChannel(BaseModel):
+    label: Optional[str] = None
+    # one of these is set depending on emails vs phones
+    address: Optional[str] = None
+    number: Optional[str] = None
+
+
+class ClientContactBase(BaseModel):
+    name: str
+    role: Optional[str] = None
+    emails: list[dict] = []
+    phones: list[dict] = []
+
+
+class ClientContactCreate(ClientContactBase):
+    pass
+
+
+class ClientContactUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    emails: Optional[list[dict]] = None
+    phones: Optional[list[dict]] = None
+
+
+class ClientContactResponse(ClientContactBase):
+    id: int
+    client_id: int
+    model_config = {"from_attributes": True}
+
+
+class ClientRoleRateBase(BaseModel):
+    role: str
+    rate: Decimal
+    currency: str = "USD"
+    effective_date: Optional[date] = None
+
+
+class ClientRoleRateCreate(ClientRoleRateBase):
+    pass
+
+
+class ClientRoleRateUpdate(BaseModel):
+    role: Optional[str] = None
+    rate: Optional[Decimal] = None
+    currency: Optional[str] = None
+    effective_date: Optional[date] = None
+
+
+class ClientRoleRateResponse(ClientRoleRateBase):
+    id: int
+    client_id: int
+    model_config = {"from_attributes": True}
+
+
+class ClientNoteBase(BaseModel):
+    author: Optional[str] = None
+    body: str
+    note_date: Optional[date] = None
+
+
+class ClientNoteCreate(ClientNoteBase):
+    pass
+
+
+class ClientNoteUpdate(BaseModel):
+    author: Optional[str] = None
+    body: Optional[str] = None
+    note_date: Optional[date] = None
+
+
+class ClientNoteResponse(ClientNoteBase):
+    id: int
+    client_id: int
+    created_at: datetime
+    updated_at: datetime
     model_config = {"from_attributes": True}
 
 
 # ============================================================================
 # Project Schemas
 # ============================================================================
+
+_PROJECT_STATUSES = ("planning", "in_progress", "on_hold", "completed")
+_TASK_STATUSES = ("to_do", "in_progress", "done")
+
+
+def _check_status(value, allowed, field):
+    if value is not None and value not in allowed:
+        raise ValueError(f"Invalid {field}: {value!r}. Allowed: {', '.join(allowed)}")
+    return value
+
 
 class ProjectBase(BaseModel):
     name: str
@@ -295,10 +447,20 @@ class ProjectBase(BaseModel):
     budget_amount: Optional[Decimal] = None
     currency: Optional[str] = None
     is_active: bool = True
+    status: str = "planning"
+    manager_id: Optional[int] = None
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        return _check_status(v, _PROJECT_STATUSES, "project status")
 
 
 class ProjectCreate(ProjectBase):
-    pass
+    # Optional team roster on create (user ids); reconciled into user_project_access.
+    resource_ids: Optional[List[int]] = None
+    # Project managers (user ids). A project can have multiple PMs.
+    manager_ids: Optional[List[int]] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -314,12 +476,27 @@ class ProjectUpdate(BaseModel):
     budget_amount: Optional[Decimal] = None
     currency: Optional[str] = None
     is_active: Optional[bool] = None
+    status: Optional[str] = None
+    manager_id: Optional[int] = None
+    # When provided, replaces the project roster (user_project_access).
+    resource_ids: Optional[List[int]] = None
+    # When provided, replaces the project's managers.
+    manager_ids: Optional[List[int]] = None
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        return _check_status(v, _PROJECT_STATUSES, "project status")
 
 
 class ProjectResponse(ProjectBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    # Current team roster (user ids), from user_project_access.
+    resource_ids: List[int] = []
+    # Current project managers (user ids), from project_managers.
+    manager_ids: List[int] = []
 
     model_config = {"from_attributes": True}
 
@@ -334,10 +511,17 @@ class TaskBase(BaseModel):
     code: Optional[str] = None
     description: Optional[str] = None
     is_active: bool = True
+    priority: str = "medium"
+    status: str = "to_do"
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        return _check_status(v, _TASK_STATUSES, "task status")
 
 
 class TaskCreate(TaskBase):
-    pass
+    assignee_ids: Optional[List[int]] = None
 
 
 class TaskUpdate(BaseModel):
@@ -346,12 +530,22 @@ class TaskUpdate(BaseModel):
     code: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    # When provided, replaces the task's assignees.
+    assignee_ids: Optional[List[int]] = None
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        return _check_status(v, _TASK_STATUSES, "task status")
 
 
 class TaskResponse(TaskBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    assignee_ids: List[int] = []
 
     model_config = {"from_attributes": True}
 
@@ -363,6 +557,14 @@ class TaskWithProject(TaskResponse):
 # ============================================================================
 # TimeEntry Schemas
 # ============================================================================
+
+def _validate_time_block(start, end):
+    """When both a start and end time are given, the block must be forward
+    (end strictly after start). ``hours`` stays the billing source of truth,
+    so we don't force span==hours, but a reversed/zero block is always wrong."""
+    if start is not None and end is not None and end <= start:
+        raise ValueError("end_time must be after start_time")
+
 
 class TimeEntryBase(BaseModel):
     project_id: int
@@ -379,6 +581,11 @@ class TimeEntryBase(BaseModel):
     # queues, exports, or client-facing views.
     notes: Optional[str] = None
     is_billable: bool = True
+
+    @model_validator(mode="after")
+    def _check_time_block(self):
+        _validate_time_block(self.start_time, self.end_time)
+        return self
 
 
 class TimeEntryCreate(TimeEntryBase):
@@ -397,6 +604,11 @@ class TimeEntryUpdate(BaseModel):
     is_billable: Optional[bool] = None
     edit_reason: Optional[str] = Field(None, max_length=2000)
     history_summary: Optional[str] = Field(None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _check_time_block(self):
+        _validate_time_block(self.start_time, self.end_time)
+        return self
 
 
 class TimeEntryResponse(TimeEntryBase):
@@ -794,6 +1006,117 @@ class ManagerProjectHealthResponse(BaseModel):
 
 
 # ============================================================================
+# Manager team-stats Schemas (non-PSA, computed from existing time entries)
+# ============================================================================
+
+class TeamRejectionReason(BaseModel):
+    """A rejection reason and how often it occurred across the team window."""
+    reason: str
+    count: int
+
+
+class TeamRejectionRow(BaseModel):
+    """Per-employee rejection stats over the lookback window."""
+    user_id: int
+    full_name: str
+    # Entries that reached a terminal decision (approved or rejected) in
+    # the window. The denominator for the rate.
+    decided_count: int
+    rejected_count: int
+    # rejected_count / decided_count as a 0-100 percentage. None when the
+    # employee had no decided entries in the window (rate is undefined, not 0).
+    rejection_rate_pct: Optional[int]
+
+
+class TeamRejectionStatsResponse(BaseModel):
+    days_back: int
+    rows: list[TeamRejectionRow]
+    # Top rejection reasons across the whole scoped team, most frequent first.
+    top_reasons: list[TeamRejectionReason]
+    team_rejection_rate_pct: Optional[int]
+
+
+class TeamBillableRow(BaseModel):
+    """Per-employee billable split over the lookback window (approved hours)."""
+    user_id: int
+    full_name: str
+    approved_hours: Decimal
+    billable_hours: Decimal
+    # billable_hours / approved_hours as 0-100. None when the employee logged
+    # no approved hours in the window (undefined, not 0).
+    billable_pct: Optional[int]
+
+
+class TeamBillableStatsResponse(BaseModel):
+    days_back: int
+    rows: list[TeamBillableRow]
+    team_billable_pct: Optional[int]
+    team_approved_hours: Decimal
+    team_billable_hours: Decimal
+
+
+class TeamOnTimeWeek(BaseModel):
+    """One recent week's on-time outcome for an employee. ``status`` is
+    'on_time' | 'late' | 'none' (no activity that week). ``week_start`` is the
+    Monday (ISO date) so the frontend can label/tooltip the dot."""
+    week_start: date
+    status: str
+
+
+class TeamOnTimeRow(BaseModel):
+    """Per-employee on-time submission trend over the lookback window.
+
+    Measured at weekly grain: a week counts if the employee logged any time in
+    it; the week is "on time" if their last submission for that week happened on
+    or before the week's submission deadline.
+    """
+    user_id: int
+    full_name: str
+    weeks_with_activity: int
+    on_time_weeks: int
+    # on_time_weeks / weeks_with_activity as 0-100. None when no activity weeks.
+    on_time_pct: Optional[int]
+    # Most-recent N weeks (oldest->newest) for a trend sparkline. Includes
+    # no-activity weeks (status 'none') so the timeline reads continuously.
+    recent_weeks: list[TeamOnTimeWeek] = Field(default_factory=list)
+
+
+class TeamOnTimeStatsResponse(BaseModel):
+    days_back: int
+    rows: list[TeamOnTimeRow]
+    team_on_time_pct: Optional[int]
+
+
+class TeamProjectMatrixProject(BaseModel):
+    """A project column in the team hours matrix."""
+    project_id: int
+    project_name: str
+    client_name: str
+    total_hours: Decimal
+
+
+class TeamProjectMatrixCell(BaseModel):
+    project_id: int
+    hours: Decimal
+
+
+class TeamProjectMatrixRow(BaseModel):
+    """One employee row: their hours per project plus a row total."""
+    user_id: int
+    full_name: str
+    total_hours: Decimal
+    cells: list[TeamProjectMatrixCell]
+
+
+class TeamProjectMatrixResponse(BaseModel):
+    days_back: int
+    # Approved hours only, to match the financial source-of-truth rule.
+    projects: list[TeamProjectMatrixProject]
+    rows: list[TeamProjectMatrixRow]
+    grand_total_hours: Decimal
+
+
+# ============================================================================
 # Email Verification Schemas
 # ============================================================================
 
@@ -822,7 +1145,10 @@ class LoginRequest(BaseModel):
     isn't in Auth0 yet, all transparent to the frontend.
     """
     email: EmailStr
-    password: str
+    # Capped so a giant password value can't be sent to bcrypt (which only
+    # uses the first 72 bytes anyway). Belt-and-suspenders with the body-size
+    # middleware.
+    password: str = Field(..., max_length=1024)
 
 
 class TokenResponse(BaseModel):
@@ -1052,3 +1378,168 @@ class NotificationReadRequest(BaseModel):
 
 class NotificationActionResponse(BaseModel):
     success: bool = True
+
+
+# ── Client Portal Access ──────────────────────────────────────────────────────
+CLIENT_CAPABILITIES = ("create", "read", "update", "delete")
+
+
+class ClientGrantCreate(BaseModel):
+    """Create one scoped grant for a CLIENT user (project XOR task)."""
+    user_id: int
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    capabilities: List[str] = Field(default_factory=lambda: ["read"])
+
+    @field_validator("capabilities")
+    @classmethod
+    def _valid_caps(cls, v: List[str]) -> List[str]:
+        bad = [c for c in v if c not in CLIENT_CAPABILITIES]
+        if bad:
+            raise ValueError(f"Invalid capabilities: {bad}")
+        # Always include read if any capability is granted.
+        caps = sorted(set(v))
+        if caps and "read" not in caps:
+            caps.append("read")
+        return sorted(set(caps))
+
+
+class ClientGrantUpdate(BaseModel):
+    capabilities: List[str]
+
+    @field_validator("capabilities")
+    @classmethod
+    def _valid_caps(cls, v: List[str]) -> List[str]:
+        bad = [c for c in v if c not in CLIENT_CAPABILITIES]
+        if bad:
+            raise ValueError(f"Invalid capabilities: {bad}")
+        caps = sorted(set(v))
+        if caps and "read" not in caps:
+            caps.append("read")
+        return sorted(set(caps))
+
+
+class ClientGrantResponse(BaseModel):
+    id: int
+    user_id: int
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    capabilities: List[str] = Field(default_factory=list)
+    created_by: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ClientPortalUser(BaseModel):
+    """A client-side person who has at least one grant on a given client's
+    projects, with those grants. Powers the per-client 'Client access' tab."""
+    user_id: int
+    full_name: str
+    email: str
+    label: Optional[str] = None   # client-side role label (stored on user.title)
+    grants: List[ClientGrantResponse] = Field(default_factory=list)
+
+
+class ProjectClientAccessToggle(BaseModel):
+    """PM toggle: expose / unexpose a project to client grants."""
+    client_access_enabled: bool
+
+
+class ClientGrantSpec(BaseModel):
+    """One scoped grant in an invite payload: a project (whole-project) XOR a
+    task (specific-task), each carrying its own capability set. Mirrors the PM
+    invite modal's per-project mode (Whole project / Specific tasks)."""
+    scope: str  # "project" | "task"
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    capabilities: List[str] = Field(default_factory=lambda: ["read"])
+
+    @field_validator("capabilities")
+    @classmethod
+    def _valid_caps(cls, v: List[str]) -> List[str]:
+        bad = [c for c in v if c not in CLIENT_CAPABILITIES]
+        if bad:
+            raise ValueError(f"Invalid capabilities: {bad}")
+        caps = sorted(set(v))
+        if caps and "read" not in caps:
+            caps.append("read")
+        return sorted(set(caps))
+
+
+class ClientInviteRequest(BaseModel):
+    """Invite a new client-side person: creates a CLIENT user + emails a
+    set-password link. Optionally grants scoped access in the same call.
+
+    Prefer `grants` (per-scope project/task with its own capabilities, matching
+    the invite modal). `project_ids` + `capabilities` is the legacy flat form
+    (every selected project gets the same caps) and is used only when `grants`
+    is empty."""
+    full_name: str = Field(..., min_length=1)
+    email: EmailStr
+    label: Optional[str] = None  # client-side role label, e.g. "Project Sponsor"
+    grants: List[ClientGrantSpec] = Field(default_factory=list)
+    project_ids: List[int] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=lambda: ["read"])
+
+    @field_validator("capabilities")
+    @classmethod
+    def _valid_caps(cls, v: List[str]) -> List[str]:
+        bad = [c for c in v if c not in CLIENT_CAPABILITIES]
+        if bad:
+            raise ValueError(f"Invalid capabilities: {bad}")
+        caps = sorted(set(v))
+        if caps and "read" not in caps:
+            caps.append("read")
+        return sorted(set(caps))
+
+
+class ClientInviteResponse(BaseModel):
+    user_id: int
+    email: str
+    invited: bool = True
+    message: str
+
+
+# Client-side portal DTOs (what a CLIENT user sees of their granted work).
+class PortalTask(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    description: Optional[str] = None
+    status: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+
+
+class PortalProject(BaseModel):
+    id: int
+    name: str
+    code: Optional[str] = None
+    client_id: int
+    client_name: Optional[str] = None
+    status: Optional[str] = None
+    description: Optional[str] = None
+    # Project-level capabilities (empty when the client only has task grants here).
+    capabilities: List[str] = Field(default_factory=list)
+    tasks: List[PortalTask] = Field(default_factory=list)
+
+
+# Portal write payloads (capability-gated).
+class PortalTaskUpdate(BaseModel):
+    """Client editing a task they have UPDATE on (status and/or description)."""
+    status: Optional[str] = None
+    description: Optional[str] = None
+
+
+class PortalTaskCreate(BaseModel):
+    """Client adding a task to a project they have CREATE on."""
+    project_id: int
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+
+
+class PortalProjectUpdate(BaseModel):
+    """Client editing a project they have UPDATE on (description only — name,
+    status, billing etc. stay manager-owned)."""
+    description: Optional[str] = None

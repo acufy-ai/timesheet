@@ -25,7 +25,13 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token."""
+    """Create a JWT access token.
+
+    Carries a unique ``jti`` so the token can be added to a short-lived
+    revocation denylist on logout (access tokens are otherwise valid until
+    expiry). Callers don't need the jti; it is read back from the decoded
+    payload when revoking.
+    """
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -33,7 +39,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(
             timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
 
-    to_encode.update({"exp": int(expire.timestamp())})
+    to_encode.update({"exp": int(expire.timestamp()), "jti": secrets.token_urlsafe(16)})
     encoded_jwt = jwt.encode(
         to_encode, settings.secret_key, algorithm=settings.algorithm)
     logger.debug("Token created successfully")

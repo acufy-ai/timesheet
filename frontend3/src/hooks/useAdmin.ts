@@ -5,7 +5,11 @@ import {
   auditApi,
   brandingApi,
   clientsApi,
+  clientContactsApi,
+  clientNotesApi,
+  contractsApi,
   departmentsApi,
+  roleRatesApi,
   holidaysApi,
   ingestionApi,
   leaveTypesApi,
@@ -18,7 +22,8 @@ import {
   timeOffApi,
   usersApi,
 } from '@/api/client';
-import type { CreateUserBody, SettingValue, UpdateUserBody } from '@/types/admin';
+import type { CreateUserBody, SettingValue, UpdateUserBody, UserListParams } from '@/types/admin';
+import { keepPreviousData } from '@tanstack/react-query';
 
 // Data hooks for the management + admin pages. Read-mostly; the time-off
 // page has create/submit/delete mutations.
@@ -28,6 +33,19 @@ export function useUsers(enabled = true) {
     queryKey: ['users'],
     queryFn: () => usersApi.list().then((r) => r.data),
     enabled,
+    staleTime: 30_000,
+  });
+}
+
+// Paged + searchable user list for the redesigned rail. Keyed by params so
+// each page/filter combination caches independently; keepPreviousData avoids
+// a flash to empty while the next page loads.
+export function useUsersPaged(params: UserListParams, enabled = true) {
+  return useQuery({
+    queryKey: ['users', 'paged', params],
+    queryFn: () => usersApi.listPaged(params),
+    enabled,
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
 }
@@ -220,6 +238,181 @@ export function useDeleteClient() {
   return useMutation({
     mutationFn: (id: number) => clientsApi.remove(id),
     onSuccess: () => { invalidateClients(qc); invalidateProjects(qc); },
+  });
+}
+
+// Client team roster (PMs + members). Disabled until a client is selected.
+export function useClientTeam(clientId: number | null) {
+  return useQuery({
+    queryKey: ['client-team', clientId],
+    queryFn: () => clientsApi.team(clientId as number).then((r) => r.data),
+    enabled: clientId != null,
+    staleTime: 30_000,
+  });
+}
+export function useSetClientTeam() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: import('@/types/admin').ClientTeamBody }) =>
+      clientsApi.setTeam(id, data).then((r) => r.data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ['client-team', vars.id] });
+      // Roster changes affect project/task assignee pools.
+      invalidateProjects(qc); invalidateTasks(qc);
+    },
+  });
+}
+
+// ── Contracts (Phase B) ─────────────────────────────────────────────────────
+type ContractBody = import('@/types/admin').ContractBody;
+
+export function useContracts(clientId: number | null) {
+  return useQuery({
+    queryKey: ['contracts', clientId],
+    queryFn: () => contractsApi.list(clientId as number).then((r) => r.data),
+    enabled: clientId != null,
+    staleTime: 30_000,
+  });
+}
+function invalidateContracts(qc: ReturnType<typeof useQueryClient>, clientId: number) {
+  qc.invalidateQueries({ queryKey: ['contracts', clientId] });
+}
+export function useCreateContract() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, data }: { clientId: number; data: ContractBody }) =>
+      contractsApi.create(clientId, data).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateContracts(qc, v.clientId),
+  });
+}
+export function useUpdateContract() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: ContractBody }) =>
+      contractsApi.update(clientId, id, data).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateContracts(qc, v.clientId),
+  });
+}
+export function useDeleteContract() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id }: { clientId: number; id: number }) =>
+      contractsApi.remove(clientId, id),
+    onSuccess: (_d, v) => invalidateContracts(qc, v.clientId),
+  });
+}
+export function useUploadContractDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id, file }: { clientId: number; id: number; file: File }) =>
+      contractsApi.uploadDocument(clientId, id, file).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateContracts(qc, v.clientId),
+  });
+}
+export function useDeleteContractDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id }: { clientId: number; id: number }) =>
+      contractsApi.deleteDocument(clientId, id).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateContracts(qc, v.clientId),
+  });
+}
+
+// ── Phase C: contacts / role rates / notes (per-client CRUD) ─────────────────
+type ContactBody = import('@/types/admin').ClientContactBody;
+type RoleRateBody = import('@/types/admin').ClientRoleRateBody;
+type NoteBody = import('@/types/admin').ClientNoteBody;
+
+export function useClientContacts(clientId: number | null) {
+  return useQuery({
+    queryKey: ['client-contacts', clientId],
+    queryFn: () => clientContactsApi.list(clientId as number).then((r) => r.data),
+    enabled: clientId != null, staleTime: 30_000,
+  });
+}
+export function useCreateClientContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, data }: { clientId: number; data: ContactBody }) =>
+      clientContactsApi.create(clientId, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-contacts', v.clientId] }),
+  });
+}
+export function useUpdateClientContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: ContactBody }) =>
+      clientContactsApi.update(clientId, id, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-contacts', v.clientId] }),
+  });
+}
+export function useDeleteClientContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id }: { clientId: number; id: number }) => clientContactsApi.remove(clientId, id),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-contacts', v.clientId] }),
+  });
+}
+
+export function useRoleRates(clientId: number | null) {
+  return useQuery({
+    queryKey: ['role-rates', clientId],
+    queryFn: () => roleRatesApi.list(clientId as number).then((r) => r.data),
+    enabled: clientId != null, staleTime: 30_000,
+  });
+}
+export function useCreateRoleRate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, data }: { clientId: number; data: RoleRateBody }) =>
+      roleRatesApi.create(clientId, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['role-rates', v.clientId] }),
+  });
+}
+export function useUpdateRoleRate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: RoleRateBody }) =>
+      roleRatesApi.update(clientId, id, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['role-rates', v.clientId] }),
+  });
+}
+export function useDeleteRoleRate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id }: { clientId: number; id: number }) => roleRatesApi.remove(clientId, id),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['role-rates', v.clientId] }),
+  });
+}
+
+export function useClientNotes(clientId: number | null) {
+  return useQuery({
+    queryKey: ['client-notes', clientId],
+    queryFn: () => clientNotesApi.list(clientId as number).then((r) => r.data),
+    enabled: clientId != null, staleTime: 30_000,
+  });
+}
+export function useCreateClientNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, data }: { clientId: number; data: NoteBody }) =>
+      clientNotesApi.create(clientId, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }),
+  });
+}
+export function useUpdateClientNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: NoteBody }) =>
+      clientNotesApi.update(clientId, id, data).then((r) => r.data),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }),
+  });
+}
+export function useDeleteClientNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, id }: { clientId: number; id: number }) => clientNotesApi.remove(clientId, id),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }),
   });
 }
 

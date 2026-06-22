@@ -4,14 +4,19 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, 
 from pydantic import BaseModel as PydanticBaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.schemas import ClientResponse, ClientCreate, ClientUpdate
+from app.schemas import ClientResponse, ClientCreate, ClientUpdate, ClientTeamMember
 from app.crud.client import get_client_by_id, create_client, update_client, delete_client, list_clients
+from app.crud.time_entry import count_protected_entries_for_client
 from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review
 from app.models.client import Client
 from app.models.client_email_domain import ClientEmailDomain
 from app.models.ingested_email import IngestedEmail
 from app.models.ingestion_timesheet import IngestionTimesheet, IngestionTimesheetStatus
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.models.user_client_assignment import UserClientAssignment, ClientAssignmentRole
+from app.api._client_access import (
+    require_client_manager, assert_client_access, visible_client_ids, add_creator_as_pm, is_admin,
+)
 from app.services.ingestion_pipeline import (
     PERSONAL_EMAIL_DOMAINS,
     _domain_of,
@@ -75,10 +80,14 @@ async def list_all_clients(
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
-    List all clients within the current user's tenant.
-    Any authenticated user can view clients.
+    List clients within the current user's tenant. Admins see all; managers
+    see only clients they are a PM on; other roles see none.
     """
-    return await list_clients(db, tenant_id=current_user.tenant_id, skip=skip, limit=limit)
+    visible = await visible_client_ids(db, current_user)
+    rows = await list_clients(db, tenant_id=current_user.tenant_id, skip=skip, limit=limit)
+    if visible is None:
+        return rows
+    return [c for c in rows if c.id in visible]
 
 
 @router.get("/{client_id}", response_model=ClientResponse)
@@ -94,6 +103,7 @@ async def get_client(
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
     return client
 
 
@@ -101,12 +111,21 @@ async def get_client(
 async def create_new_client(
     client_create: ClientCreate,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(_require_admin_or_reviewer),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """
-    Create a new client (Admin or ingestion reviewer).
+    Create a new client. Admins, ingestion reviewers, and managers may create
+    clients. A manager who creates one is auto-added as its PM so they retain
+    access (managers only see clients they PM).
     """
+    # Admin / reviewer / manager gate.
+    if not (is_admin(current_user) or current_user.can_review or current_user.role == UserRole.MANAGER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin, reviewer, or manager role required to create clients.",
+        )
     new_client = await create_client(db, client_create, tenant_id=current_user.tenant_id)
+    await add_creator_as_pm(db, current_user, new_client.id)
     if new_client.tenant_id is not None:
         await record_activity_events(
             db,
@@ -356,15 +375,17 @@ async def update_client_endpoint(
     client_update: ClientUpdate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """
-    Update a client (Admin only).
+    Update a client. Admins, or managers who are a PM on this client.
     """
+    require_client_manager(current_user)
     client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
 
     # Build changed_fields before updating (for outbound webhook)
     changed_fields = {}
@@ -400,13 +421,20 @@ async def bulk_delete_clients(
     body: BulkDeleteClientsRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
+    require_client_manager(current_user)
     deleted = 0
     for client_id in body.client_ids:
         client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
         if not client:
             continue
+        # Managers may only delete clients they PM; silently skip others.
+        if not is_admin(current_user):
+            try:
+                await assert_client_access(db, current_user, client_id)
+            except HTTPException:
+                continue
         ingestion_client_id = client.ingestion_client_id
         client_id_local = client.id
         success = await delete_client(db, client_id, tenant_id=current_user.tenant_id)
@@ -432,15 +460,30 @@ async def delete_client_endpoint(
     client_id: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    current_user: User = Depends(get_current_user),
 ) -> None:
     """
-    Delete a client (Admin only).
+    Delete a client. Admins, or managers who are a PM on this client.
     """
+    require_client_manager(current_user)
     client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
+
+    protected = await count_protected_entries_for_client(
+        db, client_id, tenant_id=current_user.tenant_id
+    )
+    if protected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot delete this client: its projects have {protected} "
+                "submitted, approved, or rejected time entries. Archive it "
+                "instead, or reassign those entries first."
+            ),
+        )
 
     ingestion_client_id = client.ingestion_client_id
     client_id_local = client.id
@@ -461,3 +504,99 @@ async def delete_client_endpoint(
             changed_by_name=current_user.full_name,
             session=db,
         )
+
+
+# ── Client team roster (PMs + members) ──────────────────────────────────────
+# The redesigned client form assigns PMs and team members to a client. Both are
+# rows in user_client_assignments distinguished by assignment_role ('pm' |
+# 'member'). The project PM dropdown reads the 'pm' rows; task assignee pickers
+# read the 'member' rows.
+
+class ClientTeamUpdate(PydanticBaseModel):
+    # extra="forbid": a mistyped key (e.g. "members" instead of "member_ids")
+    # must 422, not be silently dropped — silently dropping it left `desired`
+    # empty and wiped the entire roster.
+    model_config = {"extra": "forbid"}
+    pm_ids: list[int] = Field(default_factory=list)
+    member_ids: list[int] = Field(default_factory=list)
+
+
+@router.get("/{client_id}/team", response_model=list[ClientTeamMember])
+async def get_client_team(
+    client_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> list:
+    """The client's assigned team (PMs + members), with each person's org role
+    and their assignment_role on this client."""
+    client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
+    rows = (
+        await db.execute(
+            select(UserClientAssignment, User)
+            .join(User, User.id == UserClientAssignment.user_id)
+            .where(UserClientAssignment.client_id == client_id)
+            .where(UserClientAssignment.tenant_id == current_user.tenant_id)
+        )
+    ).all()
+    return [
+        ClientTeamMember(
+            user_id=u.id,
+            full_name=u.full_name,
+            role=u.role.value if hasattr(u.role, "value") else str(u.role),
+            assignment_role=a.assignment_role.value if hasattr(a.assignment_role, "value") else str(a.assignment_role),
+        )
+        for a, u in rows
+    ]
+
+
+@router.put("/{client_id}/team", response_model=list[ClientTeamMember])
+async def set_client_team(
+    client_id: int,
+    body: ClientTeamUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> list:
+    """Replace the client's roster. pm_ids -> assignment_role 'pm',
+    member_ids -> 'member'. A user appearing in both is treated as a PM."""
+    require_client_manager(current_user)
+    client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
+    tenant_id = current_user.tenant_id
+
+    # Desired role per user (PM wins over member).
+    desired: dict[int, ClientAssignmentRole] = {}
+    for uid in body.member_ids:
+        desired[uid] = ClientAssignmentRole.member
+    for uid in body.pm_ids:
+        desired[uid] = ClientAssignmentRole.pm
+
+    existing = (
+        await db.execute(
+            select(UserClientAssignment)
+            .where(UserClientAssignment.client_id == client_id)
+            .where(UserClientAssignment.tenant_id == tenant_id)
+        )
+    ).scalars().all()
+    by_user = {row.user_id: row for row in existing}
+
+    # Remove anyone no longer in the roster.
+    for row in existing:
+        if row.user_id not in desired:
+            await db.delete(row)
+    # Add or update the rest.
+    for uid, role in desired.items():
+        row = by_user.get(uid)
+        if row is None:
+            db.add(UserClientAssignment(
+                tenant_id=tenant_id, user_id=uid, client_id=client_id, assignment_role=role))
+        elif row.assignment_role != role:
+            row.assignment_role = role
+            db.add(row)
+    await db.commit()
+
+    return await get_client_team(client_id, db=db, current_user=current_user)
