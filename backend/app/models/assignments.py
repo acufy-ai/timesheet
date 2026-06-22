@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -34,3 +34,56 @@ class UserProjectAccess(Base, TimestampMixin):
 
     user = relationship("User", back_populates="project_access")
     project = relationship("Project", back_populates="user_access")
+
+
+class UserTaskAccess(Base, TimestampMixin):
+    """Per-user task-level access grant. Mirrors UserProjectAccess but at the
+    task grain, so a user can be granted specific tasks within a project
+    (the user form's project & task access tree). tenant_id carried for
+    defense in depth (the task already scopes the tenant)."""
+
+    __tablename__ = "user_task_access"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+
+    user = relationship("User", back_populates="task_access")
+    task = relationship("Task")
+
+
+class ProjectManager(Base, TimestampMixin):
+    """Many-to-many: the manager(s) who run a project. A project can have more
+    than one PM. tenant_id carried for defense in depth."""
+
+    __tablename__ = "project_managers"
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+
+    project = relationship("Project", back_populates="managers")
+    user = relationship("User")
+
+
+class TaskAssignee(Base, TimestampMixin):
+    """Many-to-many: employees assigned to a task. tenant_id carried for
+    defense in depth (the task already scopes the tenant)."""
+
+    __tablename__ = "task_assignees"
+
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+
+    task = relationship("Task", back_populates="assignees")
+    user = relationship("User")

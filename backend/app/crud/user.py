@@ -5,9 +5,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from app.models.user import User, UserRole
 from app.models.project import Project
+from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.time_off_request import TimeOffRequest
-from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess
+from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess, UserTaskAccess
 from app.schemas import UserCreate, UserUpdate
 from app.core.security import get_password_hash
 from typing import Optional
@@ -23,6 +24,7 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
         .options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
     )
     return result.scalars().first()
@@ -39,6 +41,7 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
         .options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
     )
     user = result.scalars().first()
@@ -70,8 +73,10 @@ async def _sync_user_assignments(
     role: UserRole,
     manager_id: Optional[int],
     project_ids: list[int],
+    task_ids: Optional[list[int]] = None,
 ) -> None:
     await db.execute(delete(UserProjectAccess).where(UserProjectAccess.user_id == user.id))
+    await db.execute(delete(UserTaskAccess).where(UserTaskAccess.user_id == user.id))
     await db.execute(delete(EmployeeManagerAssignment).where(EmployeeManagerAssignment.employee_id == user.id))
 
     if manager_id is not None:
@@ -94,23 +99,37 @@ async def _sync_user_assignments(
             employee_id=user.id, manager_id=manager_id))
 
     unique_project_ids = sorted(set(project_ids or []))
-    if not unique_project_ids:
+    if unique_project_ids:
+        # Validate that all projects belong to the same tenant as the user
+        query = select(Project.id).where(Project.id.in_(unique_project_ids))
+        if user.tenant_id is not None:
+            query = query.where(Project.tenant_id == user.tenant_id)
+        result = await db.execute(query)
+        valid_project_ids = {project_id for project_id in result.scalars().all()}
+        missing_ids = [
+            project_id for project_id in unique_project_ids if project_id not in valid_project_ids]
+        if missing_ids:
+            raise ValueError("One or more selected projects are invalid or belong to a different tenant")
+        db.add_all(
+            [UserProjectAccess(user_id=user.id, project_id=project_id)
+             for project_id in unique_project_ids]
+        )
+
+    # Per-user task access (mirror of project access, validated to the tenant).
+    unique_task_ids = sorted(set(task_ids or []))
+    if not unique_task_ids:
         return
-
-    # Validate that all projects belong to the same tenant as the user
-    query = select(Project.id).where(Project.id.in_(unique_project_ids))
+    tquery = select(Task.id).where(Task.id.in_(unique_task_ids))
     if user.tenant_id is not None:
-        query = query.where(Project.tenant_id == user.tenant_id)
-    result = await db.execute(query)
-    valid_project_ids = {project_id for project_id in result.scalars().all()}
-    missing_ids = [
-        project_id for project_id in unique_project_ids if project_id not in valid_project_ids]
-    if missing_ids:
-        raise ValueError("One or more selected projects are invalid or belong to a different tenant")
-
+        tquery = tquery.where(Task.tenant_id == user.tenant_id)
+    tresult = await db.execute(tquery)
+    valid_task_ids = {task_id for task_id in tresult.scalars().all()}
+    missing_task_ids = [t for t in unique_task_ids if t not in valid_task_ids]
+    if missing_task_ids:
+        raise ValueError("One or more selected tasks are invalid or belong to a different tenant")
     db.add_all(
-        [UserProjectAccess(user_id=user.id, project_id=project_id)
-         for project_id in unique_project_ids]
+        [UserTaskAccess(user_id=user.id, task_id=task_id, tenant_id=user.tenant_id)
+         for task_id in unique_task_ids]
     )
 
 
@@ -335,6 +354,7 @@ async def create_user(
             role,
             user_create.manager_id,
             user_create.project_ids,
+            getattr(user_create, "task_ids", None),
         )
         await db.commit()
     except IntegrityError:
@@ -695,8 +715,10 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
 
     manager_id_supplied = "manager_id" in update_data
     project_ids_supplied = "project_ids" in update_data
+    task_ids_supplied = "task_ids" in update_data
     manager_id = update_data.pop("manager_id", user.manager_id)
     project_ids = update_data.pop("project_ids", user.project_ids)
+    task_ids = update_data.pop("task_ids", user.task_ids)
 
     if "email" in update_data and update_data["email"] is not None:
         update_data["email"] = update_data["email"].strip().lower()
@@ -746,6 +768,11 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
                 normalized.append(value)
         if not normalized:
             raise ValueError("roles must be a non-empty list")
+        # Defense in depth: PLATFORM_ADMIN is a control-plane identity
+        # (tenant_id IS NULL) and must never be granted to a tenant-scoped
+        # user via the roles list, regardless of how this CRUD is reached.
+        if user.tenant_id is not None and UserRole.PLATFORM_ADMIN.value in normalized:
+            raise ValueError("PLATFORM_ADMIN cannot be assigned to a tenant user")
         active_role_value = next_role.value if hasattr(next_role, "value") else str(next_role)
         if active_role_value not in normalized:
             raise ValueError(
@@ -779,6 +806,8 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
         manager_id = user.manager_id
     if not project_ids_supplied:
         project_ids = user.project_ids
+    if not task_ids_supplied:
+        task_ids = user.task_ids
 
     # Capture which mirror-relevant fields changed BEFORE applying so the
     # mirror helper can decide whether to skip when nothing material moved.
@@ -798,7 +827,7 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     db.add(user)
     try:
         await db.flush()
-        await _sync_user_assignments(db, user, next_role, manager_id, project_ids or [])
+        await _sync_user_assignments(db, user, next_role, manager_id, project_ids or [], task_ids or [])
         await db.commit()
     except ValueError:
         await db.rollback()
@@ -964,20 +993,80 @@ async def delete_user(db: AsyncSession, user_id: int) -> bool:
     return False
 
 
-async def list_users(db: AsyncSession, tenant_id: int, skip: int = 0, limit: int = 100) -> list[User]:
-    """List all users for a tenant with pagination."""
+def _apply_user_filters(query, *, q=None, role=None, status=None, audience=None,
+                        no_manager=False, unverified=False):
+    """Apply the User-list search/filter predicates shared by the count and
+    page queries. `query` is a select() already scoped to a tenant."""
+    if q:
+        like = f"%{q.strip().lower()}%"
+        query = query.where(
+            sa_func.lower(User.full_name).like(like)
+            | sa_func.lower(User.email).like(like)
+            | sa_func.lower(User.username).like(like)
+        )
+    if role:
+        query = query.where(User.role == role)
+    if status == "active":
+        query = query.where(User.is_active.is_(True))
+    elif status == "inactive":
+        query = query.where(User.is_active.is_(False))
+    if audience == "internal":
+        query = query.where(User.is_external.is_(False))
+    elif audience == "external":
+        query = query.where(User.is_external.is_(True))
+    if unverified:
+        # "Unverified" = internal users who haven't confirmed their email.
+        # External users never log in (they have no verification step), so they
+        # are excluded — matching the frontend attention-chip definition.
+        query = query.where(User.email_verified.is_(False), User.is_external.is_(False))
+    if no_manager:
+        # "No manager" excludes admins/platform-admins (they're not expected to
+        # report to anyone) and is expressed as NOT EXISTS so it applies in SQL
+        # BEFORE pagination, keeping the page and the count in agreement.
+        query = query.where(
+            User.role.notin_([UserRole.ADMIN, UserRole.PLATFORM_ADMIN]),
+            ~select(EmployeeManagerAssignment.employee_id)
+            .where(EmployeeManagerAssignment.employee_id == User.id)
+            .exists(),
+        )
+    return query
+
+
+async def list_users(
+    db: AsyncSession, tenant_id: int, skip: int = 0, limit: int = 100,
+    *, q=None, role=None, status=None, audience=None, no_manager=False, unverified=False,
+) -> list[User]:
+    """List users for a tenant with pagination + optional search/filters."""
+    base = select(User).where(User.tenant_id == tenant_id)
+    base = _apply_user_filters(
+        base, q=q, role=role, status=status, audience=audience,
+        no_manager=no_manager, unverified=unverified,
+    )
     result = await db.execute(
-        select(User)
-        .where(User.tenant_id == tenant_id)
-        .options(
+        base.options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
         .order_by(User.full_name.asc())
         .offset(skip)
         .limit(limit)
     )
-    return result.scalars().all()
+    return list(result.scalars().all())
+
+
+async def count_users(
+    db: AsyncSession, tenant_id: int,
+    *, q=None, role=None, status=None, audience=None, no_manager=False, unverified=False,
+) -> int:
+    """Total matching users for the same filters as list_users (for paging)."""
+    base = select(User).where(User.tenant_id == tenant_id)
+    base = _apply_user_filters(
+        base, q=q, role=role, status=status, audience=audience,
+        no_manager=no_manager, unverified=unverified,
+    )
+    total = await db.scalar(select(sa_func.count()).select_from(base.subquery()))
+    return int(total or 0)
 
 
 async def list_users_by_role(db: AsyncSession, role: UserRole, tenant_id: int, skip: int = 0, limit: int = 100) -> list[User]:

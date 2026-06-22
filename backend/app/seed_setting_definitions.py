@@ -693,6 +693,19 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": False,
         "sort_order": 140,
     },
+    # Tenant-admin kill switch for the Client Portal. When off (default), no
+    # client account can sign in and no grant is active, regardless of any
+    # per-project toggle. Public so the UI can hide the portal/grant surfaces.
+    "client_portal_enabled": {
+        "category": "client_portal",
+        "data_type": "bool",
+        "default_value": False,
+        "validation": {},
+        "label": "Enable client portal",
+        "description": "Allow external client users to sign in and access projects/tasks shared with them. When off, all client access is disabled workspace-wide.",
+        "is_public": True,
+        "sort_order": 10,
+    },
 }
 
 

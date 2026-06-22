@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Plus, X } from 'lucide-react';
+import { Check, ChevronRight, Folder, Loader2, Minus, Plus, Search, X } from 'lucide-react';
 
 import { Button, Input, Modal } from '@/components/ui';
-import { useCreateUser, useUpdateUser, useAssignableUsers, useAdminProjects, useClients, useCreateClient, useUserClients, useAddUserClient, useRemoveUserClient } from '@/hooks/useAdmin';
+import { useCreateUser, useUpdateUser, useAssignableUsers, useAllProjects, useAllTasks, useClients, useCreateClient, useUserClients, useAddUserClient, useRemoveUserClient } from '@/hooks/useAdmin';
 import { UserExtrasPanel } from './UserExtrasPanel';
-import type { Client, CreateUserBody, ManagedUser, UpdateUserBody } from '@/types/admin';
+import { cn } from '@/lib/cn';
+import type { Client, CreateUserBody, FullProject, FullTask, ManagedUser, UpdateUserBody } from '@/types/admin';
 
 // Create / edit a workspace user. One form for both: when `user` is provided we
 // PUT a partial update; otherwise we POST a create. Fields mirror the backend
@@ -38,6 +39,7 @@ interface FormState {
   can_review: boolean;
   phones: string[];
   project_ids: number[];
+  task_ids: number[];
   default_client_id: number | '';
   is_active: boolean;
 }
@@ -57,6 +59,7 @@ function blankForm(): FormState {
     can_review: false,
     phones: [],
     project_ids: [],
+    task_ids: [],
     default_client_id: '',
     is_active: true,
   };
@@ -78,6 +81,7 @@ function fromUser(u: ManagedUser): FormState {
     can_review: !!u.can_review,
     phones: u.phones ?? [],
     project_ids: u.project_ids ?? [],
+    task_ids: u.task_ids ?? [],
     default_client_id: u.default_client_id ?? '',
     is_active: u.is_active,
   };
@@ -112,7 +116,6 @@ export function UserEditModal({
   const create = useCreateUser();
   const update = useUpdateUser();
   const assignableQ = useAssignableUsers(open);
-  const projectsQ = useAdminProjects(open);
   const clientsQ = useClients(open);
 
   // Reset the form whenever the modal opens or the target user changes.
@@ -126,7 +129,6 @@ export function UserEditModal({
     () => (assignableQ.data ?? []).filter((u) => u.id !== user?.id),
     [assignableQ.data, user?.id],
   );
-  const projects = projectsQ.data ?? [];
   const clients = clientsQ.data ?? [];
   const isEmployee = form.role === 'EMPLOYEE';
   const saving = create.isPending || update.isPending;
@@ -134,12 +136,20 @@ export function UserEditModal({
   function patch(p: Partial<FormState>) {
     setForm((f) => ({ ...f, ...p }));
   }
-  function toggleProject(id: number) {
+  // Access-tree setters: select/clear a whole project (+ its tasks) or one task.
+  function setProjectAccess(projectId: number, taskIds: number[], on: boolean) {
+    setForm((f) => {
+      const proj = new Set(f.project_ids);
+      const tasks = new Set(f.task_ids);
+      if (on) { proj.add(projectId); taskIds.forEach((t) => tasks.add(t)); }
+      else { proj.delete(projectId); taskIds.forEach((t) => tasks.delete(t)); }
+      return { ...f, project_ids: [...proj], task_ids: [...tasks] };
+    });
+  }
+  function toggleTaskAccess(taskId: number) {
     setForm((f) => ({
       ...f,
-      project_ids: f.project_ids.includes(id)
-        ? f.project_ids.filter((x) => x !== id)
-        : [...f.project_ids, id],
+      task_ids: f.task_ids.includes(taskId) ? f.task_ids.filter((x) => x !== taskId) : [...f.task_ids, taskId],
     }));
   }
   function toggleExtraRole(role: string) {
@@ -201,6 +211,7 @@ export function UserEditModal({
           can_review: form.is_external ? false : form.can_review,
           manager_id: form.is_external ? null : (form.manager_id === '' ? null : Number(form.manager_id)),
           project_ids: form.is_external ? [] : form.project_ids,
+          task_ids: form.is_external ? [] : form.task_ids,
           default_client_id: form.default_client_id === '' ? null : Number(form.default_client_id),
           phones,
           is_active: form.is_active,
@@ -221,6 +232,7 @@ export function UserEditModal({
           can_review: form.is_external ? false : form.can_review,
           manager_id: form.is_external ? null : (form.manager_id === '' ? null : Number(form.manager_id)),
           project_ids: form.is_external ? [] : form.project_ids,
+          task_ids: form.is_external ? [] : form.task_ids,
           default_client_id: form.default_client_id === '' ? null : Number(form.default_client_id),
           phones,
         };
@@ -248,8 +260,10 @@ export function UserEditModal({
     <Modal
       open={open}
       onClose={onClose}
-      title={isEdit ? `Edit user · ${user?.full_name}` : 'New user'}
-      className="max-w-lg"
+      title={restrictedToProjectAccess
+        ? `Edit access · ${user?.full_name}`
+        : `${isEdit ? 'Edit' : 'Add'} ${form.is_external ? 'external' : 'internal'} user`}
+      className="max-w-2xl"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {restrictedToProjectAccess ? (
@@ -258,24 +272,13 @@ export function UserEditModal({
               You can update this team member's project access. Other profile fields are managed by an admin.
             </div>
             <div>
-              <span className={labelClass}>Project access</span>
-              <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl border border-border bg-muted/10 p-3">
-                {projects.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No active projects.</p>
-                ) : (
-                  projects.map((p) => (
-                    <label key={p.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={form.project_ids.includes(p.id)}
-                        onChange={() => toggleProject(p.id)}
-                        className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
-                      />
-                      <span className="text-foreground">{p.name}</span>
-                    </label>
-                  ))
-                )}
-              </div>
+              <span className={labelClass}>Project &amp; task access</span>
+              <ProjectTaskAccessTree
+                projectIds={form.project_ids}
+                taskIds={form.task_ids}
+                onToggleProject={setProjectAccess}
+                onToggleTask={toggleTaskAccess}
+              />
             </div>
             {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
             <div className="flex justify-end gap-2 border-t border-border pt-3">
@@ -288,251 +291,150 @@ export function UserEditModal({
           </div>
         ) : (
         <>
-        <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
-          {/* User type */}
-          <div>
-            <span className={labelClass}>User type</span>
-            <div className="grid grid-cols-2 gap-2">
-              {([
-                ['internal', 'Internal', 'Can sign in'],
-                ['external', 'External', 'No login; hours entered for them'],
-              ] as const).map(([val, label, hint]) => {
-                const checked = (val === 'external') === form.is_external;
-                return (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => patch({ is_external: val === 'external' })}
-                    aria-pressed={checked}
-                    className={
-                      'rounded-xl border px-3 py-2 text-left text-sm transition ' +
-                      (checked
-                        ? 'border-primary bg-primary/10 ring-1 ring-primary/40'
-                        : 'border-border hover:bg-muted/40')
-                    }
-                  >
-                    <span className="block font-semibold text-foreground">{label}</span>
-                    <span className="block text-[11px] text-muted-foreground">{hint}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Full name */}
-          <div>
-            <label className={labelClass}>Full name *</label>
-            <Input value={form.full_name} onChange={(e) => patch({ full_name: e.target.value })} placeholder="Jane Smith" required />
-          </div>
-
-          {/* Email + username */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label className={labelClass}>Email</label>
-              <Input type="email" value={form.email} onChange={(e) => patch({ email: e.target.value })} placeholder="jane@example.com" />
-            </div>
-            <div>
-              <label className={labelClass}>Username</label>
-              <Input value={form.username} onChange={(e) => patch({ username: e.target.value })} placeholder="jsmith" />
-            </div>
-          </div>
-
-          {/* Role + manager (internal only — external users have no login,
-              role, or manager; they're contractors tied to a client). */}
-          {!form.is_external ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label className={labelClass}>Role</label>
-              <select value={form.role} onChange={(e) => patch({ role: e.target.value })} className={selectClass}>
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>{ROLE_LABEL[r]}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass}>Manager</label>
-              <select
-                value={form.manager_id}
-                onChange={(e) => patch({ manager_id: e.target.value ? Number(e.target.value) : '' })}
-                className={selectClass}
-              >
-                <option value="">No manager</option>
-                {managers.map((m) => (
-                  <option key={m.id} value={m.id}>{m.full_name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          ) : null}
-
-          {/* Additional portals (multi-role) — internal only */}
-          {!form.is_external ? (
-          <div>
-            <span className={labelClass}>Additional portals (optional)</span>
-            <div className="flex flex-wrap gap-1.5">
-              {EXTRA_PORTAL_ROLES.filter((r) => r !== form.role).map((r) => {
-                const on = form.extraRoles.includes(r);
-                return (
-                  <button
-                    key={r}
-                    type="button"
-                    onClick={() => toggleExtraRole(r)}
-                    className={
-                      'rounded-full border px-3 py-1 text-xs font-medium transition ' +
-                      (on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/40')
-                    }
-                  >
-                    {ROLE_LABEL[r]}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Lets this person switch into other role portals with one login.
-            </p>
-          </div>
-          ) : null}
-
-          {/* Title (shared) + Department (internal only). Title required for
-              EMPLOYEE/MANAGER; department required for MANAGER. */}
-          <div className={form.is_external ? '' : 'grid grid-cols-1 gap-3 sm:grid-cols-2'}>
-            <div>
-              <label className={labelClass}>
-                Title{!form.is_external && (form.role === 'EMPLOYEE' || form.role === 'MANAGER') ? ' *' : ''}
-              </label>
-              <Input value={form.title} onChange={(e) => patch({ title: e.target.value })} placeholder="Senior Consultant" />
-            </div>
-            {!form.is_external ? (
-              <div>
-                <label className={labelClass}>
-                  Department{form.role === 'MANAGER' ? ' *' : ''}
-                </label>
-                <Input value={form.department} onChange={(e) => patch({ department: e.target.value })} placeholder="Engineering" />
-              </div>
-            ) : null}
-          </div>
-
-          {/* External: primary client (+ inline add) + linked clients. */}
-          {form.is_external ? (
-            <ExternalClientFields
-              defaultClientId={form.default_client_id}
-              onSetDefault={(id) => patch({ default_client_id: id })}
-              clients={clients}
-              userId={isEdit && user ? user.id : null}
-            />
-          ) : null}
-
-          {/* Reviewer access. Shown for any INTERNAL user (matches frontend2);
-              the backend require_can_review only excludes ADMIN, so an
-              employee/manager/viewer can all be granted it. External users have
-              no login, so the option is hidden for them. */}
-          {!form.is_external ? (
-            <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-foreground">
-              <input
-                type="checkbox"
-                checked={form.can_review}
-                onChange={(e) => patch({ can_review: e.target.checked })}
-                className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
-              />
-              Reviewer access
-            </label>
-          ) : null}
-
-          {/* Phones */}
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Phone numbers</span>
-              <button
-                type="button"
-                onClick={() => patch({ phones: [...form.phones, ''] })}
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <Plus className="h-3 w-3" /> Add
-              </button>
-            </div>
-            {form.phones.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">None.</p>
-            ) : (
-              <div className="space-y-1.5">
-                {form.phones.map((p, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <Input
-                      value={p}
-                      onChange={(e) => {
-                        const next = [...form.phones];
-                        next[idx] = e.target.value;
-                        patch({ phones: next });
-                      }}
-                      placeholder="+1 555 123 4567"
-                    />
-                    <button
-                      type="button"
-                      aria-label="Remove phone"
-                      onClick={() => patch({ phones: form.phones.filter((_, i) => i !== idx) })}
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-rose-500/10 hover:text-rose-500"
-                    >
-                      <X className="h-4 w-4" />
+        <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
+          {/* Top row: User type (left) + Active toggle (right) */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-foreground">User type</span>
+              <div className="inline-flex rounded-full bg-muted p-0.5">
+                {([['internal', 'Internal'], ['external', 'External']] as const).map(([val, label]) => {
+                  const checked = (val === 'external') === form.is_external;
+                  return (
+                    <button key={val} type="button" onClick={() => patch({ is_external: val === 'external' })}
+                      className={cn('rounded-full px-3.5 py-1.5 text-xs font-semibold transition', checked ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground')}>
+                      {label}
                     </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            )}
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={form.is_active} onChange={(e) => patch({ is_active: e.target.checked })} className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
+              Active (can sign in)
+            </label>
           </div>
 
-          {/* Default client — internal only (external uses ExternalClientFields above). */}
-          {!form.is_external ? (
-          <div>
-            <label className={labelClass}>Default client</label>
-            <select
-              value={form.default_client_id}
-              onChange={(e) => patch({ default_client_id: e.target.value ? Number(e.target.value) : '' })}
-              className={selectClass}
-            >
-              <option value="">None</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
-          ) : null}
-
-          {/* Project access (internal employees only) */}
-          {!form.is_external && isEmployee ? (
+          {/* ── Section: Identity ── */}
+          <FormSection title="Identity">
             <div>
-              <span className={labelClass}>Project access</span>
-              <div className="max-h-44 space-y-2 overflow-y-auto rounded-xl border border-border bg-muted/10 p-3">
-                {projects.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No active projects.</p>
+              <label className={labelClass}>Full name *</label>
+              <Input value={form.full_name} onChange={(e) => patch({ full_name: e.target.value })} placeholder="Jane Smith" required />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelClass}>Email</label>
+                <Input type="email" value={form.email} onChange={(e) => patch({ email: e.target.value })} placeholder="jane@example.com" />
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">Phone</span>
+                  <button type="button" onClick={() => patch({ phones: [...form.phones, ''] })} className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+                    <Plus className="h-3 w-3" /> Add phone
+                  </button>
+                </div>
+                {form.phones.length === 0 ? (
+                  <Input value="" onChange={(e) => patch({ phones: [e.target.value] })} placeholder="+1 555 123 4567" />
                 ) : (
-                  projects.map((p) => (
-                    <label key={p.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={form.project_ids.includes(p.id)}
-                        onChange={() => toggleProject(p.id)}
-                        className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
-                      />
-                      <span className="text-foreground">{p.name}</span>
-                    </label>
-                  ))
+                  <div className="space-y-1.5">
+                    {form.phones.map((p, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <Input value={p} onChange={(e) => { const next = [...form.phones]; next[idx] = e.target.value; patch({ phones: next }); }} placeholder="+1 555 123 4567" />
+                        <button type="button" aria-label="Remove phone" onClick={() => patch({ phones: form.phones.filter((_, i) => i !== idx) })}
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-rose-500/10 hover:text-rose-500">
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
-          ) : null}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelClass}>Username</label>
+                <Input value={form.username} onChange={(e) => patch({ username: e.target.value })} placeholder="jsmith" />
+              </div>
+              <div>
+                <label className={labelClass}>Title{!form.is_external && (form.role === 'EMPLOYEE' || form.role === 'MANAGER') ? ' *' : ''}</label>
+                <Input value={form.title} onChange={(e) => patch({ title: e.target.value })} placeholder="Senior Consultant" />
+              </div>
+            </div>
+            {/* Additional emails (aliases) for existing users — the real backend
+                stores these via the email-aliases endpoint, not the create body. */}
+            {isEdit && user ? <UserExtrasPanel userId={user.id} hideClients /> : null}
+          </FormSection>
 
-          {/* Active */}
-          <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-foreground">
-            <input
-              type="checkbox"
-              checked={form.is_active}
-              onChange={(e) => patch({ is_active: e.target.checked })}
-              className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
-            />
-            Active (can sign in)
-          </label>
-
-          {/* Aliases + client assignments — only for an existing user. */}
-          {isEdit && user ? <UserExtrasPanel userId={user.id} hideClients={form.is_external} /> : null}
+          {/* ── Section: Organization & access ── */}
+          <FormSection title="Organization & access">
+            {!form.is_external ? (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className={labelClass}>Role</label>
+                    <select value={form.role} onChange={(e) => patch({ role: e.target.value })} className={selectClass}>
+                      {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelClass}>Manager</label>
+                    <select value={form.manager_id} onChange={(e) => patch({ manager_id: e.target.value ? Number(e.target.value) : '' })} className={selectClass}>
+                      <option value="">No manager</option>
+                      {managers.map((m) => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelClass}>Department{form.role === 'MANAGER' ? ' *' : ''}</label>
+                    <Input value={form.department} onChange={(e) => patch({ department: e.target.value })} placeholder="Engineering" />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Default client</label>
+                    <select value={form.default_client_id} onChange={(e) => patch({ default_client_id: e.target.value ? Number(e.target.value) : '' })} className={selectClass}>
+                      <option value="">None</option>
+                      {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {/* Additional portals + Email Review pill (folds in can_review) */}
+                <div>
+                  <span className={labelClass}>Additional portals</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {EXTRA_PORTAL_ROLES.filter((r) => r !== form.role).map((r) => {
+                      const on = form.extraRoles.includes(r);
+                      return (
+                        <button key={r} type="button" onClick={() => toggleExtraRole(r)}
+                          className={cn('rounded-full border px-3 py-1 text-xs font-semibold transition', on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/40')}>
+                          {ROLE_LABEL[r]}
+                        </button>
+                      );
+                    })}
+                    <button type="button" onClick={() => patch({ can_review: !form.can_review })}
+                      className={cn('rounded-full border px-3 py-1 text-xs font-semibold transition', form.can_review ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/40')}>
+                      Email Review
+                    </button>
+                  </div>
+                </div>
+                {isEmployee ? (
+                  <div>
+                    <span className={labelClass}>Project &amp; task access</span>
+                    <ProjectTaskAccessTree projectIds={form.project_ids} taskIds={form.task_ids} onToggleProject={setProjectAccess} onToggleTask={toggleTaskAccess} />
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className={labelClass}>Title</label>
+                  <Input value={form.title} onChange={(e) => patch({ title: e.target.value })} placeholder="Contractor" />
+                </div>
+                <ExternalClientFields
+                  defaultClientId={form.default_client_id}
+                  onSetDefault={(id) => patch({ default_client_id: id })}
+                  clients={clients}
+                  userId={isEdit && user ? user.id : null}
+                />
+              </>
+            )}
+          </FormSection>
 
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         </div>
@@ -652,6 +554,135 @@ function ExternalClientFields({
           </select>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Collapsible titled section card for the user form (icon + chevron header).
+function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="overflow-hidden rounded-xl border border-border">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-primary/[0.03]">
+        <span className="text-[15px] font-bold text-foreground">{title}</span>
+        <ChevronRight className={cn('ml-auto h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-90')} />
+      </button>
+      {open ? <div className="flex flex-col gap-4 border-t border-border px-4 py-4">{children}</div> : null}
+    </div>
+  );
+}
+
+// Cascading client → project → task access picker. Checking a project grants it
+// (and all its tasks); checking a task grants just that task and shows its
+// project as partial. Searchable; rows expand/collapse on click.
+function ProjectTaskAccessTree({
+  projectIds, taskIds, onToggleProject, onToggleTask,
+}: {
+  projectIds: number[];
+  taskIds: number[];
+  onToggleProject: (projectId: number, taskIds: number[], on: boolean) => void;
+  onToggleTask: (taskId: number) => void;
+}) {
+  const projectsQ = useAllProjects();
+  const tasksQ = useAllTasks();
+  const clientsQ = useClients();
+  const [q, setQ] = useState('');
+  const [openC, setOpenC] = useState<Record<number, boolean>>({});
+  const [openP, setOpenP] = useState<Record<number, boolean>>({});
+
+  const allProjects = (projectsQ.data ?? []) as unknown as FullProject[];
+  const allTasks = (tasksQ.data ?? []) as unknown as FullTask[];
+  const pSet = new Set(projectIds);
+  const tSet = new Set(taskIds);
+
+  const tasksByProject = useMemo(() => {
+    const m = new Map<number, FullTask[]>();
+    allTasks.forEach((t) => { if (!m.has(t.project_id)) m.set(t.project_id, []); m.get(t.project_id)!.push(t); });
+    return m;
+  }, [allTasks]);
+  const clientName = useMemo(() => {
+    const m = new Map<number, string>();
+    (clientsQ.data ?? []).forEach((c) => m.set(c.id, c.name));
+    return m;
+  }, [clientsQ.data]);
+
+  const ql = q.trim().toLowerCase();
+  const byClient = useMemo(() => {
+    const m = new Map<number, FullProject[]>();
+    allProjects.forEach((p) => {
+      const tasks = tasksByProject.get(p.id) ?? [];
+      const match = !ql || p.name.toLowerCase().includes(ql)
+        || (clientName.get(p.client_id) ?? '').toLowerCase().includes(ql)
+        || tasks.some((t) => t.name.toLowerCase().includes(ql));
+      if (!match) return;
+      if (!m.has(p.client_id)) m.set(p.client_id, []);
+      m.get(p.client_id)!.push(p);
+    });
+    return m;
+  }, [allProjects, tasksByProject, clientName, ql]);
+
+  const projState = (p: FullProject): 'on' | 'partial' | 'off' => {
+    const tasks = tasksByProject.get(p.id) ?? [];
+    if (pSet.has(p.id)) return 'on';
+    const sel = tasks.filter((t) => tSet.has(t.id)).length;
+    if (tasks.length && sel === tasks.length) return 'on';
+    return sel > 0 ? 'partial' : 'off';
+  };
+  const Box = ({ state }: { state: 'on' | 'partial' | 'off' }) => (
+    <span className={cn('grid h-[18px] w-[18px] shrink-0 place-items-center rounded border',
+      state === 'on' ? 'border-primary bg-primary text-white'
+        : state === 'partial' ? 'border-primary bg-primary/20 text-primary' : 'border-border text-transparent')}>
+      {state === 'partial' ? <Minus className="h-3 w-3" /> : <Check className="h-3 w-3" />}
+    </span>
+  );
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-background">
+      <div className="sticky top-0 z-[1] flex items-center gap-2 border-b border-border bg-card px-3" style={{ height: 40 }}>
+        <Search className="h-[15px] w-[15px] text-muted-foreground" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search client, project, or task..."
+          className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
+      </div>
+      <div className="max-h-[260px] overflow-y-auto py-1">
+        {byClient.size === 0 ? (
+          <div className="px-3 py-3 text-center text-[12.5px] text-muted-foreground">No matches.</div>
+        ) : [...byClient.entries()].map(([cid, projs]) => {
+          const cOpen = (openC[cid] ?? true) || !!ql;
+          return (
+            <div key={cid}>
+              <div className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-primary/5" onClick={() => setOpenC((s) => ({ ...s, [cid]: !(s[cid] ?? true) }))}>
+                <ChevronRight className={cn('h-4 w-4 text-muted-foreground transition-transform', cOpen && 'rotate-90')} />
+                <span className="text-[11.5px] font-bold uppercase tracking-wide text-primary">{clientName.get(cid) ?? `Client #${cid}`}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">{projs.length} {projs.length === 1 ? 'project' : 'projects'}</span>
+              </div>
+              {cOpen ? projs.map((p) => {
+                const tasks = tasksByProject.get(p.id) ?? [];
+                const pOpen = (openP[p.id] ?? false) || !!ql;
+                const st = projState(p);
+                return (
+                  <div key={p.id}>
+                    <div className="flex items-center gap-2 py-1.5 pl-7 pr-3">
+                      <span onClick={(e) => { e.stopPropagation(); onToggleProject(p.id, tasks.map((t) => t.id), st !== 'on'); }} className="cursor-pointer"><Box state={st} /></span>
+                      <button type="button" onClick={() => setOpenP((s) => ({ ...s, [p.id]: !(s[p.id] ?? false) }))} className="flex flex-1 items-center gap-2 text-left">
+                        <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground transition-transform', pOpen && 'rotate-90')} />
+                        <Folder className="h-3.5 w-3.5 text-primary" />
+                        <span className="text-[13px] font-medium">{p.name}</span>
+                        <span className="ml-auto text-[11px] text-muted-foreground">{tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
+                      </button>
+                    </div>
+                    {pOpen ? tasks.map((t) => (
+                      <label key={t.id} className="flex cursor-pointer items-center gap-2 py-1.5 pl-[68px] pr-3 hover:bg-primary/5">
+                        <span onClick={(e) => { e.preventDefault(); onToggleTask(t.id); }}><Box state={tSet.has(t.id) || pSet.has(p.id) ? 'on' : 'off'} /></span>
+                        <span className="text-[12.5px]">{t.name}</span>
+                      </label>
+                    )) : null}
+                  </div>
+                );
+              }) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

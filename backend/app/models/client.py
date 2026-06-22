@@ -1,6 +1,7 @@
 import enum
+from datetime import date
 
-from sqlalchemy import Enum as SAEnum, String, ForeignKey, UniqueConstraint
+from sqlalchemy import Date, Enum as SAEnum, String, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
 from .base import Base, TimestampMixin
@@ -9,6 +10,13 @@ from .base import Base, TimestampMixin
 class ClientType(str, enum.Enum):
     internal = "internal"
     external = "external"
+
+
+class ClientStatus(str, enum.Enum):
+    active = "active"
+    prospect = "prospect"
+    on_hold = "on_hold"
+    churned = "churned"
 
 
 class Client(Base, TimestampMixin):
@@ -25,6 +33,11 @@ class Client(Base, TimestampMixin):
     client_type: Mapped[ClientType] = mapped_column(
         SAEnum(ClientType, name="clienttype"), nullable=False, default=ClientType.external, server_default="external"
     )
+    status: Mapped[ClientStatus] = mapped_column(
+        SAEnum(ClientStatus, name="clientstatus"), nullable=False, default=ClientStatus.active, server_default="active"
+    )
+    company: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    since: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     quickbooks_customer_id: Mapped[Optional[str]
                                    ] = mapped_column(String(255), nullable=True)
     ingestion_client_id: Mapped[Optional[str]] = mapped_column(

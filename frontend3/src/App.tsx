@@ -9,6 +9,7 @@ import { ApprovalsPage } from '@/pages/ApprovalsPage';
 import { AuditTrailPage } from '@/pages/AuditTrailPage';
 import { CalendarPage } from '@/pages/CalendarPage';
 import { ClientsPage } from '@/pages/ClientsPage';
+import { ClientPortalPage } from '@/pages/ClientPortalPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { InboxPage } from '@/pages/InboxPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -75,6 +76,7 @@ export default function App() {
               {/* Authenticated app shell */}
               <Route element={<AppShell />}>
                 <Route path="/" element={<LandingRedirect />} />
+                <Route path="/portal" element={<ClientPortalPage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/my-time" element={<MyTimePage />} />
                 <Route path="/time-off" element={<TimeOffPage />} />
@@ -98,7 +100,9 @@ export default function App() {
                 <Route path="/platform/calendar" element={<PlatformCalendarPage />} />
               </Route>
 
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              {/* Unknown route -> the index, which LandingRedirect resolves by
+                  role (CLIENT -> /portal, others -> their landing page). */}
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </BrowserRouter>
         </AuthProvider>

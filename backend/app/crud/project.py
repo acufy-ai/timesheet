@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from app.models.project import Project
 from app.models.user import User, UserRole
-from app.models.assignments import UserProjectAccess
+from app.models.assignments import UserProjectAccess, ProjectManager
 from app.schemas import ProjectCreate, ProjectUpdate
 from typing import Optional
 
@@ -20,8 +20,15 @@ async def get_project_by_id(db: AsyncSession, project_id: int, tenant_id: Option
 
 
 async def create_project(db: AsyncSession, project_create: ProjectCreate, tenant_id: int) -> Project:
-    """Create a new project."""
-    db_project = Project(**project_create.model_dump(), tenant_id=tenant_id)
+    """Create a new project. resource_ids/manager_ids (not columns) seed the
+    roster and the PM list."""
+    data = project_create.model_dump()
+    resource_ids = data.pop("resource_ids", None)
+    manager_ids = data.pop("manager_ids", None)
+    # Keep the single manager_id column as the first PM for back-compat.
+    if manager_ids:
+        data["manager_id"] = manager_ids[0]
+    db_project = Project(**data, tenant_id=tenant_id)
     db.add(db_project)
     try:
         await db.commit()
@@ -29,19 +36,113 @@ async def create_project(db: AsyncSession, project_create: ProjectCreate, tenant
     except IntegrityError:
         await db.rollback()
         raise
+    if resource_ids is not None:
+        await set_project_roster(db, db_project.id, resource_ids)
+    if manager_ids is not None:
+        await set_project_managers(db, db_project.id, manager_ids, tenant_id)
     return await get_project_by_id(db, db_project.id, tenant_id=tenant_id)
 
 
 async def update_project(db: AsyncSession, project: Project, project_update: ProjectUpdate) -> Project:
-    """Update project fields."""
+    """Update project fields. resource_ids/manager_ids (when present) replace
+    the roster / PM list."""
     update_data = project_update.model_dump(exclude_unset=True)
+    resource_ids = update_data.pop("resource_ids", None)
+    manager_ids = update_data.pop("manager_ids", None)
+    # When PMs are supplied, mirror the first into the single manager_id column.
+    if manager_ids is not None:
+        update_data["manager_id"] = manager_ids[0] if manager_ids else None
     for field, value in update_data.items():
         setattr(project, field, value)
 
     db.add(project)
     await db.commit()
     await db.refresh(project)
+    if resource_ids is not None:
+        await set_project_roster(db, project.id, resource_ids)
+    if manager_ids is not None:
+        await set_project_managers(db, project.id, manager_ids, project.tenant_id)
     return await get_project_by_id(db, project.id, tenant_id=project.tenant_id)
+
+
+async def get_project_manager_ids(db: AsyncSession, project_id: int) -> list[int]:
+    result = await db.execute(
+        select(ProjectManager.user_id).where(ProjectManager.project_id == project_id)
+    )
+    return list(result.scalars().all())
+
+
+async def set_project_managers(db: AsyncSession, project_id: int, user_ids: list[int], tenant_id: int) -> None:
+    """Replace a project's manager list (project_managers)."""
+    target = set(user_ids)
+    rows = (
+        await db.execute(
+            select(ProjectManager).where(ProjectManager.project_id == project_id)
+        )
+    ).scalars().all()
+    existing = {r.user_id for r in rows}
+    for row in rows:
+        if row.user_id not in target:
+            await db.delete(row)
+    for uid in target - existing:
+        db.add(ProjectManager(project_id=project_id, user_id=uid, tenant_id=tenant_id))
+    await db.commit()
+
+
+async def validate_project_manager_ids(
+    db: AsyncSession, user_ids: list[int], tenant_id: int
+) -> None:
+    """Raise ValueError unless every id is a MANAGER or ADMIN in this tenant.
+    A project manager must actually be able to manage; assigning an EMPLOYEE
+    or VIEWER as PM is nonsensical and breaks the approval chain."""
+    if not user_ids:
+        return
+    wanted = set(user_ids)
+    rows = (
+        await db.execute(
+            select(User.id, User.role).where(
+                User.id.in_(wanted), User.tenant_id == tenant_id
+            )
+        )
+    ).all()
+    found = {uid for uid, _ in rows}
+    missing = sorted(wanted - found)
+    if missing:
+        raise ValueError(f"Unknown or out-of-tenant manager ids: {missing}")
+    bad = sorted(
+        uid for uid, role in rows
+        if role not in (UserRole.MANAGER, UserRole.ADMIN)
+    )
+    if bad:
+        raise ValueError(
+            f"Project managers must have the MANAGER or ADMIN role; "
+            f"these user ids do not: {bad}"
+        )
+
+
+async def get_project_resource_ids(db: AsyncSession, project_id: int) -> list[int]:
+    result = await db.execute(
+        select(UserProjectAccess.user_id).where(
+            UserProjectAccess.project_id == project_id)
+    )
+    return list(result.scalars().all())
+
+
+async def set_project_roster(db: AsyncSession, project_id: int, user_ids: list[int]) -> None:
+    """Replace a project's roster (user_project_access) with user_ids."""
+    target = set(user_ids)
+    rows = (
+        await db.execute(
+            select(UserProjectAccess).where(UserProjectAccess.project_id == project_id)
+        )
+    ).scalars().all()
+    existing = {r.user_id for r in rows}
+    for row in rows:
+        if row.user_id not in target:
+            await db.delete(row)
+    for uid in target - existing:
+        db.add(UserProjectAccess(user_id=uid, project_id=project_id))
+    await db.commit()
 
 
 async def delete_project(db: AsyncSession, project_id: int, tenant_id: Optional[int] = None) -> bool:
@@ -76,6 +177,17 @@ async def user_has_project_access(db: AsyncSession, user: User, project_id: int)
         return True
 
     assigned_project_ids = await get_assigned_project_ids(db, user.id)
+
+    # EMPLOYEE access is scoped to explicit assignments and must fail CLOSED:
+    # an employee with no assignments has access to nothing (this mirrors the
+    # read filter in list_projects_for_user, which also scopes EMPLOYEE only).
+    # Previously this returned True when the list was empty, which silently let
+    # any unassigned employee write time against every project in the tenant.
+    if user.role == UserRole.EMPLOYEE:
+        return project_id in assigned_project_ids
+
+    # Broader roles (MANAGER, VIEWER) are not project-scoped for their own
+    # time; an empty assignment list does not restrict them.
     if not assigned_project_ids:
         return True
 

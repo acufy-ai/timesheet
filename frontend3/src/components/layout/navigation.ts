@@ -47,6 +47,15 @@ export const buildNavigation = (
   user: User | null,
   ingestionEnabled: boolean,
 ): NavSection[] => {
+  // CLIENT persona is fail-closed: it sees ONLY the client portal, never the
+  // workspace/ops/platform sections. Returning early guarantees an unmapped or
+  // client role can't fall through to the default Dashboard/My Time/etc. nav.
+  if (user?.role === 'CLIENT') {
+    return [{
+      title: 'Client',
+      items: [{ label: 'My Projects', to: '/portal', icon: Briefcase, visible: true, match: ['/portal'] }],
+    }];
+  }
   // Pure managers (no admin role) get a flatter nav: each Operations entry
   // renders as its own top-level link instead of nesting under an
   // "Operations" group. Their action surface is small. Admins keep the
@@ -63,7 +72,7 @@ export const buildNavigation = (
       icon: UsersRound,
       visible: isAdmin(user) || isManager(user),
     },
-    { label: 'Clients', to: '/client-management', icon: Briefcase, visible: isAdmin(user) },
+    { label: 'Clients', to: '/client-management', icon: Briefcase, visible: isAdmin(user) || isManager(user) },
     { label: 'Audit Trail', to: '/audit-trail', icon: ClipboardList, visible: isAdmin(user) },
     { label: 'Settings', to: '/settings', icon: Settings, visible: isAdmin(user) },
   ];

@@ -23,6 +23,10 @@ const LANDING_TO_PATH: Record<string, string> = {
 
 export function LandingRedirect() {
   const { user } = useAuth();
+
+  // CLIENT users live entirely in the portal; never resolve to a workspace page.
+  if (user?.role === 'CLIENT') return <Navigate to="/portal" replace />;
+
   const prefs = useUserPreferences(Boolean(user));
 
   // Wait for the preference to load so we don't bounce to /dashboard first and

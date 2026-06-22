@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 MANAGER_CHAIN_ROLES = {UserRole.MANAGER}
 
 
+def _filter_users_py(users, *, q=None, role=None, status=None, audience=None,
+                     no_manager=False, unverified=False):
+    """In-Python equivalent of the SQL user filters, for the manager-chain
+    path where the candidate set is already loaded in memory."""
+    out = users
+    if q:
+        ql = q.strip().lower()
+        out = [u for u in out if ql in (u.full_name or "").lower()
+               or ql in (u.email or "").lower() or ql in (u.username or "").lower()]
+    if role:
+        rv = role.value if hasattr(role, "value") else str(role)
+        out = [u for u in out if (u.role.value if hasattr(u.role, "value") else str(u.role)) == rv]
+    if status == "active":
+        out = [u for u in out if u.is_active]
+    elif status == "inactive":
+        out = [u for u in out if not u.is_active]
+    if audience == "internal":
+        out = [u for u in out if not u.is_external]
+    elif audience == "external":
+        out = [u for u in out if u.is_external]
+    if no_manager:
+        out = [u for u in out if u.manager_id is None]
+    if unverified:
+        out = [u for u in out if not u.email_verified]
+    return out
+
+
 async def _get_descendant_user_ids(
     db: AsyncSession, manager_id: int, tenant_id: int
 ) -> set[int]:
@@ -70,6 +97,7 @@ async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: i
         .options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
         .order_by(User.full_name.asc())
     )
@@ -88,6 +116,7 @@ async def _get_managed_users(db: AsyncSession, manager_id: int, tenant_id: int) 
         .options(
             selectinload(User.manager_assignment),
             selectinload(User.project_access),
+            selectinload(User.task_access),
         )
         .order_by(User.full_name.asc())
     )
@@ -120,10 +149,21 @@ async def list_all_users(
     request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    q: str | None = Query(None),
+    role: UserRole | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    audience: str | None = Query(None),
+    no_manager: bool = Query(False),
+    unverified: bool = Query(False),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
-) -> list[UserResponse]:
-    """List users; scope depends on role (platform/tenant/manager-chain)."""
+):
+    """List users; scope depends on role (platform/tenant/manager-chain).
+
+    Supports server-side pagination (skip/limit) plus search/filters
+    (q, role, status, audience, no_manager, unverified). The total matching
+    count is returned in the ``X-Total-Count`` header so the UI can page.
+    """
     old_decision = current_user.role in {
         UserRole.PLATFORM_ADMIN,
         UserRole.ADMIN,
@@ -157,27 +197,47 @@ async def list_all_users(
                 target_tenant_id = await control_db.scalar(
                     select(ControlTenant.id).where(ControlTenant.slug == header_slug)
                 )
-        query = select(User).options(
-            selectinload(User.manager_assignment),
-            selectinload(User.project_access),
-        )
+        from app.crud.user import _apply_user_filters, count_users
         if target_tenant_id is not None:
-            query = query.where(User.tenant_id == target_tenant_id)
+            total = await count_users(
+                db, target_tenant_id, q=q, role=role, status=status_filter,
+                audience=audience, no_manager=no_manager, unverified=unverified,
+            )
+            query = _apply_user_filters(
+                select(User).where(User.tenant_id == target_tenant_id),
+                q=q, role=role, status=status_filter, audience=audience,
+                no_manager=no_manager, unverified=unverified,
+            ).options(
+                selectinload(User.manager_assignment),
+                selectinload(User.project_access),
+                selectinload(User.task_access),
+            )
+            result = await db.execute(
+                query.order_by(User.full_name.asc()).offset(skip).limit(limit)
+            )
+            orm_users = list(result.scalars().all())
         else:
-            # Fail closed: an unresolved slug must return no rows
-            # rather than leaking the entire legacy DB. The session
-            # may still be bound to the shared DB (e.g. dep fallback)
-            # so an unfiltered query would otherwise expose every
-            # tenant's users to the platform admin.
-            query = query.where(User.id == -1)
-        result = await db.execute(
-            query.order_by(User.full_name.asc()).offset(skip).limit(limit)
-        )
-        orm_users = list(result.scalars().all())
+            # Fail closed: an unresolved slug must return no rows.
+            orm_users, total = [], 0
     elif current_user.role == UserRole.ADMIN:
-        orm_users = await list_users(db, tenant_id=current_user.tenant_id, skip=skip, limit=limit)
+        from app.crud.user import count_users
+        orm_users = await list_users(
+            db, tenant_id=current_user.tenant_id, skip=skip, limit=limit,
+            q=q, role=role, status=status_filter, audience=audience,
+            no_manager=no_manager, unverified=unverified,
+        )
+        total = await count_users(
+            db, current_user.tenant_id, q=q, role=role, status=status_filter,
+            audience=audience, no_manager=no_manager, unverified=unverified,
+        )
     elif current_user.role in MANAGER_CHAIN_ROLES:
+        # Manager chain is loaded fully then filtered in Python (small set).
         managed = await _get_managed_users(db, current_user.id, current_user.tenant_id)
+        managed = _filter_users_py(
+            managed, q=q, role=role, status=status_filter, audience=audience,
+            no_manager=no_manager, unverified=unverified,
+        )
+        total = len(managed)
         orm_users = managed[skip: skip + limit]
     else:
         raise HTTPException(
@@ -191,7 +251,7 @@ async def list_all_users(
     # Return JSONResponse directly to bypass FastAPI's response_model re-validation
     # which runs after the session closes and would lose the loaded relationship data.
     data = [UserResponse.model_validate(u).model_dump(mode='json') for u in orm_users]
-    return JSONResponse(content=data)
+    return JSONResponse(content=data, headers={"X-Total-Count": str(total)})
 
 
 @router.get("/me/permissions")
@@ -1205,7 +1265,10 @@ async def update_user_endpoint(
 
     if current_user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         require_same_tenant(user.tenant_id, current_user)
-        if current_user.role == UserRole.ADMIN and user_update.role == UserRole.PLATFORM_ADMIN:
+        if current_user.role == UserRole.ADMIN and (
+            user_update.role == UserRole.PLATFORM_ADMIN
+            or (user_update.roles is not None and UserRole.PLATFORM_ADMIN in user_update.roles)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Tenant admins cannot assign the PLATFORM_ADMIN role",

@@ -14,6 +14,10 @@ class UserRole(str, Enum):
     VIEWER = "VIEWER"
     ADMIN = "ADMIN"           # Tenant-scoped admin
     PLATFORM_ADMIN = "PLATFORM_ADMIN"  # Global admin — no tenant_id
+    # External client-side person with scoped access to specific projects/tasks
+    # via ClientAccessGrant. Locked out of every other surface by a fail-closed
+    # global gate (see app/core/deps.py require_not_client / client allowlist).
+    CLIENT = "CLIENT"
 
 
 class User(Base, TimestampMixin):
@@ -87,6 +91,13 @@ class User(Base, TimestampMixin):
     locked_until: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Bumped on force-logout / revoke-all-sessions. Every access token carries
+    # the version it was minted at (``tv`` claim); a mismatch is rejected in
+    # get_current_user. Incrementing this instantly invalidates ALL of the
+    # user's outstanding access tokens, everywhere, with no per-token state.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     # Email verification
     email_verified: Mapped[bool] = mapped_column(
@@ -155,6 +166,11 @@ class User(Base, TimestampMixin):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    task_access: Mapped[List["UserTaskAccess"]] = relationship(
+        "UserTaskAccess",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     email_aliases: Mapped[List["UserEmailAlias"]] = relationship(
         "UserEmailAlias",
         back_populates="user",
@@ -195,6 +211,10 @@ class User(Base, TimestampMixin):
     @property
     def project_ids(self) -> List[int]:
         return sorted(access.project_id for access in self.project_access)
+
+    @property
+    def task_ids(self) -> List[int]:
+        return sorted(access.task_id for access in self.task_access)
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, email={self.email}, role={self.role}, is_active={self.is_active})>"

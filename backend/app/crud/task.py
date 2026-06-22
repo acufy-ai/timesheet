@@ -4,10 +4,77 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
+from app.models.assignments import TaskAssignee, UserProjectAccess
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User, UserRole
 from app.crud.project import get_assigned_project_ids
+
+
+async def get_task_assignee_ids(db: AsyncSession, task_id: int) -> list[int]:
+    result = await db.execute(
+        select(TaskAssignee.user_id).where(TaskAssignee.task_id == task_id)
+    )
+    return [r for r in result.scalars().all()]
+
+
+async def validate_assignee_ids(
+    db: AsyncSession, user_ids: list[int], tenant_id: int
+) -> None:
+    """Raise ValueError if any user id is not a user in this tenant. Call this
+    BEFORE creating the task so a bad assignee fails the request up front
+    instead of leaving an orphan task behind (create_task commits, and a later
+    FK failure in set_task_assignees can't roll the task back)."""
+    if not user_ids:
+        return
+    wanted = set(user_ids)
+    found = set(
+        (
+            await db.execute(
+                select(User.id).where(
+                    User.id.in_(wanted), User.tenant_id == tenant_id
+                )
+            )
+        ).scalars().all()
+    )
+    missing = sorted(wanted - found)
+    if missing:
+        raise ValueError(f"Unknown or out-of-tenant assignee ids: {missing}")
+
+
+async def set_task_assignees(
+    db: AsyncSession, task: Task, user_ids: list[int]
+) -> None:
+    """Replace a task's assignees with `user_ids`. Anyone newly assigned who is
+    not already on the project roster is auto-added (user_project_access)."""
+    target = set(user_ids)
+    # Existing assignee rows for this task.
+    existing_rows = (
+        await db.execute(select(TaskAssignee).where(TaskAssignee.task_id == task.id))
+    ).scalars().all()
+    existing = {r.user_id for r in existing_rows}
+
+    for row in existing_rows:
+        if row.user_id not in target:
+            await db.delete(row)
+
+    for uid in target - existing:
+        db.add(TaskAssignee(task_id=task.id, user_id=uid, tenant_id=task.tenant_id))
+
+    # Auto-add new assignees to the project roster if absent.
+    if target:
+        have = (
+            await db.execute(
+                select(UserProjectAccess.user_id).where(
+                    UserProjectAccess.project_id == task.project_id
+                )
+            )
+        ).scalars().all()
+        have_set = set(have)
+        for uid in target - have_set:
+            db.add(UserProjectAccess(user_id=uid, project_id=task.project_id))
+
+    await db.commit()
 
 
 async def list_tasks_for_user(
@@ -30,7 +97,13 @@ async def list_tasks_for_user(
     if active_only:
         query = query.where(Task.is_active.is_(True))
 
-    if user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+    # Only EMPLOYEE is restricted to their project roster. MANAGER task
+    # visibility mirrors list_projects_for_user: managers see all tenant tasks
+    # here, and the /tasks endpoint then post-filters to the clients they manage
+    # (visible_client_ids). Restricting managers by roster here was wrong: a PM
+    # on a client could not see tasks on that client's projects unless they were
+    # also rostered on each project.
+    if user.role == UserRole.EMPLOYEE:
         assigned_project_ids = await get_assigned_project_ids(db, user.id)
         if assigned_project_ids:
             query = query.where(Task.project_id.in_(assigned_project_ids))
@@ -74,6 +147,8 @@ async def create_task(
     code: Optional[str] = None,
     description: Optional[str] = None,
     is_active: bool = True,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> Task:
     task = Task(
         project_id=project_id,
@@ -83,6 +158,10 @@ async def create_task(
         description=description,
         is_active=is_active,
     )
+    if priority is not None:
+        task.priority = priority
+    if status is not None:
+        task.status = status
     db.add(task)
     await db.commit()
     await db.refresh(task)
@@ -97,6 +176,8 @@ async def update_task(
     description: Optional[str] = None,
     is_active: Optional[bool] = None,
     project_id: Optional[int] = None,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> Task:
     if name is not None:
         task.name = name
@@ -108,6 +189,10 @@ async def update_task(
         task.is_active = is_active
     if project_id is not None:
         task.project_id = project_id
+    if priority is not None:
+        task.priority = priority
+    if status is not None:
+        task.status = status
 
     db.add(task)
     await db.commit()
