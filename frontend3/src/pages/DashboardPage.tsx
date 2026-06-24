@@ -255,7 +255,10 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.user_id} className="border-b border-border/60">
-                <td className="px-4 py-2 text-foreground">{r.full_name}</td>
+                <td className="px-4 py-2 text-foreground">
+                  <span className="block leading-tight">{r.full_name}</span>
+                  {r.title ? <span className="block text-[11px] leading-tight text-muted-foreground">{r.title}</span> : null}
+                </td>
                 {r.cells.map((c) => {
                   const h = Number(c.hours);
                   return (

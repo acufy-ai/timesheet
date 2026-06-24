@@ -123,6 +123,9 @@ export function UserRail({
                     ) : null}
                   </span>
                   <span className="block truncate text-[11px] leading-tight text-muted-foreground">{u.email}</span>
+                  {/* Title = the role the client rate card resolves against, so
+                      a manager can scan team roles without opening each user. */}
+                  {u.title ? <span className="block truncate text-[10.5px] leading-tight text-primary/80">{u.title}</span> : null}
                 </span>
                 {!u.is_active ? (
                   <span className="flex-shrink-0 rounded-full bg-muted px-2 text-[10.5px] font-semibold text-muted-foreground">Inactive</span>

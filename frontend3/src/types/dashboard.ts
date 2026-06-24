@@ -194,6 +194,7 @@ export interface TeamProjectMatrixCell {
 export interface TeamProjectMatrixRow {
   user_id: number;
   full_name: string;
+  title?: string | null;
   total_hours: string | number;
   cells: TeamProjectMatrixCell[];
 }

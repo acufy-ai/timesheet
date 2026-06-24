@@ -1841,7 +1841,7 @@ async def get_team_project_matrix(
         )
 
     members_result = await db.execute(
-        select(User.id, User.full_name)
+        select(User.id, User.full_name, User.title)
         .where(User.id.in_(team_member_ids))
         .order_by(User.full_name.asc())
     )
@@ -1889,7 +1889,7 @@ async def get_team_project_matrix(
     ]
 
     rows: list[TeamProjectMatrixRow] = []
-    for user_id, full_name in members:
+    for user_id, full_name, title in members:
         cells: list[TeamProjectMatrixCell] = []
         row_total = Decimal("0")
         for pid in ordered_project_ids:
@@ -1903,7 +1903,8 @@ async def get_team_project_matrix(
             continue
         rows.append(
             TeamProjectMatrixRow(
-                user_id=user_id, full_name=full_name, total_hours=row_total, cells=cells
+                user_id=user_id, full_name=full_name, title=title,
+                total_hours=row_total, cells=cells
             )
         )
     # Busiest employee first.

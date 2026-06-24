@@ -1239,6 +1239,9 @@ class TeamProjectMatrixRow(BaseModel):
     """One employee row: their hours per project plus a row total."""
     user_id: int
     full_name: str
+    # The person's title (= the client role-rate name their rate resolves
+    # against). Shown next to their name so a manager sees role context inline.
+    title: Optional[str] = None
     total_hours: Decimal
     cells: list[TeamProjectMatrixCell]
 

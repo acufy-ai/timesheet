@@ -346,6 +346,17 @@ export function ClientsPage() {
   const clientContacts = (contactsQ.data ?? []) as ClientContact[];
   const rolesQ = useRoleRates(activeClient?.id ?? null);
   const roleRates = (rolesQ.data ?? []) as ClientRoleRate[];
+  // How many people in the tenant hold each title (case-insensitive). Lets the
+  // Roles card show "Senior Engineer $180 · 4 people" so a manager sees, at a
+  // glance, that the rate applies to real staff — no drilling into each user.
+  const titleCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    users.forEach((u) => {
+      const t = (u.title ?? '').trim().toLowerCase();
+      if (t) m.set(t, (m.get(t) ?? 0) + 1);
+    });
+    return m;
+  }, [users]);
   const notesQ = useClientNotes(activeClient?.id ?? null);
   const clientNotes = (notesQ.data ?? []) as ClientNote[];
   // Client-access count for the tab badge. Shares the same query key as the
@@ -594,6 +605,7 @@ export function ClientsPage() {
                 <RolesTab
                   clientId={activeClient.id}
                   roles={roleRates}
+                  titleCounts={titleCounts}
                   loading={rolesQ.isLoading}
                   onConfirm={setConfirm}
                   onSaved={(m) => flashAndFade('ok', m)}
@@ -1633,6 +1645,7 @@ const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD'];
 function RolesTab({
   clientId,
   roles,
+  titleCounts,
   loading,
   onConfirm,
   onSaved,
@@ -1640,6 +1653,7 @@ function RolesTab({
 }: {
   clientId: number;
   roles: ClientRoleRate[];
+  titleCounts: Map<string, number>;
   loading: boolean;
   onConfirm: (c: { title: string; message: string; onConfirm: () => void }) => void;
   onSaved: (msg: string) => void;
@@ -1723,7 +1737,17 @@ function RolesTab({
                 key={r.id}
                 className="grid grid-cols-[1fr_120px_110px_140px_64px] items-center gap-3 border-b border-border px-4 py-3 last:border-b-0"
               >
-                <span className="truncate text-sm font-semibold text-foreground">{r.role}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-foreground">{r.role}</span>
+                  {(() => {
+                    const n = titleCounts.get(r.role.trim().toLowerCase()) ?? 0;
+                    return n > 0 ? (
+                      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10.5px] font-semibold text-primary" title={`${n} ${n === 1 ? 'person holds' : 'people hold'} this title`}>
+                        {n} {n === 1 ? 'person' : 'people'}
+                      </span>
+                    ) : null;
+                  })()}
+                </span>
                 <span className="text-right text-sm">
                   <strong className="font-bold text-foreground">${Math.round(num(r.rate))}</strong>
                   <span className="text-muted-foreground">/hr</span>
