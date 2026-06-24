@@ -13,6 +13,8 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"
     PLATFORM_ADMIN = "PLATFORM_ADMIN"
     CLIENT = "CLIENT"
+    CLIENT_MANAGER = "CLIENT_MANAGER"
+    CLIENT_EMPLOYEE = "CLIENT_EMPLOYEE"
 
 
 class TimeEntryStatus(str, Enum):
@@ -54,10 +56,17 @@ class UserBase(BaseModel):
     full_name: str
     title: Optional[str] = None
     department: Optional[str] = None
+    # FK to the managed Department table (structured). Populated server-side from
+    # `department` when only the name is supplied; either may be sent.
+    department_id: Optional[int] = None
     timezone: Optional[str] = "UTC"
     role: UserRole = UserRole.EMPLOYEE
     is_active: bool = True
     manager_id: Optional[int] = None
+    # Multi-manager: all managers this employee reports to, and which is primary.
+    # manager_id (above) mirrors the primary for back-compat.
+    manager_ids: List[int] = Field(default_factory=list)
+    primary_manager_id: Optional[int] = None
     project_ids: List[int] = Field(default_factory=list)
     task_ids: List[int] = Field(default_factory=list)
     default_client_id: Optional[int] = None
@@ -71,10 +80,13 @@ class UserCreate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=255)
     title: Optional[str] = None
     department: Optional[str] = None
+    department_id: Optional[int] = None
     timezone: Optional[str] = "UTC"
     role: UserRole = UserRole.EMPLOYEE
     is_active: bool = True
     manager_id: Optional[int] = None
+    manager_ids: List[int] = Field(default_factory=list)
+    primary_manager_id: Optional[int] = None
     project_ids: List[int] = Field(default_factory=list)
     task_ids: List[int] = Field(default_factory=list)
     default_client_id: Optional[int] = None
@@ -100,6 +112,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
     department: Optional[str] = None
+    department_id: Optional[int] = None
     timezone: Optional[str] = None
     role: Optional[UserRole] = None
     # CRUD layer dedupes and ensures the active role is included.
@@ -108,6 +121,8 @@ class UserUpdate(BaseModel):
     can_review: Optional[bool] = None
     is_external: Optional[bool] = None
     manager_id: Optional[int] = None
+    manager_ids: Optional[List[int]] = None
+    primary_manager_id: Optional[int] = None
     project_ids: Optional[List[int]] = None
     task_ids: Optional[List[int]] = None
     default_client_id: Optional[int] = None
@@ -243,6 +258,16 @@ class MessageResponse(BaseModel):
 # Client Schemas
 # ============================================================================
 
+_CLIENT_TYPES = ("internal", "external")
+_CLIENT_STATUSES = ("active", "prospect", "on_hold", "churned")
+
+
+def _check_in(value, allowed, field):
+    if value is not None and value not in allowed:
+        raise ValueError(f"Invalid {field}: {value!r}. Allowed: {', '.join(allowed)}")
+    return value
+
+
 class ClientBase(BaseModel):
     name: str
     client_type: str = "external"
@@ -253,6 +278,17 @@ class ClientBase(BaseModel):
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = None
+    client_self_manage_enabled: bool = False
+
+    @field_validator("client_type")
+    @classmethod
+    def _valid_client_type(cls, v):
+        return _check_in(v, _CLIENT_TYPES, "client_type")
+
+    @field_validator("status")
+    @classmethod
+    def _valid_client_status(cls, v):
+        return _check_in(v, _CLIENT_STATUSES, "client status")
 
 
 class ClientCreate(ClientBase):
@@ -269,6 +305,17 @@ class ClientUpdate(BaseModel):
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = None
+    client_self_manage_enabled: Optional[bool] = None
+
+    @field_validator("client_type")
+    @classmethod
+    def _valid_client_type(cls, v):
+        return _check_in(v, _CLIENT_TYPES, "client_type")
+
+    @field_validator("status")
+    @classmethod
+    def _valid_client_status(cls, v):
+        return _check_in(v, _CLIENT_STATUSES, "client status")
 
 
 class ClientResponse(ClientBase):
@@ -353,6 +400,7 @@ class ClientContactBase(BaseModel):
     role: Optional[str] = None
     emails: list[dict] = []
     phones: list[dict] = []
+    is_primary: bool = False
 
 
 class ClientContactCreate(ClientContactBase):
@@ -364,6 +412,7 @@ class ClientContactUpdate(BaseModel):
     role: Optional[str] = None
     emails: Optional[list[dict]] = None
     phones: Optional[list[dict]] = None
+    is_primary: Optional[bool] = None
 
 
 class ClientContactResponse(ClientContactBase):
@@ -396,25 +445,27 @@ class ClientRoleRateResponse(ClientRoleRateBase):
     model_config = {"from_attributes": True}
 
 
-class ClientNoteBase(BaseModel):
-    author: Optional[str] = None
+class ClientNoteCreate(BaseModel):
+    # `author` is intentionally NOT accepted — it's stamped server-side from the
+    # logged-in user so a note can't claim someone else's name.
     body: str
     note_date: Optional[date] = None
 
 
-class ClientNoteCreate(ClientNoteBase):
-    pass
-
-
 class ClientNoteUpdate(BaseModel):
-    author: Optional[str] = None
+    # Author is immutable after creation; only the content/date can be edited.
     body: Optional[str] = None
     note_date: Optional[date] = None
 
 
-class ClientNoteResponse(ClientNoteBase):
+class ClientNoteResponse(BaseModel):
     id: int
     client_id: int
+    # Server-stamped display name + the provable author link.
+    author: Optional[str] = None
+    author_user_id: Optional[int] = None
+    body: str
+    note_date: Optional[date] = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -449,6 +500,8 @@ class ProjectBase(BaseModel):
     is_active: bool = True
     status: str = "planning"
     manager_id: Optional[int] = None
+    # The contract (MSA/SOW) this project is delivered under, if any.
+    contract_id: Optional[int] = None
 
     @field_validator("status")
     @classmethod
@@ -478,6 +531,7 @@ class ProjectUpdate(BaseModel):
     is_active: Optional[bool] = None
     status: Optional[str] = None
     manager_id: Optional[int] = None
+    contract_id: Optional[int] = None
     # When provided, replaces the project roster (user_project_access).
     resource_ids: Optional[List[int]] = None
     # When provided, replaces the project's managers.
@@ -541,11 +595,20 @@ class TaskUpdate(BaseModel):
         return _check_status(v, _TASK_STATUSES, "task status")
 
 
+class ClientAssigneeInfo(BaseModel):
+    """A client employee assigned to a task (via a client access grant). Surfaced
+    to the internal side so we can see which client person works on which task."""
+    user_id: int
+    full_name: str
+
+
 class TaskResponse(TaskBase):
     id: int
     created_at: datetime
     updated_at: datetime
     assignee_ids: List[int] = []
+    # Client employees assigned to this task (read-only context for our side).
+    client_assignees: List[ClientAssigneeInfo] = []
 
     model_config = {"from_attributes": True}
 
@@ -645,6 +708,10 @@ class TimeEntryWithUser(TimeEntryResponse):
 
 class TimeEntrySubmitRequest(BaseModel):
     entry_ids: list[int]
+    # Multi-manager routing: when the employee has several managers, the manager
+    # these entries are being submitted to for approval. Ignored unless the
+    # approval_by_assigned_manager setting is on. None = any of their managers.
+    approver_manager_id: Optional[int] = None
 
 
 class WeeklySubmissionStatusResponse(BaseModel):
@@ -1003,6 +1070,74 @@ class ManagerProjectHealthRow(BaseModel):
 
 class ManagerProjectHealthResponse(BaseModel):
     rows: list[ManagerProjectHealthRow]
+
+
+class ProjectFinancialRow(BaseModel):
+    """Per-project financials computed from REAL approved time + resolved rates."""
+    project_id: int
+    project_name: str
+    client_name: str
+    currency: str = "USD"
+    approved_hours: Decimal = Decimal("0")
+    billable_hours: Decimal = Decimal("0")
+    revenue: Decimal = Decimal("0")          # sum(hours x billed rate)
+    budget_amount: Optional[Decimal] = None
+    budget_used_pct: Optional[int] = None     # revenue / budget
+    budget_remaining: Optional[Decimal] = None
+    contract_id: Optional[int] = None
+    contract_title: Optional[str] = None
+    contract_value: Optional[Decimal] = None
+    contract_used_pct: Optional[int] = None
+
+
+class FinancialSummary(BaseModel):
+    total_revenue: Decimal = Decimal("0")
+    total_budget: Decimal = Decimal("0")
+    total_approved_hours: Decimal = Decimal("0")
+    billable_hours: Decimal = Decimal("0")
+    nonbillable_hours: Decimal = Decimal("0")
+    utilization_pct: Optional[int] = None     # billable / total hours
+    currency: str = "USD"
+
+
+class ManagerFinancialsResponse(BaseModel):
+    summary: FinancialSummary
+    projects: list[ProjectFinancialRow]
+
+
+# ── Employee "My Work" (assigned projects/tasks by client) ──────────────────
+class MyWorkTask(BaseModel):
+    task_id: int
+    name: str
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    description: Optional[str] = None
+    # The caller is assigned to this task, so they can update its status /
+    # description from My Work (scoped /tasks/{id}/progress endpoint).
+    can_edit: bool = True
+
+
+class MyWorkProject(BaseModel):
+    project_id: int
+    project_name: str
+    code: Optional[str] = None
+    status: Optional[str] = None
+    my_hours: Decimal = Decimal("0")       # the user's logged hours on this project
+    approved_hours: Decimal = Decimal("0")
+    tasks: list[MyWorkTask] = Field(default_factory=list)  # tasks assigned to the user
+
+
+class MyWorkClient(BaseModel):
+    client_id: int
+    client_name: str
+    projects: list[MyWorkProject] = Field(default_factory=list)
+
+
+class MyWorkResponse(BaseModel):
+    clients: list[MyWorkClient] = Field(default_factory=list)
+    total_projects: int = 0
+    total_tasks: int = 0
+    total_hours: Decimal = Decimal("0")
 
 
 # ============================================================================
@@ -1439,12 +1574,12 @@ class ClientPortalUser(BaseModel):
     full_name: str
     email: str
     label: Optional[str] = None   # client-side role label (stored on user.title)
+    # False until they accept the invite and set a password. Drives the
+    # Active/Invited pill and the "Resend invite" action in the grant manager.
+    email_verified: bool = False
     grants: List[ClientGrantResponse] = Field(default_factory=list)
 
 
-class ProjectClientAccessToggle(BaseModel):
-    """PM toggle: expose / unexpose a project to client grants."""
-    client_access_enabled: bool
 
 
 class ClientGrantSpec(BaseModel):
@@ -1479,6 +1614,14 @@ class ClientInviteRequest(BaseModel):
     full_name: str = Field(..., min_length=1)
     email: EmailStr
     label: Optional[str] = None  # client-side role label, e.g. "Project Sponsor"
+    # Which client-side role to create. "manager" => CLIENT_MANAGER (delegates to
+    # their own employees), "employee" => CLIENT_EMPLOYEE (linked to the client's
+    # manager; read/update only). Defaults to manager for back-compat.
+    portal_role: str = "manager"  # "manager" | "employee"
+    # Required when portal_role == "employee" and the client has multiple
+    # managers (to choose which manager the employee reports to). When the client
+    # has exactly one manager it's auto-linked and this is ignored.
+    manager_user_id: Optional[int] = None
     grants: List[ClientGrantSpec] = Field(default_factory=list)
     project_ids: List[int] = Field(default_factory=list)
     capabilities: List[str] = Field(default_factory=lambda: ["read"])
@@ -1532,6 +1675,13 @@ class PortalTaskUpdate(BaseModel):
     description: Optional[str] = None
 
 
+class TaskProgressUpdate(BaseModel):
+    """Internal assignee editing a task they're assigned to: status and/or
+    description only (mirrors the client-employee portal scope)."""
+    status: Optional[str] = None
+    description: Optional[str] = None
+
+
 class PortalTaskCreate(BaseModel):
     """Client adding a task to a project they have CREATE on."""
     project_id: int
@@ -1543,3 +1693,104 @@ class PortalProjectUpdate(BaseModel):
     """Client editing a project they have UPDATE on (description only — name,
     status, billing etc. stay manager-owned)."""
     description: Optional[str] = None
+
+
+# ── Two-tier client portal (CLIENT_MANAGER manages CLIENT_EMPLOYEEs) ─────────
+# Employees may only be granted read/update — never create/delete.
+CLIENT_EMPLOYEE_CAPABILITIES = ("read", "update")
+
+
+class ClientManagerContext(BaseModel):
+    """The calling CLIENT_MANAGER's own context: which clients they manage,
+    whether self-onboarding of employees is enabled, and the scopes they can
+    delegate (their own grant set, the cap on what they can hand out)."""
+    client_ids: List[int] = Field(default_factory=list)
+    client_names: List[str] = Field(default_factory=list)
+    can_invite_employees: bool = False  # any managed client has the toggle on
+    employee_count: int = 0
+
+
+class PortalContactInfo(BaseModel):
+    name: str
+    title: Optional[str] = None
+    email: Optional[str] = None
+
+
+class PortalContext(BaseModel):
+    """Orienting context for ANY client-side user's portal: which client org this
+    is, the user's role, their client manager (for employees), and the account
+    team (our internal PMs) they can reach."""
+    role: str                       # CLIENT | CLIENT_MANAGER | CLIENT_EMPLOYEE
+    role_label: str                 # friendly: "Client manager" / "Client employee"
+    client_names: List[str] = Field(default_factory=list)
+    manager: Optional[PortalContactInfo] = None       # the employee's client manager
+    account_team: List[PortalContactInfo] = Field(default_factory=list)  # our PMs
+
+
+class ClientEmployeeAssignmentInfo(BaseModel):
+    """One thing a client employee is assigned to (a whole project or a task)."""
+    grant_id: int
+    scope: str  # "project" | "task"
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
+    task_id: Optional[int] = None
+    task_name: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+
+
+class ClientEmployeeSummary(BaseModel):
+    user_id: int
+    full_name: str
+    email: str
+    label: Optional[str] = None
+    email_verified: bool = False
+    assignment_count: int = 0  # how many tasks/projects they're assigned to
+    assignments: List[ClientEmployeeAssignmentInfo] = Field(default_factory=list)
+
+
+class ClientEmployeeInvite(BaseModel):
+    """A CLIENT_MANAGER invites one of their own client employees. Allowed only
+    when at least one of their managed clients has self-manage enabled."""
+    full_name: str = Field(..., min_length=1)
+    email: EmailStr
+    label: Optional[str] = None
+
+
+class ClientEmployeeAssign(BaseModel):
+    """A CLIENT_MANAGER assigns an employee to a task (or whole project) they
+    themselves hold. capabilities are clamped to read/update server-side."""
+    employee_user_id: int
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    capabilities: List[str] = Field(default_factory=lambda: ["read"])
+
+    @field_validator("capabilities")
+    @classmethod
+    def _valid_emp_caps(cls, v: List[str]) -> List[str]:
+        bad = [c for c in v if c not in CLIENT_EMPLOYEE_CAPABILITIES]
+        if bad:
+            raise ValueError(f"Employees can only be granted read/update. Invalid: {bad}")
+        caps = sorted(set(v))
+        if "read" not in caps:
+            caps.append("read")
+        return sorted(set(caps))
+
+
+class ClientReviewItem(BaseModel):
+    """One item in a CLIENT_MANAGER's review feed: an employee's update to a
+    task awaiting (or already given) the manager's sign-off."""
+    review_id: int
+    task_id: int
+    task_name: str
+    project_name: Optional[str] = None
+    employee_user_id: int
+    employee_name: str
+    status: str  # pending | approved | rejected
+    note: Optional[str] = None
+    task_status: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+
+
+class ClientReviewAction(BaseModel):
+    note: Optional[str] = None

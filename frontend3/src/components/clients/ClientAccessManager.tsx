@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Check, CheckSquare, ChevronDown, Folder, Info, Loader2, Mail, Pencil, Plus,
-  UserPlus, UserRound,
+  Trash2, UserPlus, UserRound,
 } from 'lucide-react';
 
 import { Button, Empty, Input, Modal, TonePill } from '@/components/ui';
@@ -144,7 +144,7 @@ function CapPills({
 // with a per-task CRUD table. Drives a SelMap + per-project mode map, used by
 // both the invite modal and the edit-access modal. ──────────────────────────
 function ScopePicker({
-  projects, tasksByProject, selected, setSelected, modes, setModes, onCapsChanged,
+  projects, tasksByProject, selected, setSelected, modes, setModes,
 }: {
   projects: FullProject[];
   tasksByProject: Map<number, FullTask[]>;
@@ -152,7 +152,6 @@ function ScopePicker({
   setSelected: React.Dispatch<React.SetStateAction<SelMap>>;
   modes: Record<number, Mode>;
   setModes: React.Dispatch<React.SetStateAction<Record<number, Mode>>>;
-  onCapsChanged: () => void; // force a re-render after in-place caps mutation
 }) {
   function setMode(p: FullProject, mode: Mode) {
     const pkey = `p:${p.id}`;
@@ -176,11 +175,24 @@ function ScopePicker({
     });
   }
 
-  // Toggle one cap on a caps array IN PLACE (keeps at least one), then re-render.
-  function toggleCap(caps: ClientCapability[], cap: ClientCapability) {
-    const i = caps.indexOf(cap);
-    if (i > -1) { if (caps.length > 1) caps.splice(i, 1); } else caps.push(cap);
-    onCapsChanged();
+  // Toggle one cap on a scope's caps, IMMUTABLY (always writes a new array via
+  // setSelected). In-place mutation was the bug: the edit modal seeds `selected`
+  // from the same array objects it diffs against to detect changes, so a splice/
+  // push mutated the "original" too and the diff saw no change (the new
+  // capability was silently dropped on save). Keeps at least one cap.
+  function toggleCap(key: string, cap: ClientCapability) {
+    setSelected((prev) => {
+      const cur = prev[key] ?? [];
+      const has = cur.includes(cap);
+      let nextCaps: ClientCapability[];
+      if (has) {
+        if (cur.length <= 1) return prev; // keep at least one
+        nextCaps = cur.filter((c) => c !== cap);
+      } else {
+        nextCaps = [...cur, cap];
+      }
+      return { ...prev, [key]: nextCaps };
+    });
   }
 
   if (projects.length === 0) {
@@ -217,7 +229,7 @@ function ScopePicker({
             {mode === 'whole' ? (
               <div className="mt-2.5 flex items-center gap-2">
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Permissions</span>
-                <CapPills caps={selected[pkey] ?? []} onToggle={(c) => toggleCap(selected[pkey] ?? [], c)} />
+                <CapPills caps={selected[pkey] ?? []} onToggle={(c) => toggleCap(pkey, c)} />
               </div>
             ) : null}
 
@@ -266,7 +278,7 @@ function ScopePicker({
                                   {!shared ? (
                                     <span className="text-muted-foreground/40">—</span>
                                   ) : (
-                                    <button type="button" onClick={() => toggleCap(caps, c)} title={CAP_LABEL[c]}
+                                    <button type="button" onClick={() => toggleCap(tkey, c)} title={CAP_LABEL[c]}
                                       className={cn('grid h-5 w-5 place-items-center rounded border mx-auto',
                                         caps.includes(c) ? 'border-primary bg-primary text-primary-foreground' : 'border-border')}>
                                       {caps.includes(c) ? <Check className="h-3 w-3" /> : null}
@@ -308,14 +320,13 @@ function InviteClientModal({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [label, setLabel] = useState('Project Sponsor');
+  const [portalRole, setPortalRole] = useState<'manager' | 'employee'>('manager');
   const [selected, setSelected] = useState<SelMap>({});
   const [modes, setModes] = useState<Record<number, Mode>>({});
   const [busy, setBusy] = useState(false);
-  const [, force] = useState(0);
-  const rerender = () => force((n) => n + 1);
 
   function reset() {
-    setFullName(''); setEmail(''); setLabel('Project Sponsor');
+    setFullName(''); setEmail(''); setLabel('Project Sponsor'); setPortalRole('manager');
     setSelected({}); setModes({});
   }
 
@@ -331,6 +342,7 @@ function InviteClientModal({
     try {
       const res = await clientPortalApi.invite({
         full_name: fullName.trim(), email: email.trim(), label: label.trim() || null,
+        portal_role: portalRole,
         grants,
       });
       reset();
@@ -391,7 +403,24 @@ function InviteClientModal({
               <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="dana@client.com" />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Client-side role <span className="font-normal">(label, e.g. Project Sponsor)</span></label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Portal access</label>
+              <div className="inline-flex rounded-full bg-muted p-0.5">
+                {([['manager', 'Client manager'], ['employee', 'Client employee']] as const).map(([val, lbl]) => (
+                  <button key={val} type="button" onClick={() => setPortalRole(val)}
+                    className={cn('rounded-full px-3.5 py-1.5 text-xs font-semibold transition',
+                      portalRole === val ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground')}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {portalRole === 'manager'
+                  ? 'A client manager can manage their own team and review their work.'
+                  : 'A client employee is added under this client’s manager (read/update only).'}
+              </p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Title <span className="font-normal">(label, e.g. Project Sponsor)</span></label>
               <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Project Sponsor" />
             </div>
           </div>
@@ -403,7 +432,7 @@ function InviteClientModal({
             <ScopePicker
               projects={projects} tasksByProject={tasksByProject}
               selected={selected} setSelected={setSelected}
-              modes={modes} setModes={setModes} onCapsChanged={rerender}
+              modes={modes} setModes={setModes}
             />
           </div>
         </div>
@@ -471,11 +500,15 @@ function EditAccessModal({
     return { sel, modes, grantIdByKey };
   }, [grants, taskProjectOf]);
 
-  const [selected, setSelected] = useState<SelMap>(seed.sel);
+  // Deep-copy the seed into the working selection so `selected` never aliases
+  // the per-scope arrays in `seed.sel` (those are the pristine originals the
+  // save() diff compares against). cloneSel is used both for the initial state
+  // and on every re-seed.
+  const cloneSel = (s: SelMap): SelMap =>
+    Object.fromEntries(Object.entries(s).map(([k, caps]) => [k, [...caps]]));
+  const [selected, setSelected] = useState<SelMap>(() => cloneSel(seed.sel));
   const [modes, setModes] = useState<Record<number, Mode>>(seed.modes);
   const [busy, setBusy] = useState(false);
-  const [, force] = useState(0);
-  const rerender = () => force((n) => n + 1);
   // Re-seed when the modal (re)opens for a user, OR when the seeded scope set
   // changes while open (e.g. task grants resolved after tasks finished loading,
   // so a task scope that was initially unresolvable now appears). The signature
@@ -484,7 +517,7 @@ function EditAccessModal({
   const seedSig = `${userId}|${Object.keys(seed.grantIdByKey).sort().join(',')}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (open && seededFor !== seedSig) {
-    setSelected(seed.sel); setModes(seed.modes); setSeededFor(seedSig);
+    setSelected(cloneSel(seed.sel)); setModes(seed.modes); setSeededFor(seedSig);
   }
   if (!open && seededFor !== null) setSeededFor(null);
 
@@ -542,7 +575,7 @@ function EditAccessModal({
       <ScopePicker
         projects={projects} tasksByProject={tasksByProject}
         selected={selected} setSelected={setSelected}
-        modes={modes} setModes={setModes} onCapsChanged={rerender}
+        modes={modes} setModes={setModes}
       />
       <div className="mt-4 flex items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
         <Info className="h-4 w-4 shrink-0" />
@@ -572,8 +605,38 @@ function ClientGrantCard({
   onChanged: () => void;
 }) {
   const { user_id: userId, full_name: name, email, label, grants } = portalUser;
+  const accepted = portalUser.email_verified === true;
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+
+  const resendInvite = async () => {
+    setResending(true);
+    try {
+      await clientPortalApi.resendInvite(userId);
+      onFlash('ok', `Invite re-sent to ${email}.`);
+    } catch {
+      onFlash('err', 'Could not resend the invite.');
+    } finally {
+      setResending(false);
+    }
+  };
+
+  const revokeAll = async () => {
+    if (!grants.length) return;
+    if (!window.confirm(`Revoke all access for ${name}? Their grants will be removed; the account itself is kept.`)) return;
+    setRevoking(true);
+    try {
+      await Promise.all(grants.map((g) => clientPortalApi.revokeGrant(g.id)));
+      onFlash('ok', `Revoked all access for ${name}.`);
+      onChanged();
+    } catch {
+      onFlash('err', 'Could not revoke access.');
+    } finally {
+      setRevoking(false);
+    }
+  };
 
   const projName = (id?: number | null) => allProjects.find((p) => p.id === id)?.name ?? (id ? `Project #${id}` : '');
   const taskName = (id?: number | null) => {
@@ -605,14 +668,25 @@ function ClientGrantCard({
           <div className="flex items-center gap-2">
             <span className="text-[14px] font-semibold">{name}</span>
             {label ? <TonePill tone="neutral">{label}</TonePill> : null}
+            <TonePill tone={accepted ? 'success' : 'warning'}>{accepted ? 'Active' : 'Invited'}</TonePill>
           </div>
           <div className="truncate text-[12px] text-muted-foreground">{email}</div>
         </div>
         <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
           {grants.length} {grants.length === 1 ? 'scope' : 'scopes'}
         </span>
+        {!accepted ? (
+          <Button size="sm" variant="ghost" onClick={resendInvite} disabled={resending}
+            title="Re-send the set-password invite link">
+            {resending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />} Resend
+          </Button>
+        ) : null}
         <Button size="sm" variant="ghost" onClick={() => setEditOpen(true)}>
           <Pencil className="h-3.5 w-3.5" /> Edit access
+        </Button>
+        <Button size="sm" variant="ghost" onClick={revokeAll} disabled={revoking || grants.length === 0}
+          title="Revoke all of this client's access">
+          {revoking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </Button>
       </div>
 

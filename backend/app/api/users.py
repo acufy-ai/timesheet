@@ -47,10 +47,17 @@ def _filter_users_py(users, *, q=None, role=None, status=None, audience=None,
         out = [u for u in out if u.is_active]
     elif status == "inactive":
         out = [u for u in out if not u.is_active]
+    # Audience buckets: internal / external / client. Client roles are external
+    # too, so exclude them from internal/external to keep the buckets distinct.
+    _client_role_values = {"CLIENT", "CLIENT_MANAGER", "CLIENT_EMPLOYEE"}
+    def _is_client(u):
+        return (u.role.value if hasattr(u.role, "value") else str(u.role)) in _client_role_values
     if audience == "internal":
-        out = [u for u in out if not u.is_external]
+        out = [u for u in out if not u.is_external and not _is_client(u)]
     elif audience == "external":
-        out = [u for u in out if u.is_external]
+        out = [u for u in out if u.is_external and not _is_client(u)]
+    elif audience == "client":
+        out = [u for u in out if _is_client(u)]
     if no_manager:
         out = [u for u in out if u.manager_id is None]
     if unverified:
@@ -96,6 +103,7 @@ async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: i
         .where(User.tenant_id == tenant_id)
         .options(
             selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
             selectinload(User.project_access),
             selectinload(User.task_access),
         )
@@ -105,6 +113,12 @@ async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: i
 
 
 async def _get_managed_users(db: AsyncSession, manager_id: int, tenant_id: int) -> list[User]:
+    """The internal reports under a manager, for the 'My Team' management view.
+
+    External users (clients / contractors) are excluded: they're not part of a
+    manager's internal org and shouldn't appear in their team-management screen,
+    even if an employee_manager_assignment exists for routing purposes elsewhere.
+    """
     descendant_ids = await _get_descendant_user_ids(db, manager_id, tenant_id)
     if not descendant_ids:
         return []
@@ -113,8 +127,10 @@ async def _get_managed_users(db: AsyncSession, manager_id: int, tenant_id: int) 
         select(User)
         .where(User.id.in_(descendant_ids))
         .where(User.tenant_id == tenant_id)
+        .where(User.is_external.is_(False))
         .options(
             selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
             selectinload(User.project_access),
             selectinload(User.task_access),
         )
@@ -209,6 +225,7 @@ async def list_all_users(
                 no_manager=no_manager, unverified=unverified,
             ).options(
                 selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
                 selectinload(User.project_access),
                 selectinload(User.task_access),
             )
@@ -791,7 +808,7 @@ async def bulk_delete_users(
     return {"deleted": deleted}
 
 
-@router.post("/{user_id}/reset-password", response_model=MessageResponse)
+@router.post("/{user_id:int}/reset-password", response_model=MessageResponse)
 async def reset_user_password(
     user_id: int,
     payload: AdminPasswordResetRequest,
@@ -844,7 +861,7 @@ async def reset_user_password(
     return MessageResponse(message="Password reset successfully. User will be prompted to change it on next login.")
 
 
-@router.post("/{user_id}/resend-verification", response_model=MessageResponse)
+@router.post("/{user_id:int}/resend-verification", response_model=MessageResponse)
 async def resend_verification_email_endpoint(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -906,7 +923,7 @@ async def resend_verification_email_endpoint(
     return MessageResponse(message=f"Verification email resent to {user.email}.")
 
 
-@router.post("/{user_id}/resend-invite", response_model=MessageResponse)
+@router.post("/{user_id:int}/resend-invite", response_model=MessageResponse)
 async def resend_invite_email_endpoint(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -964,7 +981,7 @@ async def resend_invite_email_endpoint(
     return MessageResponse(message=f"Invite email resent to {user.email}.")
 
 
-@router.post("/{user_id}/send-invite", response_model=MessageResponse)
+@router.post("/{user_id:int}/send-invite", response_model=MessageResponse)
 async def send_invite_endpoint(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -1051,7 +1068,7 @@ async def send_invite_endpoint(
     return MessageResponse(message=f"Verification email sent to {user.email}.")
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{user_id:int}", response_model=UserResponse)
 async def get_user(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -1249,7 +1266,7 @@ async def create_new_user(
         )
 
 
-@router.put("/{user_id}", response_model=UserResponse)
+@router.put("/{user_id:int}", response_model=UserResponse)
 async def update_user_endpoint(
     user_id: int,
     user_update: UserUpdate,
@@ -1489,7 +1506,7 @@ async def update_user_endpoint(
         )
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id:int}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user_endpoint(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -1599,7 +1616,7 @@ async def _apply_alias_emails(
     return warnings
 
 
-@router.get("/{user_id}/email-aliases", response_model=list[EmailAliasRead])
+@router.get("/{user_id:int}/email-aliases", response_model=list[EmailAliasRead])
 async def list_email_aliases(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -1628,7 +1645,7 @@ async def list_email_aliases(
 
 
 @router.post(
-    "/{user_id}/email-aliases",
+    "/{user_id:int}/email-aliases",
     response_model=EmailAliasRead,
     status_code=status.HTTP_201_CREATED,
 )
@@ -1691,7 +1708,7 @@ async def add_email_alias(
 
 
 @router.delete(
-    "/{user_id}/email-aliases/{alias_id}",
+    "/{user_id:int}/email-aliases/{alias_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_email_alias(
@@ -1720,7 +1737,7 @@ async def delete_email_alias(
     await db.commit()
 
 
-@router.get("/{user_id}/clients", response_model=list)
+@router.get("/{user_id:int}/clients", response_model=list)
 async def list_user_client_assignments(
     user_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -1734,7 +1751,7 @@ async def list_user_client_assignments(
     return await get_assignments_for_user(db, user_id, current_user.tenant_id)
 
 
-@router.post("/{user_id}/clients/{client_id}", status_code=status.HTTP_201_CREATED)
+@router.post("/{user_id:int}/clients/{client_id}", status_code=status.HTTP_201_CREATED)
 async def add_user_client_assignment(
     user_id: int,
     client_id: int,
@@ -1758,7 +1775,7 @@ async def add_user_client_assignment(
     return {"assignments": assignments}
 
 
-@router.delete("/{user_id}/clients/{client_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{user_id:int}/clients/{client_id}", status_code=status.HTTP_200_OK)
 async def remove_user_client_assignment(
     user_id: int,
     client_id: int,

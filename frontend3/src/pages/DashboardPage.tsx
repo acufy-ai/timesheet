@@ -16,12 +16,12 @@ import { Card, StatTile, TonePill, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   useManagerProjectHealth,
+  useManagerFinancials,
   useManagerTeamOverview,
   useTeamBillableStats,
   useTeamDailyOverview,
   useTeamOnTimeStats,
   useTeamProjectMatrix,
-  useTeamRejectionStats,
 } from '@/hooks/useDashboard';
 import { useIngestionTimesheets } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
@@ -32,7 +32,6 @@ import { AdminOrgStats } from '@/components/dashboard/AdminOrgStats';
 import { ManagerConversation } from '@/components/dashboard/ManagerConversation';
 import type {
   ProjectHealth,
-  TeamRejectionStats,
   TeamBillableStats,
   TeamOnTimeStats,
   TeamProjectMatrix,
@@ -55,11 +54,21 @@ function greeting(now: Date): string {
 }
 
 const HEALTH_META: Record<ProjectHealth, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
-  healthy: { label: 'Healthy', tone: 'success' },
+  good: { label: 'Good', tone: 'success' },
   'at-risk': { label: 'At risk', tone: 'warning' },
-  'over-budget': { label: 'Over budget', tone: 'danger' },
+  'needs-attention': { label: 'Needs attention', tone: 'danger' },
   'not-set': { label: 'Not set', tone: 'neutral' },
 };
+
+// Compact money formatter for the financials widget. Large values abbreviate
+// (e.g. $2.4M, $850k) so the table stays readable.
+function fmtMoney(value: string | number | null | undefined, currency = 'USD'): string {
+  const n = Number(value ?? 0);
+  const sym = currency === 'USD' ? '$' : `${currency} `;
+  if (Math.abs(n) >= 1_000_000) return `${sym}${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (Math.abs(n) >= 1_000) return `${sym}${(n / 1_000).toFixed(n % 1_000 === 0 ? 0 : 1)}k`;
+  return `${sym}${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
 
 function describeAge(hours: number | null): string {
   if (hours == null) return '';
@@ -123,51 +132,6 @@ function StatCard({ icon, title, meta, children }: { icon: React.ReactNode; titl
       </div>
       {children}
     </Card>
-  );
-}
-
-// Rejections — collapses to a single "all clear" line when the team had zero
-// rejections in the window (no point listing a column of 0%s).
-function RejectionsCard({ data }: { data: TeamRejectionStats }) {
-  const decidedRows = data.rows.filter((r) => r.decided_count > 0);
-  const anyRejections = decidedRows.some((r) => r.rejected_count > 0);
-  const meta = `last ${data.days_back}d${data.team_rejection_rate_pct != null ? ` · team ${data.team_rejection_rate_pct}%` : ''}`;
-  return (
-    <StatCard icon={<AlertTriangle className="h-4 w-4 text-muted-foreground" />} title="Rejections" meta={meta}>
-      {!anyRejections ? (
-        <p className="px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">No rejections across {decidedRows.length} {decidedRows.length === 1 ? 'person' : 'people'} in this window.</p>
-      ) : (
-        <div className="px-4 py-3">
-          {/* Only people who actually had a rejection — keeps it scannable. */}
-          <div className="space-y-1.5">
-            {decidedRows.filter((r) => r.rejected_count > 0).map((r) => (
-              <div key={r.user_id} className="flex items-center justify-between text-sm">
-                <span className="text-foreground">{r.full_name}</span>
-                <span
-                  className={cn('tabular-nums font-semibold', (r.rejection_rate_pct ?? 0) >= 25 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}
-                  title={`${r.rejected_count} rejected of ${r.decided_count} decided`}
-                >
-                  {r.rejection_rate_pct}% ({r.rejected_count}/{r.decided_count})
-                </span>
-              </div>
-            ))}
-          </div>
-          {data.top_reasons.length > 0 ? (
-            <div className="mt-3 border-t border-border pt-2.5">
-              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Top reasons</p>
-              <div className="space-y-1">
-                {data.top_reasons.slice(0, 4).map((tr) => (
-                  <div key={tr.reason} className="flex items-center justify-between gap-3 text-sm">
-                    <span className="truncate text-foreground" title={tr.reason}>{tr.reason}</span>
-                    <span className="tabular-nums text-muted-foreground">{tr.count}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      )}
-    </StatCard>
   );
 }
 
@@ -323,11 +287,11 @@ export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const team = useManagerTeamOverview();
-  const rejections = useTeamRejectionStats();
   const billable = useTeamBillableStats();
   const onTime = useTeamOnTimeStats();
   const projectMatrix = useTeamProjectMatrix();
   const projects = useManagerProjectHealth();
+  const financials = useManagerFinancials();
   const daily = useTeamDailyOverview();
   // VIEWER sees the same team roster/tiles/health as a manager (read-only,
   // whole-tenant) but NOT the manager action card (no approvals/reminders).
@@ -505,51 +469,8 @@ export function DashboardPage() {
             />
           </div>
 
-          {/* Daily standup: yesterday's submission status. Sourced from
-              /dashboard/team-daily-overview (manager-scoped). Hidden until the
-              data loads; an empty team renders the "nobody assigned" hint. */}
-          {daily.data && daily.data.team_size > 0 ? (
-            <Card>
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                  <p className="text-sm font-semibold text-foreground">
-                    Daily check-in
-                  </p>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {new Date(daily.data.date).toLocaleDateString(undefined, {
-                    weekday: 'long',
-                    month: 'short',
-                    day: 'numeric',
-                  })}
-                  {daily.data.has_time_remaining_until_deadline
-                    ? ` · deadline ${new Date(daily.data.submission_deadline_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
-                    : ' · deadline passed'}
-                </p>
-              </div>
-              <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
-                <DailyGroup
-                  tone="emerald"
-                  label="Submitted"
-                  count={daily.data.submitted_yesterday_count}
-                  names={daily.data.submitted_yesterday.map((m) => m.full_name)}
-                />
-                <DailyGroup
-                  tone="amber"
-                  label={daily.data.has_time_remaining_until_deadline ? 'Still drafting' : 'Drafting'}
-                  count={daily.data.draft_yesterday_count}
-                  names={daily.data.draft_yesterday.map((m) => m.full_name)}
-                />
-                <DailyGroup
-                  tone="rose"
-                  label={daily.data.has_time_remaining_until_deadline ? 'Not started' : 'Missed deadline'}
-                  count={daily.data.missing_yesterday_count}
-                  names={daily.data.missing_yesterday.map((m) => m.full_name)}
-                />
-              </div>
-            </Card>
-          ) : null}
+          {/* ── Top section: Project health → Project hours by person →
+              Financials (the work-and-money view, surfaced first). ── */}
 
           {/* Project health */}
           <Card>
@@ -610,14 +531,107 @@ export function DashboardPage() {
             )}
           </Card>
 
-          {/* Team quality stats — Rejections, Billable, On-time in a denser
-              2-up grid. Each collapses to a one-line summary when there's no
-              variation worth a full list (all-billable, zero rejections). */}
-          {(rejections.data || billable.data || onTime.data) ? (
+          {/* Project hours by person: approved hours per person per project. */}
+          {projectMatrix.data && projectMatrix.data.projects.length > 0 ? (
+            <ProjectMatrixCard data={projectMatrix.data} />
+          ) : null}
+
+          {/* Financials — real revenue from approved time x resolved rates. */}
+          {financials.data && financials.data.projects.length > 0 ? (
+            <Card>
+              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <p className="text-sm font-semibold text-foreground">Financials</p>
+                <p className="text-xs text-muted-foreground">Approved time × rate · revenue, budget &amp; contract burn</p>
+              </div>
+              {/* Summary tiles */}
+              <div className="grid grid-cols-2 gap-px border-b border-border bg-border sm:grid-cols-4">
+                {[
+                  ['Revenue', fmtMoney(financials.data.summary.total_revenue, financials.data.summary.currency)],
+                  ['Approved hours', `${Math.round(Number(financials.data.summary.total_approved_hours))}h`],
+                  ['Utilization', financials.data.summary.utilization_pct != null ? `${financials.data.summary.utilization_pct}%` : 'N/A'],
+                  ['Budget tracked', fmtMoney(financials.data.summary.total_budget, financials.data.summary.currency)],
+                ].map(([label, val]) => (
+                  <div key={label} className="bg-card px-4 py-3">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+                    <p className="mt-0.5 text-[15px] font-bold tabular-nums text-foreground">{val}</p>
+                  </div>
+                ))}
+              </div>
+              {/* Per-project rows */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <th className="px-4 py-2 font-semibold">Project</th>
+                      <th className="px-4 py-2 font-semibold">Hours</th>
+                      <th className="px-4 py-2 font-semibold">Revenue</th>
+                      <th className="px-4 py-2 font-semibold">Budget used</th>
+                      <th className="px-4 py-2 font-semibold">Contract used</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {financials.data.projects.map((row) => (
+                      <tr key={row.project_id} className="border-b border-border last:border-0">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-foreground">{row.project_name}</div>
+                          <div className="text-[11px] text-muted-foreground">{row.client_name}</div>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums text-foreground">{Math.round(Number(row.approved_hours))}h</td>
+                        <td className="px-4 py-3 tabular-nums font-semibold text-foreground">{fmtMoney(row.revenue, row.currency)}</td>
+                        <td className="px-4 py-3">
+                          {row.budget_used_pct != null ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="tabular-nums text-foreground">{row.budget_used_pct}%</span>
+                              <span className="text-[11px] text-muted-foreground">of {fmtMoney(row.budget_amount ?? 0, row.currency)}</span>
+                            </span>
+                          ) : <span className="text-muted-foreground">N/A</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.contract_used_pct != null ? (
+                            <span className="inline-flex items-center gap-1.5" title={row.contract_title ?? undefined}>
+                              <span className="tabular-nums text-foreground">{row.contract_used_pct}%</span>
+                              <span className="text-[11px] text-muted-foreground">of {fmtMoney(row.contract_value ?? 0, row.currency)}</span>
+                            </span>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          ) : null}
+
+          {/* ── Lower section: standup + quality + roster ── */}
+
+          {/* Daily standup: yesterday's submission status. */}
+          {daily.data && daily.data.team_size > 0 ? (
+            <Card>
+              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-sm font-semibold text-foreground">Daily check-in</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(daily.data.date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+                  {daily.data.has_time_remaining_until_deadline
+                    ? ` · deadline ${new Date(daily.data.submission_deadline_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+                    : ' · deadline passed'}
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
+                <DailyGroup tone="emerald" label="Submitted" count={daily.data.submitted_yesterday_count} names={daily.data.submitted_yesterday.map((m) => m.full_name)} />
+                <DailyGroup tone="amber" label={daily.data.has_time_remaining_until_deadline ? 'Still drafting' : 'Drafting'} count={daily.data.draft_yesterday_count} names={daily.data.draft_yesterday.map((m) => m.full_name)} />
+                <DailyGroup tone="rose" label={daily.data.has_time_remaining_until_deadline ? 'Not started' : 'Missed deadline'} count={daily.data.missing_yesterday_count} names={daily.data.missing_yesterday.map((m) => m.full_name)} />
+              </div>
+            </Card>
+          ) : null}
+
+          {/* Team quality stats — Billable, On-time in a 2-up grid. Each
+              collapses to a one-line summary when there's no variation worth a
+              full list. (Rejections card removed.) */}
+          {(billable.data || onTime.data) ? (
             <div className="grid gap-4 md:grid-cols-2">
-              {rejections.data && rejections.data.rows.some((r) => r.decided_count > 0)
-                ? <RejectionsCard data={rejections.data} />
-                : null}
               {billable.data && billable.data.rows.some((r) => Number(r.approved_hours) > 0)
                 ? <BillableCard data={billable.data} />
                 : null}
@@ -625,12 +639,6 @@ export function DashboardPage() {
                 ? <OnTimeCard data={onTime.data} />
                 : null}
             </div>
-          ) : null}
-
-          {/* Project hours matrix: approved hours per person per project, heat-
-              shaded so heavy allocations pop. Full width below the 2-up grid. */}
-          {projectMatrix.data && projectMatrix.data.projects.length > 0 ? (
-            <ProjectMatrixCard data={projectMatrix.data} />
           ) : null}
 
           {/* Team roster — collapsible, per-person status with summary pills.

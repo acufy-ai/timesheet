@@ -4,6 +4,8 @@ import type {
   DashboardAnalytics,
   DashboardSummary,
   ManagerProjectHealth,
+  ManagerFinancials,
+  MyWork,
   ManagerTeamOverview,
   TeamBillableStats,
   TeamDailyOverview,
@@ -84,6 +86,10 @@ import type {
   ClientPortalUser,
   ClientInviteBody,
   PortalProject,
+  ClientManagerContext,
+  ClientEmployeeSummary,
+  ClientReviewItem,
+  PortalContext,
   UserProfile,
   ProjectBody,
   SettingDefinition,
@@ -116,6 +122,24 @@ import type {
 export const TOKEN_KEY = 'accessToken';
 // Kept only to purge any refresh token left in storage by a previous build.
 export const REFRESH_KEY = 'refreshToken';
+
+// Decode a JWT's `sub` (the user id) WITHOUT verification — used only to detect
+// a cross-tab identity swap, never for trust decisions. The HttpOnly refresh
+// cookie is shared across all tabs of an origin; if you log into a SECOND
+// account in another tab, that login overwrites the cookie, and an older tab's
+// refresh would silently adopt the new account. We compare the sub before/after
+// a refresh and refuse a token that belongs to a different user.
+export function tokenSub(token: string | null | undefined): string | null {
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(
+      atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')),
+    );
+    return payload?.sub != null ? String(payload.sub) : null;
+  } catch {
+    return null;
+  }
+}
 
 // API base. Dev + same-origin-proxy deploys use the relative '/api' (the Vite
 // proxy / nginx rewrites it to the backend root). Prod fronts the API at an
@@ -184,10 +208,23 @@ async function tokenIsDead(): Promise<boolean> {
 async function runRefresh(): Promise<string | null> {
   // The refresh token rides in the HttpOnly cookie; withCredentials sends it.
   // No token is read from JS storage anymore.
+  //
+  // CROSS-TAB IDENTITY GUARD: the cookie is per-origin, shared by every tab. If
+  // another tab logged into a DIFFERENT account, this refresh would mint a token
+  // for THAT account and this tab would silently become someone else. So we pin
+  // to the user this tab already holds: capture our current sub, and if the
+  // refreshed token's sub differs, refuse it. The caller treats null as a dead
+  // session and bounces this tab to /login (correct — its own session is gone).
+  const priorSub = tokenSub(window.sessionStorage.getItem(TOKEN_KEY));
   try {
     const res = await axios.post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true });
     const data = res.data as { access_token?: string };
     if (!data?.access_token) return null;
+    const newSub = tokenSub(data.access_token);
+    if (priorSub != null && newSub != null && newSub !== priorSub) {
+      // The shared cookie now belongs to another account. Do NOT adopt it.
+      return null;
+    }
     window.sessionStorage.setItem(TOKEN_KEY, data.access_token);
     return data.access_token;
   } catch {
@@ -294,6 +331,9 @@ export const dashboardApi = {
     api.get<ManagerTeamOverview>('/dashboard/manager-team-overview'),
   managerProjectHealth: () =>
     api.get<ManagerProjectHealth>('/dashboard/manager-project-health'),
+  managerFinancials: () =>
+    api.get<ManagerFinancials>('/dashboard/manager-financials'),
+  myWork: () => api.get<MyWork>('/dashboard/my-work'),
   teamDailyOverview: () =>
     api.get<TeamDailyOverview>('/dashboard/team-daily-overview'),
   teamRejectionStats: (days_back = 90) =>
@@ -327,8 +367,8 @@ export const timeApi = {
   update: (id: number, data: UpdateTimeEntry) =>
     api.put<TimeEntry>(`/timesheets/${id}`, data),
   remove: (id: number) => api.delete(`/timesheets/${id}`),
-  submit: (entry_ids: number[]) =>
-    api.post('/timesheets/submit', { entry_ids }),
+  submit: (entry_ids: number[], approver_manager_id?: number | null) =>
+    api.post('/timesheets/submit', { entry_ids, approver_manager_id }),
   // Un-submit SUBMITTED entries back to DRAFT. 409 if a manager already acted.
   recall: (entry_ids: number[]) =>
     api.post('/timesheets/recall', { entry_ids }),
@@ -346,6 +386,7 @@ export const timeApi = {
 export const projectsApi = {
   list: (params?: { active_only?: boolean; client_id?: number; limit?: number }) =>
     api.get<Project[]>('/projects', { params }),
+  nextCode: () => api.get<{ code: string }>('/projects/next-code'),
   create: (data: ProjectBody) => api.post<FullProject>('/projects', data),
   update: (id: number, data: ProjectBody) => api.put<FullProject>(`/projects/${id}`, data),
   remove: (id: number) => api.delete(`/projects/${id}`),
@@ -357,6 +398,9 @@ export const tasksApi = {
   create: (data: TaskBody) => api.post<FullTask>('/tasks', data),
   update: (id: number, data: TaskBody) => api.put<FullTask>(`/tasks/${id}`, data),
   remove: (id: number) => api.delete(`/tasks/${id}`),
+  // Scoped edit for an assignee: status and/or description only (My Work).
+  updateProgress: (id: number, body: { status?: string; description?: string }) =>
+    api.patch<{ id: number; status: string | null; description: string | null }>(`/tasks/${id}/progress`, body),
 };
 
 export const approvalsApi = {
@@ -444,6 +488,24 @@ export const clientPortalApi = {
   deleteTask: (taskId: number) => api.delete(`/client-portal/tasks/${taskId}`),
   updateProject: (projectId: number, body: { description?: string }) =>
     api.patch<{ id: number; description: string | null }>(`/client-portal/projects/${projectId}`, body),
+  // Orienting context for any client-side user (org, role, manager, account team).
+  portalContext: () => api.get<PortalContext>('/client-portal/context'),
+  // CLIENT_MANAGER side (two-tier portal): manage own employees + review.
+  managerContext: () => api.get<ClientManagerContext>('/client-portal/manage/me'),
+  managerEmployees: () => api.get<ClientEmployeeSummary[]>('/client-portal/manage/employees'),
+  managerAssignable: () => api.get<PortalProject[]>('/client-portal/manage/assignable'),
+  managerInvite: (body: { full_name: string; email: string; label?: string }) =>
+    api.post<{ user_id: number; email: string; invited: boolean; message: string }>('/client-portal/manage/employees/invite', body),
+  managerRemoveEmployee: (userId: number) => api.delete(`/client-portal/manage/employees/${userId}`),
+  managerAssign: (body: { employee_user_id: number; project_id?: number | null; task_id?: number | null; capabilities: string[] }) =>
+    api.post<{ id: number; updated: boolean }>('/client-portal/manage/assign', body),
+  managerUnassign: (grantId: number) => api.delete(`/client-portal/manage/assign/${grantId}`),
+  managerReviewFeed: (statusFilter?: string) =>
+    api.get<ClientReviewItem[]>(`/client-portal/manage/review${statusFilter ? `?status_filter=${statusFilter}` : ''}`),
+  managerApproveReview: (reviewId: number, note?: string) =>
+    api.post<{ review_id: number; status: string }>(`/client-portal/manage/review/${reviewId}/approve`, { note }),
+  managerRejectReview: (reviewId: number, note?: string) =>
+    api.post<{ review_id: number; status: string }>(`/client-portal/manage/review/${reviewId}/reject`, { note }),
   // PM / admin side
   userGrants: (userId: number) => api.get<ClientGrant[]>(`/client-grants/user/${userId}`),
   clientUsers: (clientId: number) => api.get<ClientPortalUser[]>(`/client-grants/client/${clientId}`),
@@ -452,8 +514,11 @@ export const clientPortalApi = {
   updateGrant: (grantId: number, capabilities: ClientCapability[]) =>
     api.put<ClientGrant>(`/client-grants/${grantId}`, { capabilities }),
   revokeGrant: (grantId: number) => api.delete(`/client-grants/${grantId}`),
-  toggleProject: (projectId: number, enabled: boolean) =>
-    api.patch<{ id: number; client_access_enabled: boolean }>(`/client-grants/project/${projectId}/toggle`, { client_access_enabled: enabled }),
+  // Re-send the client-portal set-password invite to a client user who hasn't
+  // accepted yet. Dedicated client endpoint (the internal one rejects externals
+  // and sends the wrong email).
+  resendInvite: (userId: number) =>
+    api.post<{ message: string }>(`/client-grants/user/${userId}/resend-invite`),
   invite: (body: ClientInviteBody) =>
     api.post<{ user_id: number; email: string; invited: boolean; message: string }>('/client-grants/invite', body),
 };
@@ -497,6 +562,10 @@ export const contractsApi = {
     `/clients/${clientId}/contracts/${id}/document`,
   downloadDocument: (clientId: number, id: number) =>
     api.get<Blob>(`/clients/${clientId}/contracts/${id}/document`, { responseType: 'blob' }),
+  // Inline disposition + real content type, so previewable files (PDF/image)
+  // render in a new tab instead of downloading.
+  viewDocument: (clientId: number, id: number) =>
+    api.get<Blob>(`/clients/${clientId}/contracts/${id}/document?disposition=inline`, { responseType: 'blob' }),
 };
 
 // Phase C: client contacts, role rates, notes (all nested under a client).
@@ -669,6 +738,10 @@ export const tenantSettingsApi = {
 
 // Tenant branding (logo) + feature flags.
 export const brandingApi = {
+  // The caller's own tenant (workspace) — name, slug, status, branding flags.
+  // Any authenticated tenant user may call this. Used for the top-nav workspace
+  // label.
+  mine: () => api.get<{ id: number; name: string; slug: string; status: string; has_logo: boolean }>('/tenants/mine'),
   features: () => api.get<{ tenant_id: number; custom_outbound_email: boolean; custom_email_template: boolean }>('/tenants/mine/features'),
   logoUrl: '/admin/tenant/logo', // GET (auth-attached) returns the bytes
   uploadLogo: (file: File) => {
@@ -687,7 +760,7 @@ export const platformApi = {
     api.get<Tenant[]>('/tenants', { params: include_archived ? { include_archived: true } : undefined }),
   tenant: (id: number) => api.get<Tenant>(`/tenants/${id}`),
   createTenant: (data: CreateTenantBody) => api.post<Tenant>('/tenants', data),
-  updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean }>) =>
+  updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; max_mailboxes: number; timezone: string }>) =>
     api.patch<Tenant>(`/tenants/${id}`, data),
   tenantLifecycle: (id: number, action: string, confirmation_token?: string) =>
     api.post<Tenant>(`/tenants/${id}/lifecycle`, { action, confirmation_token }),

@@ -59,7 +59,11 @@ export function UserDetail(props: Props) {
   // Reset tab + edit state when the selected user changes.
   useEffect(() => { setTab('details'); setEditCard(null); }, [user.id]);
 
-  const managerName = user.manager_id ? nameById.get(user.manager_id) : undefined;
+  // Resolve the manager's display name; if the id is set but the name isn't in
+  // the directory yet, fall back to "#id" rather than implying "no manager".
+  const managerDisplay = user.manager_id
+    ? (nameById.get(user.manager_id) ?? `#${user.manager_id}`)
+    : null;
   const defClientName = user.default_client_id ? clientNameById.get(user.default_client_id) : undefined;
   const meta = [user.title, user.department, defClientName].filter(Boolean).join('  ·  ');
 
@@ -111,7 +115,7 @@ export function UserDetail(props: Props) {
         <div className="grid grid-cols-2 gap-px border-t border-border bg-border md:grid-cols-3 xl:grid-cols-6">
           <Stat label="Status" ok={user.is_active} warn={!user.is_active} text={user.is_active ? 'Active' : 'Inactive'} />
           <Stat label="Email" ok={user.email_verified} warn={!user.email_verified} text={user.email_verified ? 'Verified' : 'Unverified'} />
-          <Stat label="Manager" ok={!!managerName} text={managerName ?? 'None'} />
+          <Stat label="Manager" ok={!!managerDisplay} text={managerDisplay ?? 'None'} />
           <Stat label="Reviewer" ok={!!user.can_review} text={user.can_review ? 'Yes' : 'No'} />
           <Stat label="Project access" ok={(user.project_ids?.length ?? 0) > 0} text={(user.project_ids?.length ?? 0) > 0 ? `${user.project_ids!.length} projects` : 'No access'} />
           <Stat label="Can sign in" ok={user.is_active} text={user.is_active ? 'Yes' : 'No'} />
@@ -245,6 +249,7 @@ function IdentityCard({ user, isAdmin, onFlash, editing, onEdit, onClose }: Prop
         <DT>Username</DT><DD>{user.username || <Muted>—</Muted>}</DD>
         <DT>Phones</DT><DD>{user.phones?.length ? user.phones.join(', ') : <Muted>None</Muted>}</DD>
         <DT>Timezone</DT><DD>{user.timezone || <Muted>—</Muted>}</DD>
+        <DT>Created</DT><DD>{user.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : <Muted>—</Muted>}</DD>
       </div>
     </CardShell>
   );

@@ -16,6 +16,8 @@ import type { SettingDefinition, SettingValue } from '@/types/admin';
 const CATEGORY_ORDER: Array<{ key: string; label: string }> = [
   { key: 'time_entry', label: 'Time entry' },
   { key: 'time_off', label: 'Time off' },
+  { key: 'staffing', label: 'Staffing' },
+  { key: 'approvals', label: 'Approvals' },
   { key: 'security', label: 'Security' },
   { key: 'reminders', label: 'Reminders' },
   { key: 'notifications', label: 'Notifications' },
@@ -28,6 +30,9 @@ const CATEGORY_ORDER: Array<{ key: string; label: string }> = [
 // clicking Save without touching the field.
 const SKIP_KEYS = new Set<string>([
   'smtp_password',
+  // The per-manager cross-team-staffing exception list is seeded for a future
+  // override UI; don't render it as a raw JSON field yet.
+  'cross_team_staffing_user_ids',
   // Rendered separately in the OutboundEmailSettings section so it can
   // show as 3 radios with friendly labels (not the raw enum values)
   // and be gated by the custom_outbound_email feature flag.

@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +24,11 @@ class ClientContact(Base, TimestampMixin):
     role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     emails: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     phones: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    # Marks the client's primary point of contact. Backfilled from the legacy
+    # inline clients.contact_* fields. (The inline contact_email is kept as the
+    # email-ingestion routing key.)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
     client = relationship("Client")
 
@@ -54,8 +59,13 @@ class ClientNote(Base, TimestampMixin):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
     client_id: Mapped[int] = mapped_column(
         ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Denormalized display name, server-stamped from the author at create time
+    # (never caller-supplied). author_user_id is the provable link to the user.
     author: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    author_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     note_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     client = relationship("Client")
+    author_user = relationship("User", foreign_keys=[author_user_id])

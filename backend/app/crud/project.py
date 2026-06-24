@@ -1,3 +1,6 @@
+import re
+
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +10,34 @@ from app.models.user import User, UserRole
 from app.models.assignments import UserProjectAccess, ProjectManager
 from app.schemas import ProjectCreate, ProjectUpdate
 from typing import Optional
+
+# Auto project code: "PR" + zero-padded sequence (PR0001, PR0002, ...).
+PROJECT_CODE_PREFIX = "PR"
+PROJECT_CODE_PAD = 4
+_PROJECT_CODE_RE = re.compile(r"^PR0*(\d+)$")
+
+
+async def next_project_code(db: AsyncSession, tenant_id: int) -> str:
+    """The next sequential project code for a tenant, e.g. PR0037.
+
+    Derived from max(highest existing PR#### suffix, project count) + 1 so the
+    sequence keeps climbing and never re-issues a code after a project is
+    deleted (codes aren't unique-constrained, so we avoid collisions ourselves).
+    """
+    count = await db.scalar(
+        select(func.count(Project.id)).where(Project.tenant_id == tenant_id)
+    ) or 0
+    codes = (await db.execute(
+        select(Project.code).where(
+            Project.tenant_id == tenant_id, Project.code.is_not(None))
+    )).scalars().all()
+    max_suffix = 0
+    for c in codes:
+        m = _PROJECT_CODE_RE.match((c or "").strip())
+        if m:
+            max_suffix = max(max_suffix, int(m.group(1)))
+    nxt = max(max_suffix, count) + 1
+    return f"{PROJECT_CODE_PREFIX}{nxt:0{PROJECT_CODE_PAD}d}"
 
 
 async def get_project_by_id(db: AsyncSession, project_id: int, tenant_id: Optional[int] = None) -> Optional[Project]:
@@ -28,6 +59,10 @@ async def create_project(db: AsyncSession, project_create: ProjectCreate, tenant
     # Keep the single manager_id column as the first PM for back-compat.
     if manager_ids:
         data["manager_id"] = manager_ids[0]
+    # Auto-assign a sequential code (PR####) when none was supplied, so the
+    # client never has to invent one. A code the caller did send is respected.
+    if not (data.get("code") or "").strip():
+        data["code"] = await next_project_code(db, tenant_id)
     db_project = Project(**data, tenant_id=tenant_id)
     db.add(db_project)
     try:

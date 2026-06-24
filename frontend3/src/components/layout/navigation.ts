@@ -7,6 +7,7 @@ import {
   Clock3,
   Home,
   Inbox,
+  ListChecks,
   Settings,
   ShieldCheck,
   UsersRound,
@@ -26,6 +27,13 @@ export type NavItem = {
   icon: LucideIcon;
   /** Extra path prefixes that should mark this item active. */
   match?: string[];
+  /**
+   * When true, this item is active only on an EXACT path match — not when the
+   * pathname merely starts with `to`. Needed for index-style links whose path is
+   * a prefix of sibling routes (e.g. /platform vs /platform/tenants), so the
+   * index link doesn't stay highlighted on every child page.
+   */
+  exact?: boolean;
   visible: boolean;
 };
 
@@ -47,13 +55,15 @@ export const buildNavigation = (
   user: User | null,
   ingestionEnabled: boolean,
 ): NavSection[] => {
-  // CLIENT persona is fail-closed: it sees ONLY the client portal, never the
+  // Client personas are fail-closed: they see ONLY the client portal, never the
   // workspace/ops/platform sections. Returning early guarantees an unmapped or
   // client role can't fall through to the default Dashboard/My Time/etc. nav.
-  if (user?.role === 'CLIENT') {
+  // Covers the legacy CLIENT plus the two-tier CLIENT_MANAGER / CLIENT_EMPLOYEE.
+  if (user?.role === 'CLIENT' || user?.role === 'CLIENT_MANAGER' || user?.role === 'CLIENT_EMPLOYEE') {
+    const label = user.role === 'CLIENT_MANAGER' ? 'Client portal' : 'My Projects';
     return [{
       title: 'Client',
-      items: [{ label: 'My Projects', to: '/portal', icon: Briefcase, visible: true, match: ['/portal'] }],
+      items: [{ label, to: '/portal', icon: Briefcase, visible: true, match: ['/portal'] }],
     }];
   }
   // Pure managers (no admin role) get a flatter nav: each Operations entry
@@ -61,6 +71,17 @@ export const buildNavigation = (
   // "Operations" group. Their action surface is small. Admins keep the
   // grouped Operations menu because they have 4+ items.
   const flattenOps = !isAdmin(user) && isManager(user);
+
+  // For a user who holds BOTH admin and manager, surface which role is acting
+  // when they open shared pages (e.g. Client Management) via a ?role= query
+  // param. The active role is user.role (already overlaid from the token's
+  // active_role). Single-role users get a clean URL (no param).
+  const hasBothRoles = Boolean(
+    user?.roles?.includes('ADMIN') && user?.roles?.includes('MANAGER'),
+  );
+  const roleSuffix = hasBothRoles && (user?.role === 'ADMIN' || user?.role === 'MANAGER')
+    ? `?role=${user.role.toLowerCase()}`
+    : '';
 
   const opsItems: NavItem[] = [
     { label: 'Approvals', to: '/approvals', icon: ShieldCheck, visible: isManager(user) },
@@ -72,7 +93,7 @@ export const buildNavigation = (
       icon: UsersRound,
       visible: isAdmin(user) || isManager(user),
     },
-    { label: 'Clients', to: '/client-management', icon: Briefcase, visible: isAdmin(user) || isManager(user) },
+    { label: 'Clients', to: `/client-management${roleSuffix}`, icon: Briefcase, visible: isAdmin(user) || isManager(user), match: ['/client-management'] },
     { label: 'Audit Trail', to: '/audit-trail', icon: ClipboardList, visible: isAdmin(user) },
     { label: 'Settings', to: '/settings', icon: Settings, visible: isAdmin(user) },
   ];
@@ -85,7 +106,11 @@ export const buildNavigation = (
     {
       title: 'Workspace',
       items: [
-        { label: 'Dashboard', to: '/dashboard', icon: Home, visible: Boolean(user) },
+        // Workspace is the TENANT-user surface. Platform admins have no tenant
+        // and get their own Platform section below — so none of these should
+        // show for a PA (otherwise the Workspace Dashboard/Calendar duplicate
+        // the Platform Dashboard/Calendar).
+        { label: 'Dashboard', to: '/dashboard', icon: Home, visible: Boolean(user && user.role !== 'PLATFORM_ADMIN') },
         {
           label: 'My Time',
           to: '/my-time',
@@ -93,12 +118,21 @@ export const buildNavigation = (
           visible: Boolean(user && user.role !== 'PLATFORM_ADMIN'),
         },
         {
+          label: 'My Work',
+          to: '/my-work',
+          icon: ListChecks,
+          // People who get assigned to projects/tasks (employees, managers,
+          // viewers). Admins manage rather than get assigned.
+          visible: Boolean(user && ['EMPLOYEE', 'MANAGER', 'VIEWER'].includes(user.role)),
+          match: ['/my-work'],
+        },
+        {
           label: 'Time Off',
           to: '/time-off',
           icon: ClipboardCheck,
           visible: Boolean(user && user.role !== 'PLATFORM_ADMIN'),
         },
-        { label: 'Calendar', to: '/calendar', icon: CalendarDays, visible: Boolean(user) },
+        { label: 'Calendar', to: '/calendar', icon: CalendarDays, visible: Boolean(user && user.role !== 'PLATFORM_ADMIN') },
       ],
     },
     ...opsSections,
@@ -122,7 +156,7 @@ export const buildNavigation = (
     // render as flat top-level nav links (not a dropdown).
     {
       title: 'Platform Dashboard',
-      items: [{ label: 'Dashboard', to: '/platform', icon: Home, visible: isPlatformAdmin(user), match: ['/platform'] }],
+      items: [{ label: 'Dashboard', to: '/platform', icon: Home, visible: isPlatformAdmin(user), match: ['/platform'], exact: true }],
     },
     {
       title: 'Platform Tenants',
@@ -150,6 +184,9 @@ export const buildNavigation = (
 // Whether a nav item should render as active for the current pathname.
 export function isItemActive(item: NavItem, pathname: string): boolean {
   const candidates = item.match ?? [item.to];
+  // Exact items match only the precise path (so an index link like /platform
+  // doesn't stay active on /platform/tenants, /platform/audit, etc.).
+  if (item.exact) return candidates.some((p) => pathname === p);
   return candidates.some(
     (p) => pathname === p || pathname.startsWith(p + '/'),
   );

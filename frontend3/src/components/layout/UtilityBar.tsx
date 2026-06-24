@@ -1,7 +1,9 @@
-import { ExternalLink } from 'lucide-react';
+import { Building2, ExternalLink } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useMyTenant } from '@/hooks/useMyTenant';
+import { isClientUser } from '@/lib/clientRole';
 import { AcufyLogo } from './AcufyLogo';
 import { NotificationsBell } from './NotificationsBell';
 import { ThemePicker } from './ThemePicker';
@@ -21,6 +23,12 @@ const ROLE_LABEL: Record<string, string> = {
 // home. Mirrors the target CRM shell.
 export function UtilityBar() {
   const { user, openRoleInNewTab } = useAuth();
+  // Clients have no timer or notifications surface (and those calls 403 for
+  // them), and the portal isn't part of the timer context. Covers all three
+  // client roles (CLIENT / CLIENT_MANAGER / CLIENT_EMPLOYEE).
+  const isClient = isClientUser(user);
+  const tenantQ = useMyTenant();
+  const workspaceName = tenantQ.data?.name;
 
   // Other roles this multi-role user can switch into.
   const otherRoles = (user?.roles ?? []).filter((r) => r !== user?.role);
@@ -64,9 +72,20 @@ export function UtilityBar() {
             Switch to {ROLE_LABEL[r] ?? r}
           </button>
         ))}
-        <TopbarTimer />
+        {/* Workspace (tenant) name. Sits with the global actions so it's always
+            visible next to the timer / theme controls. */}
+        {workspaceName ? (
+          <span
+            className="mr-1 hidden items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground sm:inline-flex"
+            title={`Workspace: ${workspaceName}`}
+          >
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+            <span className="max-w-[160px] truncate">{workspaceName}</span>
+          </span>
+        ) : null}
+        {!isClient ? <TopbarTimer /> : null}
         <ThemePicker />
-        <NotificationsBell />
+        {!isClient ? <NotificationsBell /> : null}
         <div className="ml-1 mr-0.5 h-7 w-px bg-border" />
         <UserMenu expanded />
       </div>

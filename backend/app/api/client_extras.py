@@ -74,6 +74,7 @@ async def create_contact(
         tenant_id=current_user.tenant_id, client_id=client_id,
         name=payload.name, role=payload.role,
         emails=payload.emails or [], phones=payload.phones or [],
+        is_primary=bool(payload.is_primary),
     )
     db.add(row)
     await db.commit()
@@ -194,9 +195,10 @@ async def create_note(
     current_user: User = Depends(get_current_user),
 ):
     await _require_client(db, client_id, current_user.tenant_id, current_user)
+    # Authorship is stamped from the logged-in user; never caller-supplied.
     row = ClientNote(
         tenant_id=current_user.tenant_id, client_id=client_id,
-        author=payload.author or current_user.full_name,
+        author=current_user.full_name, author_user_id=current_user.id,
         body=payload.body, note_date=payload.note_date,
     )
     db.add(row)

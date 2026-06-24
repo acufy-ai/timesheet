@@ -37,8 +37,10 @@ export function LoginPage() {
   const [resendState, setResendState] = useState<'idle' | 'sending' | 'sent'>('idle');
 
   // Honor an explicit deep-link target (the page they were bounced from);
-  // otherwise default by role.
-  const explicitFrom = (location.state as { from?: string } | null)?.from;
+  // otherwise default by role. Prefer the ?from= query param (survives a hard
+  // refresh) and fall back to router state for in-app navigations.
+  const fromQuery = new URLSearchParams(location.search).get('from');
+  const explicitFrom = fromQuery || (location.state as { from?: string } | null)?.from || undefined;
   if (!isInitializing && isAuthenticated) {
     return <Navigate to={explicitFrom ?? defaultDestForRole(user?.role)} replace />;
   }
@@ -50,7 +52,14 @@ export function LoginPage() {
     setNeedsVerify(false);
     try {
       const loggedIn = await login(email, password);
-      navigate(explicitFrom ?? defaultDestForRole(loggedIn?.role), { replace: true });
+      // A fresh credential login goes to the user's landing page (resolved by
+      // role + their landing preference via the index route), NOT a stale
+      // ?from= target. The ?from= deep-link return is only honored for the
+      // already-authenticated auto-redirect above (a token that expired
+      // mid-session) — not when someone deliberately types their credentials.
+      // Otherwise an employee bounced off /my-work would log back into /my-work
+      // instead of their dashboard landing.
+      navigate(defaultDestForRole(loggedIn?.role), { replace: true });
     } catch (err) {
       const raw = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       const msg = typeof raw === 'string' ? raw : err instanceof Error ? err.message : 'Login failed';

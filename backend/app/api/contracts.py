@@ -4,6 +4,7 @@ CRUD for a client's agreements plus signed-document upload / download / delete
 via the shared storage service. Admin-only writes; any tenant user may read.
 """
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -13,10 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.crud.client import get_client_by_id
 from app.models.contract import Contract
+from app.models.project import Project
+from app.models.time_entry import TimeEntry, TimeEntryStatus
 from app.models.user import User
 from app.api._client_access import require_client_manager, assert_client_access
 from app.schemas import ContractCreate, ContractResponse, ContractUpdate
 from app.services import storage
+from app.services.billing_rates import entry_billed_amount
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,61 @@ async def list_contracts(
         )
     ).scalars().all()
     return [_serialize(c) for c in rows]
+
+
+@router.get("/{contract_id}/burn")
+async def contract_burn(
+    client_id: int,
+    contract_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Contract value burn: consumed billable value (approved entries on the
+    contract's projects) vs the contract value. Uses each entry's frozen
+    billed_rate where present, else the live project rate."""
+    contract = await _get_contract(db, client_id, contract_id, current_user.tenant_id, current_user)
+
+    projects = (await db.execute(
+        select(Project).where(
+            Project.contract_id == contract_id,
+            Project.tenant_id == current_user.tenant_id,
+        )
+    )).scalars().all()
+    project_by_id = {p.id: p for p in projects}
+    project_ids = list(project_by_id.keys())
+
+    consumed = Decimal("0")
+    approved_hours = Decimal("0")
+    if project_ids:
+        entries = (await db.execute(
+            select(TimeEntry).where(
+                TimeEntry.project_id.in_(project_ids),
+                TimeEntry.tenant_id == current_user.tenant_id,
+                TimeEntry.status == TimeEntryStatus.APPROVED,
+            )
+        )).scalars().all()
+        for e in entries:
+            consumed += entry_billed_amount(e, project_by_id.get(e.project_id))
+            if e.is_billable:
+                approved_hours += (e.hours or Decimal("0"))
+
+    value = contract.value
+    remaining = (value - consumed) if value is not None else None
+    pct = (
+        float(min(consumed / value, 1) * 100)
+        if value is not None and value > 0
+        else None
+    )
+    return {
+        "contract_id": contract_id,
+        "value": value,
+        "consumed": consumed,
+        "remaining": remaining,
+        "percent_used": pct,
+        "approved_hours": approved_hours,
+        "project_ids": project_ids,
+        "project_count": len(project_ids),
+    }
 
 
 @router.post("", response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
@@ -183,18 +242,38 @@ async def upload_contract_document(
 async def download_contract_document(
     client_id: int,
     contract_id: int,
+    disposition: str = "attachment",
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Serve the attached document.
+
+    disposition=attachment (default) → the browser saves it (the Download button).
+    disposition=inline → the browser renders it in-tab when it can (PDF/image
+    preview); the real content type is inferred from the filename so previewable
+    types display instead of downloading.
+    """
+    import mimetypes
+
     contract = await _get_contract(db, client_id, contract_id, current_user.tenant_id, current_user)
     if not contract.document_key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No document attached")
     content = await storage.read_file(contract.document_key)
     filename = contract.document_name or "document"
+
+    inline = disposition == "inline"
+    media_type = "application/octet-stream"
+    if inline:
+        guessed, _ = mimetypes.guess_type(filename)
+        # Only hand the browser a real type when we can preview it; otherwise keep
+        # the generic type so it falls back to its download prompt.
+        media_type = guessed or "application/octet-stream"
+
+    dispo = "inline" if inline else "attachment"
     return StreamingResponse(
         iter([content]),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        media_type=media_type,
+        headers={"Content-Disposition": f'{dispo}; filename="{filename}"'},
     )
 
 

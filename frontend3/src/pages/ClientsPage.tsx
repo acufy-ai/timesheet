@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import {
   Briefcase,
   Calendar,
@@ -7,6 +8,7 @@ import {
   ChevronRight,
   Contact,
   Download,
+  ExternalLink,
   FileText,
   FolderPlus,
   Info,
@@ -28,7 +30,9 @@ import {
   X,
 } from 'lucide-react';
 
-import { contractsApi } from '@/api/client';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+import { contractsApi, clientPortalApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button, Card, Empty, Input, Modal, TonePill, WorkspaceHeader } from '@/components/ui';
 import type { Tone } from '@/components/ui';
@@ -57,6 +61,7 @@ import {
   useDeleteProject,
   useDeleteRoleRate,
   useDeleteTask,
+  useNextProjectCode,
   useRoleRates,
   useSetClientTeam,
   useUpdateClient,
@@ -67,16 +72,20 @@ import {
   useUpdateRoleRate,
   useUpdateTask,
   useUploadContractDocument,
+  useCrossTeamStaffing,
 } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
+import { staffingPool } from '@/lib/staffing';
 import type {
   Client,
   ClientBody,
   ClientContact,
   ClientContactBody,
   ClientNote,
+  ClientCapability,
   ClientNoteBody,
+  ClientPortalUser,
   ClientRoleRate,
   ClientRoleRateBody,
   ClientStatus,
@@ -199,6 +208,16 @@ const TASK_PRIORITY_DOT: Record<TaskPriority, string> = {
 
 export function ClientsPage() {
   const { user: actingUser } = useAuth();
+  // Client Management is for ADMIN, MANAGER, or reviewers (mirrors the backend
+  // require_client_manager gate). VIEWER/EMPLOYEE have no client surface, so
+  // they're bounced to the dashboard on a direct visit — the nav already hides
+  // the link, this closes the direct-URL hole. The role check drives both the
+  // redirect below and whether write controls (Add client, etc.) render.
+  const canManageClients =
+    actingUser?.role === 'ADMIN' ||
+    actingUser?.role === 'PLATFORM_ADMIN' ||
+    actingUser?.role === 'MANAGER' ||
+    actingUser?.can_review === true;
   const clientsQ = useClients();
   const projectsQ = useAllProjects();
   const tasksQ = useAllTasks();
@@ -212,8 +231,35 @@ export function ClientsPage() {
   const delProject = useDeleteProject();
   const delTask = useDeleteTask();
 
-  const [activeClientId, setActiveClientId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'projects' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access'>('projects');
+  // Selected client + tab are persisted in the URL (?client=<id>&tab=<tab>) so a
+  // page refresh restores the same view instead of snapping back to the first
+  // client. setActiveClientId / setActiveTab keep the same call sites; they just
+  // write through to the query string now.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeClientId = searchParams.get('client') ? Number(searchParams.get('client')) : null;
+  const activeTab = (searchParams.get('tab') as
+    | 'projects' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access' | null) ?? 'projects';
+  // Single writer for the client/tab query params. React Router's
+  // setSearchParams does NOT chain functional updates the way useState does, so
+  // two back-to-back calls (select client + reset tab) race and the second wins
+  // with a stale base. We always derive `next` from the current searchParams and
+  // apply both changes in one call to avoid that.
+  const updateSelection = (patch: { client?: number | null; tab?: string }) => {
+    const next = new URLSearchParams(searchParams);
+    if ('client' in patch) {
+      if (patch.client == null) {
+        next.delete('client');
+        next.delete('tab');
+      } else {
+        next.set('client', String(patch.client));
+      }
+    }
+    if (patch.tab != null) next.set('tab', patch.tab);
+    setSearchParams(next, { replace: true });
+  };
+  const setActiveClientId = (id: number | null) => updateSelection({ client: id });
+  const setActiveTab = (tab: 'projects' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access') =>
+    updateSelection({ tab });
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
   const [search, setSearch] = useState('');
@@ -281,9 +327,14 @@ export function ClientsPage() {
     return m;
   }, [tasks]);
 
-  // Auto-select the first client once data lands and nothing is picked.
+  // Auto-select the first client once data lands and nothing valid is picked.
+  // Also covers a stale URL pointing at a client that no longer exists (or that
+  // this user can't see) — fall back to the first available client.
   useEffect(() => {
-    if (activeClientId == null && clients.length) setActiveClientId(clients[0].id);
+    if (!clients.length) return;
+    const picked = activeClientId != null && clients.some((c) => c.id === activeClientId);
+    if (!picked) setActiveClientId(clients[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClientId, clients]);
 
   const activeClient = clients.find((c) => c.id === activeClientId) ?? null;
@@ -297,6 +348,14 @@ export function ClientsPage() {
   const roleRates = (rolesQ.data ?? []) as ClientRoleRate[];
   const notesQ = useClientNotes(activeClient?.id ?? null);
   const clientNotes = (notesQ.data ?? []) as ClientNote[];
+  // Client-access count for the tab badge. Shares the same query key as the
+  // ClientAccessManager tab so it reads from cache (no duplicate fetch).
+  const accessUsersQ = useQuery({
+    queryKey: ['client-portal-users', activeClient?.id ?? 0],
+    queryFn: () => clientPortalApi.clientUsers(activeClient!.id).then((r) => r.data),
+    enabled: !!activeClient,
+  });
+  const accessCount = (accessUsersQ.data ?? []).length;
   const teamPms = useMemo(() => team.filter((m) => m.assignment_role === 'pm'), [team]);
 
   const nameOf = (uid: number): string => userById.get(uid)?.full_name ?? team.find((m) => m.user_id === uid)?.full_name ?? `#${uid}`;
@@ -356,6 +415,8 @@ export function ClientsPage() {
       !q ||
       c.name.toLowerCase().includes(q) ||
       (c.contact_name ?? '').toLowerCase().includes(q) ||
+      (c.contact_email ?? '').toLowerCase().includes(q) ||
+      (c.contact_phone ?? '').toLowerCase().includes(q) ||
       (c.company ?? '').toLowerCase().includes(q) ||
       clientProjects.some(
         (p) =>
@@ -373,15 +434,24 @@ export function ClientsPage() {
 
   const totalProjects = projects.length;
 
+  // Bounce roles with no client surface (VIEWER/EMPLOYEE) to the dashboard,
+  // so a direct /client-management URL can't render the page shell + write
+  // buttons. Wait until the user is loaded to avoid a flash-redirect on mount.
+  if (actingUser && !canManageClients) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
   return (
     <div className="space-y-5">
       <WorkspaceHeader
         title="Client Management"
         description={`${clients.length} ${clients.length === 1 ? 'client' : 'clients'} · ${totalProjects} ${totalProjects === 1 ? 'project' : 'projects'}`}
         primary={
-          <Button onClick={() => setClientModal({ open: true, client: null })}>
-            <Plus className="h-4 w-4" /> Add client
-          </Button>
+          canManageClients ? (
+            <Button onClick={() => setClientModal({ open: true, client: null })}>
+              <Plus className="h-4 w-4" /> Add client
+            </Button>
+          ) : null
         }
       />
 
@@ -441,10 +511,7 @@ export function ClientsPage() {
                   <button
                     key={c.id}
                     type="button"
-                    onClick={() => {
-                      setActiveClientId(c.id);
-                      setActiveTab('projects');
-                    }}
+                    onClick={() => updateSelection({ client: c.id, tab: 'projects' })}
                     className={cn(
                       'mb-1 flex w-full items-center gap-3 rounded-xl border px-2.5 py-2 text-left transition-colors',
                       active ? 'border-primary/30 bg-primary/10' : 'border-transparent hover:bg-primary/5',
@@ -486,7 +553,7 @@ export function ClientsPage() {
                 <TabButton active={activeTab === 'contracts'} onClick={() => setActiveTab('contracts')} Icon={FileText} label="Contracts" count={contracts.length} />
                 <TabButton active={activeTab === 'roles'} onClick={() => setActiveTab('roles')} Icon={Tag} label="Roles" count={roleRates.length} />
                 <TabButton active={activeTab === 'notes'} onClick={() => setActiveTab('notes')} Icon={StickyNote} label="Notes" count={clientNotes.length} />
-                <TabButton active={activeTab === 'access'} onClick={() => setActiveTab('access')} Icon={ShieldCheck} label="Client access" />
+                <TabButton active={activeTab === 'access'} onClick={() => setActiveTab('access')} Icon={ShieldCheck} label="Client access" count={accessCount} />
               </div>
 
               {activeTab === 'projects' ? (
@@ -567,6 +634,7 @@ export function ClientsPage() {
         <ProjectModal
           open={projectModal.open}
           clientId={activeClient.id}
+          clients={clients}
           project={projectModal.project}
           pms={teamPms}
           users={users}
@@ -581,10 +649,13 @@ export function ClientsPage() {
           open={taskModal.open}
           project={taskModal.project}
           task={taskModal.task}
-          team={team}
           myTeam={myTeam}
+          users={users}
+          clientPmIds={teamPms.map((m) => m.user_id)}
           actingUserName={actingUser?.full_name ?? 'me'}
+          actingUserRole={actingUser?.role}
           nameOf={nameOf}
+          onFlash={flashAndFade}
           onClose={() => setTaskModal({ open: false, project: null, task: null })}
           onSaved={(m) => {
             flashAndFade('ok', m);
@@ -778,6 +849,15 @@ function ProjectCard({
   // "Progress" = done tasks over total, driven by the 3-state task status.
   const done = tasks.filter((t) => t.status === 'done').length;
   const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+  // Everyone working on any task in this project — surfaced as an avatar stack
+  // on the row so you can see at a glance that people are staffed on its tasks,
+  // without expanding it. De-duplicated across tasks, first-seen order.
+  const taskAssignees: number[] = [];
+  const seenAssignee = new Set<number>();
+  tasks.forEach((t) => (t.assignee_ids ?? []).forEach((id) => {
+    if (!seenAssignee.has(id)) { seenAssignee.add(id); taskAssignees.push(id); }
+  }));
+  const shownAssignees = taskAssignees.slice(0, 4);
   const pmIds = project.manager_ids?.length ? project.manager_ids : (project.manager_id != null ? [project.manager_id] : []);
   const pmLabel = pmIds.length === 0
     ? 'PM unassigned'
@@ -816,6 +896,24 @@ function ProjectCard({
             {done}/{tasks.length}
           </span>
         </div>
+        {taskAssignees.length ? (
+          <div className="hidden items-center sm:flex" title={`${taskAssignees.length} ${taskAssignees.length === 1 ? 'person' : 'people'} on this project's tasks`}>
+            {shownAssignees.map((id, i) => {
+              const nm = nameOf(id);
+              return (
+                <span key={id} title={nm}
+                  className={cn('grid h-6 w-6 place-items-center rounded-full text-[9px] font-semibold ring-2 ring-card', avatarTone(nm), i > 0 && '-ml-1.5')}>
+                  {initials(nm)}
+                </span>
+              );
+            })}
+            {taskAssignees.length > 4 ? (
+              <span className="-ml-1.5 grid h-6 w-6 place-items-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground ring-2 ring-card">
+                +{taskAssignees.length - 4}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton label="Edit project" onClick={onEdit} Icon={Pencil} sm />
@@ -927,6 +1025,18 @@ function TaskRow({ task, nameOf, onEdit, onDelete }: { task: FullTask; nameOf: (
       ) : (
         <span className="text-xs italic text-muted-foreground">Unassigned</span>
       )}
+      {/* Client employees working on this task (read-only context for our side). */}
+      {(task.client_assignees ?? []).length ? (
+        <span
+          title={`Client side: ${(task.client_assignees ?? []).map((c) => c.full_name).join(', ')}`}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10.5px] font-semibold text-sky-600 dark:text-sky-300"
+        >
+          <User className="h-3 w-3" />
+          {(task.client_assignees ?? []).length === 1
+            ? (task.client_assignees ?? [])[0].full_name
+            : `${(task.client_assignees ?? []).length} client`}
+        </span>
+      ) : null}
       <div className="flex shrink-0 items-center gap-0.5">
         <IconButton label="Edit task" onClick={onEdit} Icon={Pencil} sm />
         <IconButton label="Delete task" onClick={onDelete} Icon={Trash2} sm danger />
@@ -1140,6 +1250,7 @@ function ContractDoc({
   const upload = useUploadContractDocument();
   const delDoc = useDeleteContractDocument();
   const [downloading, setDownloading] = useState(false);
+  const [viewing, setViewing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   function pick() {
@@ -1177,6 +1288,30 @@ function ContractDoc({
     }
   }
 
+  async function view() {
+    setViewing(true);
+    // Open the tab synchronously (inside the click) so the popup blocker allows
+    // it; we navigate it to the blob URL once the fetch resolves.
+    const tab = window.open('', '_blank');
+    try {
+      const res = await contractsApi.viewDocument(clientId, contract.id);
+      const url = URL.createObjectURL(res.data);
+      if (tab) {
+        tab.location.href = url;
+        // Revoke after the tab has had a chance to load the blob.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } else {
+        // Popup blocked — fall back to a same-tab open.
+        window.location.href = url;
+      }
+    } catch (err) {
+      if (tab) tab.close();
+      onError(errText(err, 'Could not open the document.'));
+    } finally {
+      setViewing(false);
+    }
+  }
+
   async function remove() {
     if (!window.confirm('Remove the attached document?')) return;
     try {
@@ -1205,9 +1340,14 @@ function ContractDoc({
             <FileText className="h-4 w-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-foreground">{contract.document_name || 'Document'}</p>
+            {/* Click the name to open the document in a new tab. */}
+            <button type="button" onClick={() => void view()} title="Open in a new tab"
+              className="block max-w-full truncate text-left text-sm font-semibold text-foreground hover:text-primary hover:underline">
+              {contract.document_name || 'Document'}
+            </button>
             {contract.document_size != null ? <p className="text-xs text-muted-foreground">{fmtSize(contract.document_size)}</p> : null}
           </div>
+          <IconButton label="View" onClick={() => void view()} Icon={viewing ? Loader2 : ExternalLink} sm />
           <IconButton label="Download" onClick={() => void download()} Icon={downloading ? Loader2 : Download} sm />
           <Button size="sm" variant="secondary" onClick={pick} disabled={busy}>
             Replace
@@ -1778,6 +1918,7 @@ function ClientModal({
   const [since, setSince] = useState('');
   const [pmIds, setPmIds] = useState<number[]>([]);
   const [memberIds, setMemberIds] = useState<number[]>([]);
+  const [selfManage, setSelfManage] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1790,6 +1931,7 @@ function ClientModal({
     setContactEmail(client?.contact_email ?? '');
     setContactPhone(client?.contact_phone ?? '');
     setSince(client?.since ?? '');
+    setSelfManage(client?.client_self_manage_enabled ?? false);
     setPmIds([]);
     setMemberIds([]);
     setError(null);
@@ -1834,6 +1976,7 @@ function ClientModal({
       contact_name: contactName.trim() || null,
       contact_email: contactEmail.trim() || null,
       contact_phone: contactPhone.trim() || null,
+      client_self_manage_enabled: selfManage,
     };
     try {
       let clientId: number;
@@ -1908,6 +2051,19 @@ function ClientModal({
             </div>
           </div>
           <div className="border-t border-border pt-3">
+            <p className="mb-2 text-xs font-semibold text-foreground">Client portal</p>
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3 py-2.5">
+              <input type="checkbox" checked={selfManage} onChange={(e) => setSelfManage(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
+              <span className="text-[13px]">
+                <span className="font-medium text-foreground">Let this client manage their own employees</span>
+                <span className="mt-0.5 block text-[12px] text-muted-foreground">
+                  When on, this client's manager can invite their own team members in the portal. When off, you add their employees for them.
+                </span>
+              </span>
+            </label>
+          </div>
+          <div className="border-t border-border pt-3">
             <p className="mb-2 text-xs font-semibold text-foreground">Team</p>
             <div className="space-y-3">
               <div>
@@ -1958,6 +2114,7 @@ function ClientModal({
 function ProjectModal({
   open,
   clientId,
+  clients,
   project,
   pms,
   users,
@@ -1968,6 +2125,7 @@ function ProjectModal({
 }: {
   open: boolean;
   clientId: number;
+  clients: Client[];
   project: FullProject | null;
   pms: ClientTeamMember[];
   users: ManagedUser[];
@@ -1980,16 +2138,31 @@ function ProjectModal({
   const create = useCreateProject();
   const update = useUpdateProject();
   const updateTask = useUpdateTask();
+  // Auto code (PR####) for NEW projects only; fetched while the modal is open.
+  const nextCodeQ = useNextProjectCode(open && !isEdit);
+  // Staffing policy: when cross-team staffing is on, the team pool widens from
+  // the project's PMs' reports to every PM on this client's reports.
+  const allowCrossTeam = useCrossTeamStaffing();
+  const clientPmIds = useMemo(() => pms.map((m) => m.user_id), [pms]);
+  // Contracts for the project's client — to tie the project to an MSA/SOW.
+  const contractsQ = useContracts(open ? (project?.client_id ?? clientId) : null);
+  const contractOptions = contractsQ.data ?? [];
 
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [status, setStatus] = useState<ProjectStatus>('planning');
   const [budget, setBudget] = useState('');
+  const [billableRate, setBillableRate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [managerIds, setManagerIds] = useState<number[]>([]);
   const [active, setActive] = useState(true);
   const [description, setDescription] = useState('');
   const [resourceIds, setResourceIds] = useState<number[]>([]);
+  // The client this project belongs to. Editable so an admin can re-point a
+  // project to a different client (the backend client_id is a normal mutable
+  // FK). Defaults to the currently-open client for new projects.
+  const [projectClientId, setProjectClientId] = useState<number>(clientId);
+  const [contractId, setContractId] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
   // Two-step roster removal: the first save with a conflict warns; the second
   // proceeds and also strips the removed members from the conflicting tasks.
@@ -2001,25 +2174,37 @@ function ProjectModal({
     setCode(project?.code ?? '');
     setStatus(project?.status ?? 'planning');
     setBudget(project?.budget_amount != null ? String(project.budget_amount) : '');
+    setBillableRate(project?.billable_rate != null ? String(project.billable_rate) : '');
     setEndDate(project?.end_date ?? '');
     setManagerIds(project?.manager_ids ?? (project?.manager_id != null ? [project.manager_id] : []));
     setActive(project?.is_active ?? true);
     setDescription(project?.description ?? '');
     setResourceIds(project?.resource_ids ?? []);
+    setProjectClientId(project?.client_id ?? clientId);
+    setContractId(project?.contract_id ?? '');
     setProceedRemoval(false);
     setError(null);
-  }, [open, project]);
+  }, [open, project, clientId]);
+
+  // Prefill the auto code on a NEW project once it arrives. Editable: only fill
+  // an empty field, so a code the user typed isn't clobbered by a late fetch.
+  useEffect(() => {
+    if (!open || isEdit) return;
+    if (nextCodeQ.data) setCode((c) => (c.trim() ? c : nextCodeQ.data!));
+  }, [open, isEdit, nextCodeQ.data]);
 
   // PM choices = the client's assigned PMs (multi-select).
   const pmOptions: PickerOption[] = pms.map((m) => ({ id: m.user_id, name: m.full_name, sub: m.role }));
-  // Team-member choices = employees who report (org tree) to a selected PM.
-  // Spans all departments a PM manages. Empty until a PM with reports is picked.
+  // Team-member choices. By DEFAULT, only employees who report (org tree) to a
+  // selected PM — keeps staffing inside the project's management chain. When the
+  // tenant enables cross-team staffing, the pool widens to the client's whole
+  // management chain + their reports (see `staffingPool`). Empty until a PM with
+  // reports is picked (in the restricted default).
   const teamOptions: PickerOption[] = useMemo(
     () =>
-      users
-        .filter((u) => u.manager_id != null && managerIds.includes(u.manager_id))
+      staffingPool(users, { pmIds: managerIds, clientPmIds, allowCrossTeam })
         .map((u) => ({ id: u.id, name: u.full_name, sub: u.role })),
-    [users, managerIds],
+    [users, managerIds, clientPmIds, allowCrossTeam],
   );
 
   const saving = create.isPending || update.isPending;
@@ -2048,11 +2233,10 @@ function ProjectModal({
 
     const body: ProjectBody = {
       name: name.trim(),
-      client_id: clientId,
-      // billable_rate is deprecated on the project (rates live on the role
-      // rate-card; budget is the money figure). Preserve any existing value on
-      // edit, default 0 on create, so the non-null column stays satisfied.
-      billable_rate: project?.billable_rate != null ? num(project.billable_rate) : 0,
+      client_id: projectClientId,
+      // Billable rate ($/h) is set in the form. Falls back to any existing
+      // value, else 0, so the non-null column stays satisfied.
+      billable_rate: billableRate ? num(billableRate) : (project?.billable_rate != null ? num(project.billable_rate) : 0),
       code: code.trim() || null,
       description: description.trim() || null,
       end_date: endDate || null,
@@ -2062,6 +2246,7 @@ function ProjectModal({
       status,
       manager_ids: managerIds,
       resource_ids: resourceIds,
+      contract_id: contractId === '' ? null : Number(contractId),
     };
     try {
       if (isEdit && project) {
@@ -2095,8 +2280,44 @@ function ProjectModal({
             </div>
             <div>
               <label className={labelClass}>Code</label>
-              <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="WEB" />
+              <Input value={code} onChange={(e) => setCode(e.target.value)}
+                placeholder={!isEdit && nextCodeQ.isFetching ? 'Generating…' : 'PR0001'} />
             </div>
+          </div>
+          <div>
+            <label className={labelClass}>Client</label>
+            <select
+              className={selectClass}
+              value={projectClientId}
+              onChange={(e) => setProjectClientId(Number(e.target.value))}
+            >
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            {projectClientId !== clientId ? (
+              <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                Moving this project to a different client. Its project managers and team may need to be reassigned to that client's roster.
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className={labelClass}>Contract</label>
+            <select
+              className={selectClass}
+              value={contractId}
+              onChange={(e) => setContractId(e.target.value ? Number(e.target.value) : '')}
+            >
+              <option value="">No contract</option>
+              {contractOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}{c.value != null ? ` · ${Number(c.value).toLocaleString(undefined, { style: 'currency', currency: 'USD' })}` : ''}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Tie this project to a contract (MSA/SOW) to track value burn.
+            </p>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
@@ -2115,6 +2336,10 @@ function ProjectModal({
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className={labelClass}>Billable rate ($/h)</label>
+              <Input type="number" step="0.01" min="0" value={billableRate} onChange={(e) => setBillableRate(e.target.value)} placeholder="e.g. 150" />
+            </div>
             <div>
               <label className={labelClass}>Due date</label>
               <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
@@ -2145,7 +2370,13 @@ function ProjectModal({
               selected={resourceIds}
               onChange={setResourceIds}
               placeholder="Add team members to this project..."
-              emptyText={managerIds.length ? 'No employees report to the selected managers.' : 'Select project managers first to choose their team.'}
+              emptyText={
+                managerIds.length
+                  ? (allowCrossTeam
+                      ? 'No employees report to this client’s managers.'
+                      : 'No employees report to the selected managers.')
+                  : 'Select project managers first to choose their team.'
+              }
               nameById={nameOf}
             />
           </div>
@@ -2176,31 +2407,222 @@ function ProjectModal({
   );
 }
 
+// Client-side access to a single task, managed from the internal task editor.
+// Client employees aren't internal `task_assignees` — they get scoped access via
+// ClientAccessGrant. This section lists the client's people and lets an internal
+// PM/admin share THIS task with them (read, or read+update) by creating/removing
+// a task-scoped grant. Only shown when editing an existing task (a grant needs a
+// task id). Note a client employee may also inherit task access from a
+// whole-project grant; that inherited access is shown as a locked "via project"
+// state and managed on the Client access tab, not here.
+function ClientTaskAccessSection({
+  clientId, projectId, taskId, onFlash,
+}: {
+  clientId: number;
+  projectId: number;
+  taskId: number;
+  onFlash: (tone: 'ok' | 'err', text: string) => void;
+}) {
+  const qc = useQueryClient();
+  const usersQ = useQuery({
+    queryKey: ['client-portal-users', clientId],
+    queryFn: () => clientPortalApi.clientUsers(clientId).then((r) => r.data),
+    enabled: clientId > 0,
+  });
+  const [busyUser, setBusyUser] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const users = (usersQ.data ?? []) as ClientPortalUser[];
+  const refresh = () => qc.invalidateQueries({ queryKey: ['client-portal-users', clientId] });
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  // Per person: a direct grant on THIS task (editable here), or whole-project
+  // access on THIS task's project (which already covers the task, so it's shown
+  // as a read-only "Via project" chip).
+  const rows = users.map((u) => {
+    const direct = u.grants.find((g) => g.task_id === taskId);
+    const projectGrant = u.grants.find((g) => g.project_id === projectId);
+    return { user: u, direct, viaProject: !direct && !!projectGrant };
+  });
+  // People shown as chips = anyone with access to this task (direct or via
+  // project). The dropdown offers everyone; selecting toggles a direct grant.
+  const shownRows = rows.filter((r) => r.direct || r.viaProject);
+  const q = query.trim().toLowerCase();
+  const optionRows = rows.filter((r) =>
+    !q || r.user.full_name.toLowerCase().includes(q) || (r.user.label ?? '').toLowerCase().includes(q));
+
+  async function setShared(u: ClientPortalUser, share: boolean) {
+    setBusyUser(u.user_id);
+    try {
+      if (share) {
+        // Default to read+update (never delete) so the client person can both
+        // see AND work the task. A task grant also surfaces the owning project
+        // in their portal, so they get to the project automatically.
+        await clientPortalApi.createGrant({ user_id: u.user_id, task_id: taskId, capabilities: ['read', 'update'] });
+        onFlash('ok', `Shared this task with ${u.full_name}.`);
+      } else {
+        const g = u.grants.find((x) => x.task_id === taskId);
+        if (g) await clientPortalApi.revokeGrant(g.id);
+        onFlash('ok', `Removed ${u.full_name} from this task.`);
+      }
+      refresh();
+    } catch (e) {
+      onFlash('err', errText(e, 'Could not update client access.'));
+    } finally { setBusyUser(null); }
+  }
+
+  async function setCanEdit(grantId: number, canEdit: boolean, name: string) {
+    setBusyUser(-1);
+    try {
+      await clientPortalApi.updateGrant(grantId, (canEdit ? ['read', 'update'] : ['read']) as ClientCapability[]);
+      onFlash('ok', `Updated access for ${name}.`);
+      refresh();
+    } catch (e) {
+      onFlash('err', errText(e, 'Could not update client access.'));
+    } finally { setBusyUser(null); }
+  }
+
+  return (
+    <div>
+      <label className={labelClass}>Client access</label>
+      {usersQ.isLoading ? (
+        <div className="flex items-center gap-2 py-2 text-[12.5px] text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading client people…
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="text-[12.5px] text-muted-foreground">
+          No client accounts on this client yet. Invite them on the Client access tab.
+        </p>
+      ) : (
+        <div ref={ref} className="relative">
+          {/* Dropdown trigger + selected chips (mirrors the internal Assign-to
+              picker so it scales to many client people). */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setOpen((o) => !o)}
+            className="flex min-h-9 w-full flex-wrap items-center gap-1.5 rounded-2xl border border-border bg-transparent px-2 py-1.5 text-sm focus-within:border-primary"
+          >
+            {shownRows.length === 0 ? (
+              <span className="px-1 text-muted-foreground">Share this task with client people…</span>
+            ) : (
+              shownRows.map(({ user: u, direct, viaProject }) => {
+                const canEdit = direct?.capabilities.includes('update') ?? true;
+                const busy = busyUser === u.user_id || busyUser === -1;
+                return (
+                  <span key={u.user_id}
+                    className={cn('inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-1.5 text-xs font-semibold',
+                      viaProject ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary')}
+                  >
+                    <span className={cn('grid h-4 w-4 place-items-center rounded-full text-[8px] font-semibold', avatarTone(u.full_name))}>{initials(u.full_name)}</span>
+                    {u.full_name}
+                    {viaProject ? (
+                      <span className="ml-0.5 rounded-full bg-background/60 px-1 text-[9px] font-medium uppercase tracking-wide">Via project</span>
+                    ) : direct ? (
+                      <>
+                        <button type="button" disabled={busy} title="Toggle edit permission"
+                          onClick={(e) => { e.stopPropagation(); void setCanEdit(direct.id, !canEdit, u.full_name); }}
+                          className="ml-0.5 rounded-full bg-background/60 px-1 text-[9px] font-medium uppercase tracking-wide hover:bg-background">
+                          {canEdit ? 'Edit' : 'View'}
+                        </button>
+                        <button type="button" aria-label={`Remove ${u.full_name}`} disabled={busy}
+                          onClick={(e) => { e.stopPropagation(); void setShared(u, false); }}
+                          className="opacity-70 hover:opacity-100">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </>
+                    ) : null}
+                  </span>
+                );
+              })
+            )}
+            <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+          </div>
+
+          {open ? (
+            <div className="absolute z-50 mt-1.5 max-h-60 w-full overflow-y-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+              <Input className="mb-1.5 h-8" placeholder="Search client people…" value={query}
+                onChange={(e) => setQuery(e.target.value)} onClick={(e) => e.stopPropagation()} />
+              {optionRows.map(({ user: u, direct, viaProject }) => {
+                const sel = !!direct || viaProject;
+                const busy = busyUser === u.user_id || busyUser === -1;
+                return (
+                  <button key={u.user_id} type="button" disabled={viaProject || busy}
+                    onClick={() => void setShared(u, !direct)}
+                    title={viaProject ? 'Already has access to the whole project (manage on the Client access tab)' : undefined}
+                    className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-primary/5',
+                      (viaProject || busy) && 'opacity-60')}
+                  >
+                    <span className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-semibold', avatarTone(u.full_name))}>{initials(u.full_name)}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-foreground">{u.full_name}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">{viaProject ? 'Has whole-project access' : (u.label ?? 'Client')}</span>
+                    </span>
+                    <span className={cn('grid h-5 w-5 shrink-0 place-items-center rounded-md border', sel ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-transparent')}>
+                      <Check className="h-3 w-3" />
+                    </span>
+                  </button>
+                );
+              })}
+              {optionRows.length === 0 ? <p className="px-2 py-2 text-xs text-muted-foreground">No matches.</p> : null}
+            </div>
+          ) : null}
+        </div>
+      )}
+      <p className="mt-1.5 flex items-start gap-1.5 text-[11.5px] text-muted-foreground">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" />
+        <span>
+          Pick client people to share just this task with them (read + edit). “Via project”
+          means they already have whole-project access. Internal teammates are set under “Assign to”.
+        </span>
+      </p>
+    </div>
+  );
+}
+
 function TaskModal({
   open,
   project,
   task,
-  team,
   myTeam,
+  users,
+  clientPmIds,
   actingUserName,
+  actingUserRole,
   nameOf,
   onClose,
   onSaved,
+  onFlash,
 }: {
   open: boolean;
   project: FullProject;
   task: FullTask | null;
-  team: ClientTeamMember[];
   // The acting user + their org-chain reports (for staffing a PM-less project).
   myTeam: ManagedUser[];
+  // Full assignable directory + the client's PM ids — used to widen the assignee
+  // pool when cross-team staffing is enabled.
+  users: ManagedUser[];
+  clientPmIds: number[];
   actingUserName: string;
+  actingUserRole?: string;
   nameOf: (uid: number) => string;
   onClose: () => void;
   onSaved: (msg: string) => void;
+  onFlash: (tone: 'ok' | 'err', text: string) => void;
 }) {
   const isEdit = !!task;
   const create = useCreateTask();
   const update = useUpdateTask();
+  const allowCrossTeam = useCrossTeamStaffing();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -2219,14 +2641,58 @@ function TaskModal({
     setError(null);
   }, [open, task]);
 
-  const hasPM = (project.manager_ids?.length ?? 0) > 0 || project.manager_id != null;
-  // When the project HAS a PM, assign from the client's existing team. When it
-  // has NO PM, a manager can staff it directly: the pool is the acting user +
-  // their reports, and on create the backend makes the acting user the project
-  // PM and adds the chosen assignees to the project roster.
-  const assigneeOptions: PickerOption[] = hasPM
-    ? team.map((m) => ({ id: m.user_id, name: m.full_name, sub: m.assignment_role === 'pm' ? 'PM' : m.role }))
-    : myTeam.map((u) => ({ id: u.id, name: u.full_name, sub: u.role }));
+  const projectPmIds = useMemo<number[]>(() => {
+    const ids = new Set<number>(project.manager_ids ?? []);
+    if (project.manager_id != null) ids.add(project.manager_id);
+    return [...ids];
+  }, [project.manager_ids, project.manager_id]);
+  const hasPM = projectPmIds.length > 0;
+
+  // Subtree guard. A MANAGER must not be able to assign someone ABOVE them in
+  // the org chain (e.g. their own manager). For a manager we restrict the pool
+  // to their subtree (myTeam = themselves + transitive reports). Admins /
+  // viewers / platform-admins manage the whole tenant, so no restriction — a
+  // null set means "allow everyone".
+  const restrictToSubtree = actingUserRole === 'MANAGER';
+  const allowedIds = useMemo(
+    () => (restrictToSubtree ? new Set(myTeam.map((u) => u.id)) : null),
+    [restrictToSubtree, myTeam],
+  );
+
+  // Assignee pool. The backend auto-adds any chosen assignee to the project
+  // roster, so this only governs what the picker OFFERS:
+  //   cross-team ON  → everyone reporting to ANY PM on the client.
+  //   cross-team OFF → the project's PMs and THEIR reports (so a PM's employees
+  //                    show, not just the bare roster) for a PM'd project; else
+  //                    the acting user's reports (PM-less projects).
+  // In every branch we intersect with `allowedIds` so a manager can only reach
+  // into their own subtree, never upward to a manager above them.
+  const assigneeOptions: PickerOption[] = useMemo(() => {
+    let pool: ManagedUser[];
+    if (allowCrossTeam) {
+      pool = staffingPool(users, { pmIds: clientPmIds, clientPmIds, allowCrossTeam: true });
+    } else if (hasPM) {
+      // The project PMs + everyone who reports (transitively) to one of them.
+      const pmSet = new Set(projectPmIds);
+      const ids = new Set<number>(projectPmIds);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        users.forEach((u) => {
+          if (u.manager_id != null && ids.has(u.manager_id) && !ids.has(u.id)) {
+            ids.add(u.id); grew = true;
+          }
+        });
+      }
+      pool = users.filter((u) => ids.has(u.id) && (pmSet.has(u.id) || u.manager_id != null));
+    } else {
+      pool = myTeam;
+    }
+    // Subtree guard: never offer someone the acting manager can't manage.
+    return pool
+      .filter((u) => allowedIds == null || allowedIds.has(u.id))
+      .map((u) => ({ id: u.id, name: u.full_name, sub: u.role }));
+  }, [allowCrossTeam, users, clientPmIds, hasPM, projectPmIds, myTeam, allowedIds]);
   const canStaffSelf = !hasPM && myTeam.length > 0;
 
   const saving = create.isPending || update.isPending;
@@ -2313,6 +2779,9 @@ function TaskModal({
             </p>
           ) : null}
         </div>
+        {isEdit && task ? (
+          <ClientTaskAccessSection clientId={project.client_id} projectId={project.id} taskId={task.id} onFlash={onFlash} />
+        ) : null}
         <div>
           <label className={labelClass}>Description</label>
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Detail, acceptance criteria, or context..." className={textareaClass} />
@@ -2355,6 +2824,7 @@ function ContractModal({
   const isEdit = !!contract;
   const create = useCreateContract();
   const update = useUpdateContract();
+  const uploadDoc = useUploadContractDocument();
 
   const [title, setTitle] = useState('');
   const [kind, setKind] = useState('');
@@ -2362,6 +2832,8 @@ function ContractModal({
   const [end, setEnd] = useState('');
   const [value, setValue] = useState('');
   const [status, setStatus] = useState<ContractStatus>('draft');
+  const [file, setFile] = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2372,10 +2844,11 @@ function ContractModal({
     setEnd(contract?.end_date ?? '');
     setValue(contract?.value != null ? String(contract.value) : '');
     setStatus(contract?.status ?? 'draft');
+    setFile(null);
     setError(null);
   }, [open, contract]);
 
-  const saving = create.isPending || update.isPending;
+  const saving = create.isPending || update.isPending || uploadDoc.isPending;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -2393,13 +2866,27 @@ function ContractModal({
       status,
     };
     try {
+      let contractId: number | undefined;
       if (isEdit && contract) {
         await update.mutateAsync({ clientId, id: contract.id, data: body });
-        onSaved('Contract updated.', contract.id);
+        contractId = contract.id;
       } else {
         const created = await create.mutateAsync({ clientId, data: body });
-        onSaved('Contract created.', (created as Contract)?.id);
+        contractId = (created as Contract)?.id;
       }
+      // Optional in-modal document attach: upload to the (possibly new)
+      // contract once it exists. A failed upload doesn't lose the contract.
+      if (file && contractId != null) {
+        try {
+          await uploadDoc.mutateAsync({ clientId, id: contractId, file });
+        } catch (uerr) {
+          onSaved(isEdit ? 'Contract saved, but the document upload failed.' : 'Contract created, but the document upload failed.', contractId);
+          setError(errText(uerr, 'Document upload failed.'));
+          onClose();
+          return;
+        }
+      }
+      onSaved(isEdit ? 'Contract updated.' : 'Contract created.', contractId);
       onClose();
     } catch (err) {
       setError(errText(err, 'Could not save the contract.'));
@@ -2443,7 +2930,23 @@ function ContractModal({
             </select>
           </div>
         </div>
-        <p className="text-[10.5px] text-muted-foreground">Attach a signed document from the contract row after saving.</p>
+        <div>
+          <label className={labelClass}>Signed document {isEdit && contract?.has_document ? '(replace)' : '(optional)'}</label>
+          <input ref={fileRef} type="file" className="hidden"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
+              <Paperclip className="h-3.5 w-3.5" /> {file ? 'Change file' : 'Attach document'}
+            </Button>
+            <span className="truncate text-[12px] text-muted-foreground">
+              {file ? file.name : (isEdit && contract?.has_document ? (contract.document_name || 'Document attached') : 'No file selected')}
+            </span>
+            {file ? (
+              <button type="button" onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ''; }}
+                className="text-[12px] text-muted-foreground hover:text-foreground">Clear</button>
+            ) : null}
+          </div>
+        </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
@@ -2792,15 +3295,21 @@ function NoteModal({
   const create = useCreateClientNote();
   const update = useUpdateClientNote();
 
-  const [author, setAuthor] = useState('');
   const [date, setDate] = useState('');
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setAuthor(note?.author ?? '');
-    setDate(note?.note_date ?? '');
+    // Default a NEW note's date to today (local YYYY-MM-DD); editing keeps the
+    // existing date. A note is almost always recorded the day it's written.
+    const today = (() => {
+      const d = new Date();
+      const m = `${d.getMonth() + 1}`.padStart(2, '0');
+      const day = `${d.getDate()}`.padStart(2, '0');
+      return `${d.getFullYear()}-${m}-${day}`;
+    })();
+    setDate(note?.note_date ?? today);
     setBody(note?.body ?? '');
     setError(null);
   }, [open, note]);
@@ -2815,7 +3324,6 @@ function NoteModal({
       return;
     }
     const data: ClientNoteBody = {
-      author: author.trim() || null,
       note_date: date || null,
       body: body.trim(),
     };
@@ -2836,15 +3344,10 @@ function NoteModal({
   return (
     <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-lg">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label className={labelClass}>Author</label>
-            <Input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Defaults to you" />
-          </div>
-          <div>
-            <label className={labelClass}>Date</label>
-            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
+        <div>
+          <label className={labelClass}>Date</label>
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <p className="mt-1 text-[11px] text-muted-foreground">The note is recorded under your name automatically.</p>
         </div>
         <div>
           <label className={labelClass}>Note *</label>

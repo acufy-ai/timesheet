@@ -33,6 +33,8 @@ from .user_client_assignment import UserClientAssignment
 from .contract import Contract, ContractStatus
 from .client_extras import ClientContact, ClientRoleRate, ClientNote
 from .client_access_grant import ClientAccessGrant
+from .client_employee_link import ClientEmployeeLink
+from .client_task_review import ClientTaskReview
 from .holiday import Holiday, HolidayType
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
@@ -43,4 +45,4 @@ __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "
            "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment",
            "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
            "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
-           "Holiday", "HolidayType", "ClientAccessGrant"]
+           "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview"]

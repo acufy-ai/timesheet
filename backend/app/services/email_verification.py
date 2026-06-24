@@ -350,6 +350,20 @@ async def _send_modern_invitation_email(
         default_button_label = "Reset my password"
         default_signoff = "Acufy AI Security"
         prefix = "reset_email"
+    elif purpose == "client":
+        # External client-portal invite. Frames it as portal access to shared
+        # work, NOT an internal timesheet account.
+        default_subject = f"{org} has shared project access with you"
+        headline = "You've been given portal access"
+        default_greeting = f"Hi {first_name},"
+        default_body = (
+            f"{org} has invited you to their client portal, where you can view "
+            "and collaborate on the projects and tasks shared with you. "
+            "Set a password to access your portal."
+        )
+        default_button_label = "Set up portal access"
+        default_signoff = f"Sent on behalf of {org}"
+        prefix = "client_invite_email"
     else:
         default_subject = "You're invited to Acufy Timesheet"
         headline = "Welcome to Acufy Timesheet"
@@ -450,6 +464,25 @@ async def send_local_invitation_email(
         user=user,
         invite_url=invite_url,
         purpose="invite",
+        smtp_config=smtp_config,
+        tenant_name=tenant_name,
+        tenant_id=tenant_id,
+    )
+
+
+async def send_client_portal_invitation_email(
+    user: User,
+    invite_url: str,
+    smtp_config: dict | None = None,
+    tenant_name: str | None = None,
+    tenant_id: int | None = None,
+) -> None:
+    """First-time invitation for an external CLIENT-portal user. Same set-password
+    mechanism, but client-portal copy (not the internal-timesheet welcome)."""
+    await _send_modern_invitation_email(
+        user=user,
+        invite_url=invite_url,
+        purpose="client",
         smtp_config=smtp_config,
         tenant_name=tenant_name,
         tenant_id=tenant_id,

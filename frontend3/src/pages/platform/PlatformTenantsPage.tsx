@@ -188,7 +188,7 @@ export function PlatformTenantsPage() {
           action={<Button size="sm" onClick={() => setCreateOpen(true)}>New tenant</Button>}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
           {filtered.map((t) => (
             <TenantCard
               key={t.id}
@@ -260,24 +260,27 @@ function TenantCard({
   };
 
   return (
-    <Card className="cursor-pointer p-4 transition-shadow hover:border-primary/30 hover:shadow-sm" onClick={onOpen}>
-      <div className="flex items-center justify-between">
-        <span className={cn('grid h-10 w-10 place-items-center rounded-xl text-sm font-semibold', avatarTone(tenant.name))}>{initials(tenant.name)}</span>
-        {statusKey === 'active'
-          ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} />
-          : <TonePill tone={STATUS_TONE[statusKey] ?? 'neutral'}>{statusLabel}</TonePill>}
+    <Card className="flex cursor-pointer items-center gap-3 p-3 transition-shadow hover:border-primary/30 hover:shadow-sm" onClick={onOpen}>
+      <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl text-xs font-semibold', avatarTone(tenant.name))}>{initials(tenant.name)}</span>
+
+      {/* Name + slug + processing flag */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-semibold text-foreground">{tenant.name}</p>
+          {statusKey === 'active'
+            ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} />
+            : <TonePill tone={STATUS_TONE[statusKey] ?? 'neutral'}>{statusLabel}</TonePill>}
+        </div>
+        <div className="mt-0.5 flex items-center gap-2">
+          <p className="truncate text-xs text-muted-foreground">/{tenant.slug}</p>
+          {tenant.ingestion_enabled
+            ? <TonePill tone="success">Processing on</TonePill>
+            : <TonePill tone="neutral">Processing off</TonePill>}
+        </div>
       </div>
 
-      <p className="mt-3 truncate text-sm font-semibold text-foreground">{tenant.name}</p>
-      <div className="mt-0.5 flex items-center gap-2">
-        <p className="truncate text-xs text-muted-foreground">/{tenant.slug}</p>
-        {tenant.ingestion_enabled
-          ? <TonePill tone="success">Processing on</TonePill>
-          : <TonePill tone="neutral">Processing off</TonePill>}
-      </div>
-
-      {/* Per-tenant stats from /platform/tenants/stats */}
-      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-3 text-center">
+      {/* Compact inline stats. Hidden on the narrowest widths to keep the card tidy. */}
+      <div className="hidden shrink-0 items-center gap-4 text-center sm:flex">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Admins</div>
           <div className={cn('text-sm', admins === 0 && !statsFailed ? 'font-semibold text-amber-600 dark:text-amber-400' : '')}>
@@ -288,8 +291,8 @@ function TenantCard({
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Users</div>
           <div className="text-sm">{statValue(users)}</div>
         </div>
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Last activity</div>
+        <div className="min-w-[64px]">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Activity</div>
           <div className="text-xs text-muted-foreground">{statsFailed ? 'N/A' : relativeFrom(stats?.last_activity_at)}</div>
         </div>
       </div>

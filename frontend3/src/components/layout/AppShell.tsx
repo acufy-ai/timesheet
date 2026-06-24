@@ -5,6 +5,7 @@ import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavMode } from '@/hooks/useNavMode';
 import { usePublicTenantSettings } from '@/hooks/useAdmin';
+import { isClientUser } from '@/lib/clientRole';
 import { TimerProvider } from '@/contexts/TimerContext';
 import { registerTimerSW } from '@/lib/registerTimerSW';
 import { UtilityBar } from './UtilityBar';
@@ -30,7 +31,12 @@ export function AppShell() {
   // canSwitch = admin OR switching allowed for all OR user is an exception.
   // When a user can't switch, useNavMode pins them to the team default and the
   // nav components hide the switch controls.
-  const tenantSettings = usePublicTenantSettings(isAuthenticated);
+  // Client-side users (legacy CLIENT, plus the two-tier CLIENT_MANAGER /
+  // CLIENT_EMPLOYEE) live entirely in the portal, which has its own minimal nav
+  // and no notifications/tenant-nav chrome. Don't fire the shell's workspace
+  // prefetches for them (they 403 and are pure noise).
+  const isClient = isClientUser(user);
+  const tenantSettings = usePublicTenantSettings(isAuthenticated && !isClient);
   const settings = tenantSettings.data ?? {};
   const teamLayout =
     typeof settings.default_nav_layout === 'string'
@@ -87,7 +93,22 @@ export function AppShell() {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // Carry the full path+query in the URL (a query param survives a hard
+    // refresh; router state does not). LoginPage returns the user here after
+    // re-auth, so a dead session on refresh lands you back on the same page
+    // instead of the default landing page.
+    const dest = `${location.pathname}${location.search}`;
+    const fromParam = dest && dest !== '/' ? `?from=${encodeURIComponent(dest)}` : '';
+    return <Navigate to={`/login${fromParam}`} replace state={{ from: dest }} />;
+  }
+
+  // CLIENT users live entirely in /portal. Guard EVERY workspace route here so a
+  // direct URL, a bookmark, or a stale /dashboard in history can't drop them on
+  // an internal page (which would 403 every widget). LandingRedirect handles the
+  // index route; this covers the rest. /profile stays reachable for self-service.
+  const CLIENT_ALLOWED = ['/portal', '/profile'];
+  if (isClient && !CLIENT_ALLOWED.some((p) => location.pathname.startsWith(p))) {
+    return <Navigate to="/portal" replace />;
   }
 
   // Shell layout for both modes: the UtilityBar is always on top. Below it,
@@ -136,8 +157,12 @@ export function AppShell() {
         pending={pickPending}
       />
 
-      {/* Live timer floating widget (visible whenever a timer is active). */}
-      <FloatingTimer />
+      {/* Live timer floating widget (visible whenever a timer is active).
+          CLIENT users have no timer surface, and it fetches workspace
+          projects/tasks that 403 for them, so skip it for clients. The
+          TimerProvider context stays mounted above so nothing that reads it
+          crashes. */}
+      {!isClient ? <FloatingTimer /> : null}
 
       {/* Applies the tenant's appearance defaults (theme/palette) to a
           brand-new user once their preferences load. Renders nothing. */}

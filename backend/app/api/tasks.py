@@ -26,13 +26,23 @@ from app.models.assignments import TaskAssignee
 from app.models.user import User, UserRole
 from app.api._client_access import require_client_manager, assert_client_access, visible_client_ids
 from app.api.users import _get_descendant_user_ids
-from app.schemas import TaskCreate, TaskResponse, TaskUpdate, TaskWithProject
+from app.schemas import TaskCreate, TaskProgressUpdate, TaskResponse, TaskUpdate, TaskWithProject
 from sqlalchemy.future import select
+from sqlalchemy import or_
 
 
 async def _attach_assignees(db: AsyncSession, tasks):
-    """Attach assignee_ids (transient attr read by TaskResponse.from_attributes)
-    to one task or a list of tasks, in a single query."""
+    """Attach assignee_ids + client_assignees (transient attrs read by
+    TaskResponse.from_attributes) to one task or a list, in a few queries.
+
+    client_assignees = client-side users (employee OR manager) who hold a client
+    access grant on the task (directly, or inherited from a project grant) — so
+    the internal side sees which client person is working on which task. We count
+    managers too, so the row badge matches the task editor's Client access list
+    (which lists every client person, not just employees)."""
+    from app.models.client_access_grant import ClientAccessGrant
+    from app.schemas import ClientAssigneeInfo
+
     single = not isinstance(tasks, list)
     items = [tasks] if single else tasks
     ids = [t.id for t in items]
@@ -47,8 +57,53 @@ async def _attach_assignees(db: AsyncSession, tasks):
         ).all()
         for task_id, user_id in rows:
             by_task.setdefault(task_id, []).append(user_id)
+
+    # Client-employee assignees: grants whose task_id is one of ours, OR whose
+    # project_id owns one of our tasks. Resolve to CLIENT_EMPLOYEE users.
+    client_by_task: dict[int, list[ClientAssigneeInfo]] = {tid: [] for tid in ids}
+    if ids:
+        proj_of_task = {t.id: t.project_id for t in items}
+        proj_ids = set(proj_of_task.values())
+        grants = (await db.execute(
+            select(ClientAccessGrant).where(
+                or_(
+                    ClientAccessGrant.task_id.in_(ids),
+                    ClientAccessGrant.project_id.in_(list(proj_ids) or [-1]),
+                )
+            )
+        )).scalars().all()
+        if grants:
+            uid_set = {g.user_id for g in grants}
+            emp_names = {uid: name for uid, name in (await db.execute(
+                select(User.id, User.full_name).where(
+                    User.id.in_(list(uid_set)),
+                    User.role.in_([
+                        UserRole.CLIENT_EMPLOYEE, UserRole.CLIENT_MANAGER, UserRole.CLIENT,
+                    ]),
+                )
+            )).all()}
+            for g in grants:
+                if g.user_id not in emp_names:
+                    continue
+                info = ClientAssigneeInfo(user_id=g.user_id, full_name=emp_names[g.user_id])
+                if g.task_id in client_by_task:
+                    client_by_task[g.task_id].append(info)
+                elif g.project_id is not None:
+                    # Project grant inherits to every task under that project.
+                    for tid, pid in proj_of_task.items():
+                        if pid == g.project_id:
+                            client_by_task[tid].append(info)
+
     for t in items:
         t.assignee_ids = by_task.get(t.id, [])
+        # De-dup client assignees per task (a user could match via both paths).
+        seen: set[int] = set()
+        uniq: list = []
+        for ci in client_by_task.get(t.id, []):
+            if ci.user_id not in seen:
+                seen.add(ci.user_id)
+                uniq.append(ci)
+        t.client_assignees = uniq
     return tasks
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
@@ -76,10 +131,14 @@ async def list_tasks(
         skip=skip,
         limit=limit,
     )
-    # Managers only see tasks under clients they PM (admins: all).
-    visible = await visible_client_ids(db, current_user)
-    if visible is not None:
-        tasks = [t for t in tasks if t.project and t.project.client_id in visible]
+    # Managers only see tasks under clients they PM (admins: all). Only apply
+    # this PM-client filter for managers: `visible_client_ids` is empty for an
+    # EMPLOYEE/VIEWER and would wrongly drop every task. Employees are already
+    # roster-scoped inside `list_tasks_for_user`.
+    if current_user.role == UserRole.MANAGER:
+        visible = await visible_client_ids(db, current_user)
+        if visible is not None:
+            tasks = [t for t in tasks if t.project and t.project.client_id in visible]
     return await _attach_assignees(db, tasks)
 
 
@@ -134,17 +193,19 @@ async def create_task_endpoint(
     # of anyone). Only enforced when the manager would become the project PM
     # (i.e. the project has no PM yet) — assigning onto an already-staffed project
     # respects that project's existing roster instead.
+    # A MANAGER may only assign themselves or people in their own org subtree —
+    # never someone ABOVE them in the chain (e.g. their own manager). This holds
+    # whether or not the project already has a PM; a staffed project does not
+    # grant a manager reach over people outside their reports.
     if payload.assignee_ids and current_user.role == UserRole.MANAGER:
-        existing_pms = await get_project_manager_ids(db, project.id)
-        if not existing_pms:
-            allowed = await _get_descendant_user_ids(db, current_user.id, current_user.tenant_id)
-            allowed.add(current_user.id)
-            bad = [uid for uid in payload.assignee_ids if uid not in allowed]
-            if bad:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You can only assign people you manage (yourself or your reports).",
-                )
+        allowed = await _get_descendant_user_ids(db, current_user.id, current_user.tenant_id)
+        allowed.add(current_user.id)
+        bad = [uid for uid in payload.assignee_ids if uid not in allowed]
+        if bad:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only assign people you manage (yourself or your reports).",
+            )
 
     # Validate assignees BEFORE create_task commits, so a bad assignee fails
     # the request cleanly (400) instead of leaving an orphan task behind.
@@ -235,6 +296,22 @@ async def update_task_endpoint(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
+    # Manager subtree guard: a MANAGER may only ADD people from their own subtree
+    # (themselves + reports). Anyone already on the task stays (an admin may have
+    # staffed an out-of-subtree specialist); we only block newly introduced ids.
+    if payload.assignee_ids is not None and current_user.role == UserRole.MANAGER:
+        current_assignees = set(await get_task_assignee_ids(db, task.id))
+        added = [uid for uid in payload.assignee_ids if uid not in current_assignees]
+        if added:
+            allowed = await _get_descendant_user_ids(db, current_user.id, current_user.tenant_id)
+            allowed.add(current_user.id)
+            bad = [uid for uid in added if uid not in allowed]
+            if bad:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only assign people you manage (yourself or your reports).",
+                )
+
     updated_task = await update_task(
         db,
         task,
@@ -267,6 +344,74 @@ async def update_task_endpoint(
             ],
         )
     return await _attach_assignees(db, updated_task)
+
+
+@router.patch("/{task_id}/progress")
+async def update_task_progress(
+    task_id: int,
+    payload: TaskProgressUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Scoped task edit for an INTERNAL ASSIGNEE: status and/or description only.
+
+    Mirrors the client-employee portal scope. The full task edit (PUT) is
+    manager-only; this lets a regular employee move their own assigned task
+    along without touching project/assignees/name. Authorized iff the caller is
+    in this task's ``task_assignees``.
+    """
+    from app.models.task import TaskStatus
+
+    task = await get_task_by_id(db, task_id, tenant_id=current_user.tenant_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    is_assignee = (await db.execute(
+        select(TaskAssignee.user_id).where(
+            TaskAssignee.task_id == task_id,
+            TaskAssignee.user_id == current_user.id,
+        )
+    )).first() is not None
+    if not is_assignee:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update tasks assigned to you.",
+        )
+
+    if payload.status is not None:
+        try:
+            task.status = TaskStatus(payload.status)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid status")
+    if payload.description is not None:
+        task.description = payload.description.strip() or None
+    db.add(task)
+
+    if task.tenant_id is not None:
+        await record_activity_events(
+            db,
+            [
+                build_activity_event(
+                    activity_type="TASK_UPDATED",
+                    visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                    tenant_id=task.tenant_id,
+                    actor_user=current_user,
+                    entity_type="task",
+                    entity_id=task.id,
+                    summary=f"{current_user.full_name} updated task {task.name}.",
+                    route="/tasks",
+                    route_params={"taskId": task.id},
+                    metadata={"task_name": task.name},
+                )
+            ],
+        )
+    await db.commit()
+    return {
+        "id": task.id,
+        "status": task.status.value if hasattr(task.status, "value") else (str(task.status) if task.status else None),
+        "description": task.description,
+    }
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -29,6 +29,8 @@ from app.schemas import (
     DashboardRecentActivityItem,
     DashboardSummaryResponse,
     ManagerProjectHealthResponse,
+    ManagerFinancialsResponse, FinancialSummary, ProjectFinancialRow,
+    MyWorkResponse, MyWorkClient, MyWorkProject, MyWorkTask,
     ManagerProjectHealthRow,
     ManagerTeamCapacityEntry,
     ManagerTeamMemberStatus,
@@ -89,9 +91,8 @@ async def _get_direct_active_report_ids(db: AsyncSession, manager_id: int, as_of
 
     Matches the /user-management tree walk (BFS over EmployeeManagerAssignment),
     so the dashboard's team view sees the same people the manager sees on
-    their My Team page: direct reports plus everyone below them, regardless
-    of role. This is broader than the historical EMPLOYEE-only filter, which
-    hid managers' sub-managers and any admin who reported into them.
+    their My Team page: direct reports plus everyone below them (any internal
+    role). External users are excluded — they aren't part of the internal org.
     """
     descendant_ids: set[int] = set()
     frontier: set[int] = {manager_id}
@@ -117,6 +118,10 @@ async def _get_direct_active_report_ids(db: AsyncSession, manager_id: int, as_of
         select(User.id).where(
             User.id.in_(descendant_ids),
             User.is_active.is_(True),
+            # External users (clients/contractors) aren't part of a manager's
+            # internal team; exclude them so the dashboard team view matches the
+            # 'My Team' page (which also filters externals).
+            User.is_external.is_(False),
         )
     )
     return list(active_result.scalars().all())
@@ -133,6 +138,36 @@ async def _get_scoped_employee_ids(db: AsyncSession, current_user: "User") -> li
 
     # VIEWER / ADMIN – whole tenant
     return await _get_all_active_employee_ids(db, tenant_id=current_user.tenant_id)
+
+
+async def _filter_managed_project_ids(
+    db: AsyncSession, project_ids: list[int], tenant_id: Optional[int]
+) -> list[int]:
+    """Keep only projects that have a manager/PM assigned.
+
+    A real live engagement has either a direct ``manager_id`` or at least one
+    ``project_managers`` row. Unassigned seed/abandoned projects carry stray
+    historical time but aren't owned by anyone, so dashboard widgets that claim
+    to show "the team's projects" should exclude them (authorship). Preserves
+    the input ordering.
+    """
+    if not project_ids:
+        return []
+    from app.models.assignments import ProjectManager
+
+    has_direct = set((await db.execute(
+        select(Project.id).where(
+            Project.id.in_(project_ids),
+            Project.manager_id.is_not(None),
+        )
+    )).scalars().all())
+    has_pm = set((await db.execute(
+        select(ProjectManager.project_id).where(
+            ProjectManager.project_id.in_(project_ids)
+        ).distinct()
+    )).scalars().all())
+    managed = has_direct | has_pm
+    return [pid for pid in project_ids if pid in managed]
 
 
 async def _get_all_active_employee_ids(db: AsyncSession, tenant_id: Optional[int] = None) -> list[int]:
@@ -1046,19 +1081,31 @@ async def get_manager_project_health(
     if not team_member_ids:
         return ManagerProjectHealthResponse(rows=[])
 
-    # 1) Find the projects the team has logged to in the last two weeks.
-    project_id_result = await db.execute(
-        select(TimeEntry.project_id)
+    # 1) Find the projects the team has MEANINGFULLY worked on recently. We sum
+    # submitted/approved hours over the lookback and keep only projects above a
+    # small floor — so stray one-off drafts on unrelated projects don't surface
+    # as "the team's projects" with 0 real work. (Window widened to 30d so a
+    # project worked the prior weeks still shows even with a quiet current week.)
+    _MIN_PROJECT_HOURS = Decimal("1")
+    lookback_start = today - timedelta(days=30)
+    project_hours_result = await db.execute(
+        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
         .where(
             TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date >= prior_week_start,
-            TimeEntry.status.in_(
-                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED, TimeEntryStatus.DRAFT]
-            ),
+            TimeEntry.entry_date >= lookback_start,
+            TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
         )
-        .distinct()
+        .group_by(TimeEntry.project_id)
     )
-    project_ids = list(project_id_result.scalars().all())
+    worked_ids = [
+        pid for pid, h in project_hours_result.all()
+        if Decimal(str(h or 0)) >= _MIN_PROJECT_HOURS
+    ]
+    # Authorship gate: a project only counts as "the team's" if it actually has a
+    # manager/PM assigned. Unassigned seed/abandoned projects (no manager_id and
+    # no project_managers row) carry stray approved history but aren't a real
+    # live engagement, so they don't belong on the health board.
+    project_ids = await _filter_managed_project_ids(db, worked_ids, current_user.tenant_id)
     if not project_ids:
         return ManagerProjectHealthResponse(rows=[])
 
@@ -1092,21 +1139,33 @@ async def get_manager_project_health(
     )
     hours_week_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_week_result.all()}
 
-    # 4) Total hours logged against each project ever — for the budget
-    # percentage. estimated_hours on the project model is the
-    # denominator. If there's no estimate, we report None for the
-    # budget fields.
-    hours_total_result = await db.execute(
-        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+    # 4) Dollar budget burn per project: approved/billable revenue (hours x the
+    # frozen/resolved rate) against the project's dollar budget_amount. This is
+    # the money view the dashboard should show — projects carry a budget_amount,
+    # not always an estimated_hours, so the old hours-based % read N/A.
+    from app.services.billing_rates import entry_billed_amount
+
+    revenue_rows = await db.execute(
+        select(TimeEntry)
         .where(
             TimeEntry.project_id.in_(project_ids),
-            TimeEntry.status.in_(
-                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
-            ),
+            # Scope revenue to the same team the financials tile uses (employee
+            # reports only) so the two tiles report the SAME budget %. Without
+            # this, the manager's own PM hours leak into health-tile revenue and
+            # the percentages disagree for the same project.
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+            TimeEntry.is_billable.is_(True),
         )
-        .group_by(TimeEntry.project_id)
     )
-    hours_total_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_total_result.all()}
+    project_by_id = {p.id: p for p in projects}
+    revenue_by_project: dict[int, Decimal] = {}
+    for entry in revenue_rows.scalars().all():
+        proj = project_by_id.get(entry.project_id)
+        revenue_by_project[entry.project_id] = (
+            revenue_by_project.get(entry.project_id, Decimal("0"))
+            + entry_billed_amount(entry, proj)
+        )
 
     rows: list[ManagerProjectHealthRow] = []
     for project in projects:
@@ -1115,14 +1174,17 @@ async def get_manager_project_health(
             days_until_end = (project.end_date - today).days
 
         hours_this_week = hours_week_by_project.get(project.id, Decimal("0"))
-        total_logged = hours_total_by_project.get(project.id, Decimal("0"))
+        revenue = revenue_by_project.get(project.id, Decimal("0"))
 
+        # Budget % = revenue burned against the project's dollar budget.
+        # budget_hours_remaining carries DOLLARS remaining here (the column is
+        # labeled "Budget" and renders the %; the remaining is informational).
         budget_pct: Optional[int] = None
         budget_remaining: Optional[Decimal] = None
-        estimated = project.estimated_hours
-        if estimated is not None and estimated > 0:
-            budget_pct = int(round((total_logged / Decimal(str(estimated))) * 100))
-            budget_remaining = Decimal(str(estimated)) - total_logged
+        budget_amount = project.budget_amount
+        if budget_amount is not None and budget_amount > 0:
+            budget_pct = int(round((revenue / Decimal(str(budget_amount))) * 100))
+            budget_remaining = Decimal(str(budget_amount)) - revenue
 
         # Health classification:
         #  needs-attention: over budget OR more than a month overdue
@@ -1133,7 +1195,7 @@ async def get_manager_project_health(
         is_long_overdue = days_until_end is not None and days_until_end < -30
         is_close_to_end = days_until_end is not None and 0 <= days_until_end <= 7
         is_high_burn = budget_pct is not None and budget_pct > 80
-        no_budget_no_end = estimated is None and project.end_date is None
+        no_budget_no_end = budget_amount is None and project.end_date is None
 
         if is_over_budget or is_long_overdue:
             health = "needs-attention"
@@ -1161,6 +1223,219 @@ async def get_manager_project_health(
     health_order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
     rows.sort(key=lambda r: (health_order.get(r.health, 9), r.project_name.lower()))
     return ManagerProjectHealthResponse(rows=rows)
+
+
+@router.get("/manager-financials", response_model=ManagerFinancialsResponse)
+async def get_manager_financials(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Real financial stats for the manager's scoped team: per-project revenue
+    (approved hours x the frozen/resolved rate), budget burn ($), contract burn,
+    and team utilization. Computed entirely from APPROVED time + rates — no
+    seeded/fabricated figures."""
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from decimal import Decimal
+    from app.models.project import Project as ProjectModel
+    from app.models.client import Client
+    from app.models.contract import Contract
+    from app.services.billing_rates import entry_billed_amount
+
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_ids:
+        return ManagerFinancialsResponse(summary=FinancialSummary(), projects=[])
+
+    # All APPROVED entries for the team (revenue is realized on approval).
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.user_id.in_(team_ids),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+    )).scalars().all()
+    if not entries:
+        return ManagerFinancialsResponse(summary=FinancialSummary(), projects=[])
+
+    proj_ids = {e.project_id for e in entries}
+    projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(proj_ids)),
+                                    ProjectModel.tenant_id == current_user.tenant_id)
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+    contract_ids = {p.contract_id for p in projects.values() if p.contract_id}
+    contracts = {c.id: c for c in (await db.execute(
+        select(Contract).where(Contract.id.in_(list(contract_ids) or [-1]))
+    )).scalars().all()}
+
+    # Only surface projects that are actually managed (have a manager/PM). A
+    # project with stray approved history but no owner — e.g. an abandoned seed
+    # project — reads as a live engagement when it isn't. Same authorship gate
+    # as project-health. Computed up front so summary totals (utilization,
+    # billable/nonbillable) reflect only the managed engagements too.
+    managed_ids = set(await _filter_managed_project_ids(
+        db, list(proj_ids), current_user.tenant_id
+    ))
+
+    # Aggregate per project.
+    agg: dict[int, dict] = {}
+    total_billable = Decimal("0")
+    total_nonbillable = Decimal("0")
+    for e in entries:
+        if e.project_id not in managed_ids:
+            continue
+        p = projects.get(e.project_id)
+        d = agg.setdefault(e.project_id, {"hours": Decimal("0"), "billable": Decimal("0"), "revenue": Decimal("0")})
+        hrs = e.hours or Decimal("0")
+        d["hours"] += hrs
+        if e.is_billable:
+            d["billable"] += hrs
+            total_billable += hrs
+            d["revenue"] += entry_billed_amount(e, p)
+        else:
+            total_nonbillable += hrs
+
+    rows: list[ProjectFinancialRow] = []
+    total_revenue = Decimal("0")
+    total_budget = Decimal("0")
+    for pid, d in agg.items():
+        p = projects.get(pid)
+        if p is None:
+            continue
+        revenue = d["revenue"]
+        total_revenue += revenue
+        budget = p.budget_amount
+        if budget:
+            total_budget += budget
+        budget_pct = int(round(revenue / budget * 100)) if budget and budget > 0 else None
+        budget_remaining = (budget - revenue) if budget is not None else None
+        ct = contracts.get(p.contract_id) if p.contract_id else None
+        contract_pct = (
+            int(round(revenue / ct.value * 100)) if ct and ct.value and ct.value > 0 else None
+        )
+        rows.append(ProjectFinancialRow(
+            project_id=pid, project_name=p.name,
+            client_name=client_name.get(p.client_id, ""),
+            currency=p.currency or "USD",
+            approved_hours=d["hours"], billable_hours=d["billable"], revenue=revenue,
+            budget_amount=budget, budget_used_pct=budget_pct, budget_remaining=budget_remaining,
+            contract_id=ct.id if ct else None, contract_title=ct.title if ct else None,
+            contract_value=ct.value if ct else None, contract_used_pct=contract_pct,
+        ))
+    rows.sort(key=lambda r: r.revenue, reverse=True)
+
+    total_hours = total_billable + total_nonbillable
+    util = int(round(total_billable / total_hours * 100)) if total_hours > 0 else None
+    summary = FinancialSummary(
+        total_revenue=total_revenue, total_budget=total_budget,
+        total_approved_hours=total_hours, billable_hours=total_billable,
+        nonbillable_hours=total_nonbillable, utilization_pct=util,
+    )
+    return ManagerFinancialsResponse(summary=summary, projects=rows)
+
+
+@router.get("/my-work", response_model=MyWorkResponse)
+async def get_my_work(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The calling user's assigned work: projects they have access to + tasks
+    they're assigned, grouped by client, with their logged hours per project."""
+    from decimal import Decimal
+    from app.models.project import Project as ProjectModel
+    from app.models.client import Client
+    from app.models.task import Task as TaskModel
+    from app.models.assignments import UserProjectAccess, TaskAssignee
+
+    # Projects the user has access to.
+    proj_ids = set((await db.execute(
+        select(UserProjectAccess.project_id).where(UserProjectAccess.user_id == current_user.id)
+    )).scalars().all())
+    # Tasks assigned to the user (+ their owning projects).
+    assigned_task_rows = (await db.execute(
+        select(TaskAssignee.task_id).where(TaskAssignee.user_id == current_user.id)
+    )).scalars().all()
+    assigned_task_ids = set(assigned_task_rows)
+
+    if assigned_task_ids:
+        owner_rows = (await db.execute(
+            select(TaskModel.project_id).where(TaskModel.id.in_(list(assigned_task_ids)),
+                                               TaskModel.tenant_id == current_user.tenant_id)
+        )).scalars().all()
+        proj_ids |= set(owner_rows)
+
+    if not proj_ids:
+        return MyWorkResponse()
+
+    projects = (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(proj_ids)),
+                                   ProjectModel.tenant_id == current_user.tenant_id)
+    )).scalars().all()
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+
+    # The user's tasks per project (only their assigned ones).
+    all_assigned_tasks = (await db.execute(
+        select(TaskModel).where(TaskModel.id.in_(list(assigned_task_ids) or [-1]),
+                                TaskModel.tenant_id == current_user.tenant_id)
+    )).scalars().all()
+    tasks_by_project: dict[int, list[MyWorkTask]] = {}
+    for t in all_assigned_tasks:
+        tasks_by_project.setdefault(t.project_id, []).append(MyWorkTask(
+            task_id=t.id, name=t.name,
+            status=t.status.value if hasattr(t.status, "value") else (str(t.status) if t.status else None),
+            priority=t.priority.value if hasattr(t.priority, "value") else (str(t.priority) if t.priority else None),
+            description=t.description,
+            can_edit=True,
+        ))
+
+    # The user's logged hours per project (all + approved).
+    hour_rows = (await db.execute(
+        select(TimeEntry.project_id, TimeEntry.status, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(TimeEntry.user_id == current_user.id,
+               TimeEntry.project_id.in_(list(proj_ids)),
+               TimeEntry.tenant_id == current_user.tenant_id)
+        .group_by(TimeEntry.project_id, TimeEntry.status)
+    )).all()
+    total_h: dict[int, Decimal] = {}
+    approved_h: dict[int, Decimal] = {}
+    for pid, st, hrs in hour_rows:
+        total_h[pid] = total_h.get(pid, Decimal("0")) + Decimal(str(hrs or 0))
+        if st == TimeEntryStatus.APPROVED:
+            approved_h[pid] = approved_h.get(pid, Decimal("0")) + Decimal(str(hrs or 0))
+
+    # Group projects by client.
+    by_client: dict[int, MyWorkClient] = {}
+    total_tasks = 0
+    grand_hours = Decimal("0")
+    for p in projects:
+        mw = MyWorkProject(
+            project_id=p.id, project_name=p.name, code=p.code,
+            status=p.status.value if hasattr(p.status, "value") else (str(p.status) if p.status else None),
+            my_hours=total_h.get(p.id, Decimal("0")),
+            approved_hours=approved_h.get(p.id, Decimal("0")),
+            tasks=tasks_by_project.get(p.id, []),
+        )
+        total_tasks += len(mw.tasks)
+        grand_hours += mw.my_hours
+        cid = p.client_id
+        if cid not in by_client:
+            by_client[cid] = MyWorkClient(client_id=cid, client_name=client_name.get(cid, "Client"), projects=[])
+        by_client[cid].projects.append(mw)
+
+    clients = sorted(by_client.values(), key=lambda c: c.client_name)
+    for c in clients:
+        c.projects.sort(key=lambda x: x.project_name)
+    return MyWorkResponse(
+        clients=clients,
+        total_projects=len(projects),
+        total_tasks=total_tasks,
+        total_hours=grand_hours,
+    )
 
 
 @router.get("/team-rejection-stats", response_model=TeamRejectionStatsResponse)
@@ -1621,12 +1896,17 @@ async def get_team_project_matrix(
             h = cell_hours.get((user_id, pid), Decimal("0"))
             cells.append(TeamProjectMatrixCell(project_id=pid, hours=h))
             row_total += h
+        # Only list people who actually logged hours on the displayed projects.
+        # A report with zero hours everywhere isn't "working on" these projects
+        # and would read as an inconsistency next to the project list.
+        if row_total <= 0:
+            continue
         rows.append(
             TeamProjectMatrixRow(
                 user_id=user_id, full_name=full_name, total_hours=row_total, cells=cells
             )
         )
-    # Busiest employee first; people with no hours fall to the bottom.
+    # Busiest employee first.
     rows.sort(key=lambda r: -r.total_hours)
 
     grand_total = sum(project_totals.values(), Decimal("0"))

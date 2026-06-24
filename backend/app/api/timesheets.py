@@ -490,7 +490,10 @@ async def submit_timesheets(
     """
     _ensure_not_locked(current_user)
     try:
-        submitted_entries = await submit_time_entries(db, current_user.id, submit_request.entry_ids)
+        submitted_entries = await submit_time_entries(
+            db, current_user.id, submit_request.entry_ids,
+            approver_manager_id=submit_request.approver_manager_id,
+        )
         return submitted_entries
     except ValueError as e:
         raise HTTPException(

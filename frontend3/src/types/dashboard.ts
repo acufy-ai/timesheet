@@ -32,7 +32,7 @@ export interface ManagerTeamOverview {
   capacity_next_week: unknown[];
 }
 
-export type ProjectHealth = 'healthy' | 'at-risk' | 'over-budget' | 'not-set';
+export type ProjectHealth = 'good' | 'at-risk' | 'needs-attention' | 'not-set';
 
 export interface ProjectHealthRow {
   project_id: number;
@@ -47,6 +47,67 @@ export interface ProjectHealthRow {
 
 export interface ManagerProjectHealth {
   rows: ProjectHealthRow[];
+}
+
+// GET /dashboard/manager-financials — real financials from approved time x rates.
+export interface ProjectFinancialRow {
+  project_id: number;
+  project_name: string;
+  client_name: string;
+  currency: string;
+  approved_hours: string | number;
+  billable_hours: string | number;
+  revenue: string | number;
+  budget_amount?: string | number | null;
+  budget_used_pct?: number | null;
+  budget_remaining?: string | number | null;
+  contract_id?: number | null;
+  contract_title?: string | null;
+  contract_value?: string | number | null;
+  contract_used_pct?: number | null;
+}
+export interface FinancialSummary {
+  total_revenue: string | number;
+  total_budget: string | number;
+  total_approved_hours: string | number;
+  billable_hours: string | number;
+  nonbillable_hours: string | number;
+  utilization_pct?: number | null;
+  currency: string;
+}
+export interface ManagerFinancials {
+  summary: FinancialSummary;
+  projects: ProjectFinancialRow[];
+}
+
+// GET /dashboard/my-work — an employee's assigned work grouped by client.
+export interface MyWorkTask {
+  task_id: number;
+  name: string;
+  status?: string | null;
+  priority?: string | null;
+  description?: string | null;
+  can_edit?: boolean;
+}
+export interface MyWorkProject {
+  project_id: number;
+  project_name: string;
+  code?: string | null;
+  status?: string | null;
+  my_hours: string | number;
+  approved_hours: string | number;
+  tasks: MyWorkTask[];
+}
+export interface MyWorkClient {
+  client_id: number;
+  client_name: string;
+  projects: MyWorkProject[];
+}
+export interface MyWork {
+  clients: MyWorkClient[];
+  total_projects: number;
+  total_tasks: number;
+  total_hours: string | number;
 }
 
 // GET /dashboard/team-daily-overview — "daily standup" view of the previous

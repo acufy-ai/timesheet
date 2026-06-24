@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft, Copy, Loader2, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Copy, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Button, Card, Input, Modal, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
@@ -44,6 +44,14 @@ export function PlatformTenantDetailPage() {
   const [confirmAction, setConfirmAction] = useState<string | null>(null);
   const [confirmName, setConfirmName] = useState('');
 
+  // Edit-details modal state. Seeded from the tenant when opened.
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editSlug, setEditSlug] = useState('');
+  const [editTz, setEditTz] = useState('');
+  const [editMaxMb, setEditMaxMb] = useState('');
+  const [editErr, setEditErr] = useState<string | null>(null);
+
   if (tenantsQ.isLoading) {
     return <div className="grid place-items-center py-20 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
   }
@@ -61,6 +69,37 @@ export function PlatformTenantDetailPage() {
   async function toggleIngestion() {
     try { await update.mutateAsync({ id: t.id, data: { ingestion_enabled: !t.ingestion_enabled } }); flashAndFade('ok', 'Updated.'); }
     catch (err) { flashAndFade('err', errText(err, 'Could not update the tenant.')); }
+  }
+
+  function openEdit() {
+    setEditName(t.name);
+    setEditSlug(t.slug);
+    setEditTz(t.timezone ?? '');
+    setEditMaxMb(t.max_mailboxes != null ? String(t.max_mailboxes) : '');
+    setEditErr(null);
+    setEditOpen(true);
+  }
+  async function saveEdit() {
+    setEditErr(null);
+    if (!editName.trim()) { setEditErr('Name is required.'); return; }
+    const mb = editMaxMb.trim() === '' ? undefined : Number(editMaxMb);
+    if (mb !== undefined && (!Number.isInteger(mb) || mb < 0)) { setEditErr('Max mailboxes must be a non-negative whole number.'); return; }
+    try {
+      // Slug intentionally not sent — it's load-bearing for DB routing and is
+      // shown read-only.
+      await update.mutateAsync({
+        id: t.id,
+        data: {
+          name: editName.trim(),
+          timezone: editTz.trim() || undefined,
+          ...(mb !== undefined ? { max_mailboxes: mb } : {}),
+        },
+      });
+      flashAndFade('ok', 'Tenant details updated.');
+      setEditOpen(false);
+    } catch (err) {
+      setEditErr(errText(err, 'Could not update the tenant.'));
+    }
   }
   async function runLifecycle() {
     if (!confirmAction) return;
@@ -118,7 +157,12 @@ export function PlatformTenantDetailPage() {
             <StatBox label="Last activity" value={stats?.last_activity_at ? new Date(stats.last_activity_at).toLocaleDateString() : 'never'} />
           </div>
           <Card className="p-4">
-            <p className="mb-3 text-sm font-semibold text-foreground">Details</p>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-semibold text-foreground">Details</p>
+              <Button size="sm" variant="secondary" onClick={openEdit}>
+                <Pencil className="h-3.5 w-3.5" /> Edit details
+              </Button>
+            </div>
             <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
               <Detail label="Tenant ID" value={String(t.id)} />
               <Detail label="Slug" value={t.slug} />
@@ -152,6 +196,37 @@ export function PlatformTenantDetailPage() {
           <ProvisionCard tenantId={t.id} onFlash={flashAndFade} />
         </>
       ) : null}
+
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title={`Edit · ${t.name}`}>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
+            <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Tenant name" autoFocus />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Slug</label>
+            <Input value={editSlug} disabled className="opacity-70" />
+            <p className="mt-1 text-[11px] text-muted-foreground">The slug is fixed — it maps to the tenant's database (acufy_tenant_&lt;slug&gt;). Renaming it is a migration, not an edit.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
+              <Input value={editTz} onChange={(e) => setEditTz(e.target.value)} placeholder="UTC or America/New_York" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Max mailboxes</label>
+              <Input value={editMaxMb} onChange={(e) => setEditMaxMb(e.target.value)} placeholder="e.g. 3" inputMode="numeric" />
+            </div>
+          </div>
+          {editErr ? <p className="text-sm text-rose-600 dark:text-rose-300">{editErr}</p> : null}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button size="sm" onClick={() => void saveEdit()} disabled={update.isPending}>
+              {update.isPending ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>) : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={confirmAction != null} onClose={() => setConfirmAction(null)} title={`Confirm: ${confirmAction?.replace('_', ' ')}`}>
         <div className="space-y-3">

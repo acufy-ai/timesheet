@@ -205,6 +205,47 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": True,
         "sort_order": 70,
     },
+    # ── staffing ───────────────────────────────────────────────────
+    # Who can be staffed onto a project/task. Public so the project and task
+    # editors can read it without an admin round-trip. Default OFF keeps staffing
+    # inside the project's management chain (a PM's direct reports). When ON, the
+    # pool widens to the client's whole management chain + their reports.
+    "allow_cross_team_staffing": {
+        "category": "staffing",
+        "data_type": "bool",
+        "default_value": False,
+        "validation": {},
+        "label": "Allow cross-team staffing",
+        "description": "When off, a project's team and a task's assignees can only be chosen from the project manager's own direct reports. When on, the pool widens to everyone in the client's management chain and their reports, so specialists from other teams can be staffed. Use the exception list below to allow specific managers while this is off.",
+        "is_public": True,
+        "sort_order": 10,
+    },
+    "cross_team_staffing_user_ids": {
+        "category": "staffing",
+        "data_type": "json",
+        "default_value": [],
+        "validation": {},
+        "label": "Cross-team staffing exceptions",
+        "description": "Managers who may staff across teams even when cross-team staffing is turned off for the workspace. Admins can always staff across teams and do not need to be listed.",
+        "is_public": True,
+        "sort_order": 20,
+    },
+    # ── approvals ──────────────────────────────────────────────────
+    # Multi-manager approval routing. Default OFF preserves the legacy behavior
+    # (an employee's single reporting manager approves all of their entries).
+    # When ON: an employee may report to multiple managers; a time entry can be
+    # submitted to a specific manager (approver_manager_id) who alone approves
+    # it, and approval becomes per-entry (partial weeks allowed).
+    "approval_by_assigned_manager": {
+        "category": "approvals",
+        "data_type": "bool",
+        "default_value": False,
+        "validation": {},
+        "label": "Route approvals to the assigned manager",
+        "description": "When off, an employee's reporting manager approves all of their time entries as one weekly batch. When on, an employee can report to multiple managers and each entry is approved by the manager it was submitted to (or any of the employee's managers if unspecified), so two managers can each approve their own hours in the same week.",
+        "is_public": True,
+        "sort_order": 10,
+    },
     # ── time_off ───────────────────────────────────────────────────
     "time_off_past_days": {
         "category": "time_off",
