@@ -960,11 +960,10 @@ async def resend_invite_email_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot send invite: user has no real email address. Add one first.",
         )
-    if not user.auth0_sub:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot send invite: user is not provisioned in Auth0. Use Resend Verification instead.",
-        )
+    # A set-password invite works whether or not the user is Auth0-bound: bound
+    # users sync to Auth0, others set a local bcrypt password via /set-password.
+    # (Previously this hard-required auth0_sub, which broke resend on Auth0-off
+    # deployments like prod.)
 
     token = await issue_invite_token(db, user, purpose="invite")
     await db.commit()
@@ -1027,45 +1026,21 @@ async def send_invite_endpoint(
         tenant = await get_tenant(db, user.tenant_id)
         tenant_name = tenant.name if tenant else None
 
-    if user.auth0_sub:
-        # Auth0 path: issue a /set-password invite token and email the link.
-        from app.services.password_invite import issue_invite_token, build_set_password_url
-        from app.services.email_verification import send_local_invitation_email
-        from app.api.platform_settings import get_effective_smtp_config
+    # Preferred for EVERY deployment: a /set-password invite link (no temp
+    # password). Auth0-bound users sync the password to Auth0; Auth0-off
+    # deployments (e.g. prod) set the local bcrypt hash via the same
+    # /set-password endpoint. Only the rare can't-mint-a-token case falls back
+    # to the legacy temp-password verification flow below.
+    from app.services.password_invite import issue_invite_token, build_set_password_url
+    from app.services.email_verification import send_local_invitation_email
+    from app.api.platform_settings import get_effective_smtp_config
 
-        token = await issue_invite_token(db, user, purpose="invite")
-        await db.commit()
-        invite_url = build_set_password_url(token, purpose="invite")
-        smtp_config = await get_effective_smtp_config(db)
-        await send_local_invitation_email(user, invite_url, smtp_config, tenant_name, user.tenant_id)
-        return MessageResponse(message=f"Invite email sent to {user.email}.")
-
-    # Legacy path: rotate temp password + verification token, email both.
-    if user.email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already verified and not provisioned in Auth0. Use Reset Password instead.",
-        )
-
-    from app.crud.user import _generate_default_password
-    from app.services.email_verification import set_verification_token, send_verification_email
-
-    new_temp_password = _generate_default_password()
-    user.hashed_password = get_password_hash(new_temp_password)
-    user.has_changed_password = False
-    token = set_verification_token(user)
-    db.add(user)
+    token = await issue_invite_token(db, user, purpose="invite")
     await db.commit()
-
-    await send_verification_email(
-        user,
-        token,
-        temporary_password=new_temp_password,
-        tenant_name=tenant_name,
-        tenant_id=user.tenant_id,
-        resend=True,
-    )
-    return MessageResponse(message=f"Verification email sent to {user.email}.")
+    invite_url = build_set_password_url(token, purpose="invite")
+    smtp_config = await get_effective_smtp_config(db)
+    await send_local_invitation_email(user, invite_url, smtp_config, tenant_name, user.tenant_id)
+    return MessageResponse(message=f"Invite email sent to {user.email}.")
 
 
 @router.get("/{user_id:int}", response_model=UserResponse)
