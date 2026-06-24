@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { Button, Card, Input, Modal, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
 import {
+  useAddTenantAdmin,
   useCreateServiceToken,
   useProvisionSystemUser,
   useRevokeServiceToken,
@@ -176,6 +177,7 @@ export function PlatformTenantDetailPage() {
               Email ingestion enabled
             </label>
           </Card>
+          <AddAdminCard tenantId={t.id} onFlash={flashAndFade} />
         </>
       ) : null}
 
@@ -247,6 +249,46 @@ export function PlatformTenantDetailPage() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+// Add an ADMIN to this tenant (created in the tenant DB + emailed a set-password
+// invite). Lets a platform admin seed/grow a tenant's admins anytime.
+function AddAdminCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok' | 'err', m: string) => void }) {
+  const addAdmin = useAddTenantAdmin();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+
+  async function submit() {
+    if (!name.trim() || !email.includes('@')) { onFlash('err', 'Enter a name and a valid email.'); return; }
+    try {
+      const r = await addAdmin.mutateAsync({ id: tenantId, full_name: name.trim(), email: email.trim() });
+      setName(''); setEmail('');
+      onFlash('ok', r.invited ? `Admin added — invite emailed to ${r.email}.` : `Admin added (${r.email}). Invite email could not be sent; resend from their account.`);
+    } catch (err) {
+      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      onFlash('err', typeof d === 'string' ? d : 'Could not add the admin.');
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <p className="mb-1 text-sm font-semibold text-foreground">Add admin</p>
+      <p className="mb-3 text-xs text-muted-foreground">Creates an ADMIN in this workspace and emails them a set-password invite.</p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex-1">
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" />
+        </div>
+        <div className="flex-1">
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Email</label>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@acme.com" />
+        </div>
+        <Button size="sm" onClick={() => void submit()} disabled={addAdmin.isPending}>
+          {addAdmin.isPending ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Adding…</>) : (<><Plus className="h-3.5 w-3.5" /> Add admin</>)}
+        </Button>
+      </div>
+    </Card>
   );
 }
 

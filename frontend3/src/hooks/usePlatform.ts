@@ -31,6 +31,18 @@ export function useCreateTenant() {
   });
 }
 
+export function useAddTenantAdmin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, full_name, email }: { id: number; full_name: string; email: string }) =>
+      platformApi.addTenantAdmin(id, { full_name, email }).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['platform', 'tenants'] });
+      void qc.invalidateQueries({ queryKey: ['platform', 'tenant-stats'] });
+    },
+  });
+}
+
 export function useUpdateTenant() {
   const qc = useQueryClient();
   return useMutation({

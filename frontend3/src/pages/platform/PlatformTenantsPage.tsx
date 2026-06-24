@@ -47,6 +47,8 @@ export function PlatformTenantsPage() {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [isolated, setIsolated] = useState(true);
+  const [adminName, setAdminName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const visible = useMemo(() => visibleQ.data ?? [], [visibleQ.data]);
@@ -98,9 +100,19 @@ export function PlatformTenantsPage() {
     e.preventDefault();
     setError(null);
     if (!name.trim() || !slug.trim()) { setError('Name and slug are required.'); return; }
+    // Admin is optional, but if either field is filled both must be valid.
+    const wantsAdmin = adminName.trim() !== '' || adminEmail.trim() !== '';
+    if (wantsAdmin && (!adminName.trim() || !adminEmail.includes('@'))) {
+      setError('To add an admin, provide both a name and a valid email.'); return;
+    }
     try {
-      const t = await create.mutateAsync({ name: name.trim(), slug: slug.trim().toLowerCase(), is_isolated: isolated });
-      setCreateOpen(false); setName(''); setSlug('');
+      const t = await create.mutateAsync({
+        name: name.trim(),
+        slug: slug.trim().toLowerCase(),
+        is_isolated: isolated,
+        ...(wantsAdmin ? { admin_full_name: adminName.trim(), admin_email: adminEmail.trim() } : {}),
+      });
+      setCreateOpen(false); setName(''); setSlug(''); setAdminName(''); setAdminEmail('');
       navigate(`/platform/tenants/${t.slug}`);
     } catch (err) {
       const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -215,6 +227,24 @@ export function PlatformTenantsPage() {
             <input type="checkbox" checked={isolated} onChange={(e) => setIsolated(e.target.checked)} className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
             Isolated (own database)
           </label>
+
+          {/* Optional first admin: created in the new tenant's DB + emailed a
+              set-password invite. Skip to create an empty tenant. */}
+          <div className="rounded-lg border border-border p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">First admin (optional)</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Admin name</label>
+                <Input value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="Jane Doe" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Admin email</label>
+                <Input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="jane@acme.com" />
+              </div>
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">They get an email invite to set their password. You can add admins later from the tenant page.</p>
+          </div>
+
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setCreateOpen(false)}>Cancel</Button>

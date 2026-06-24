@@ -760,6 +760,8 @@ export const platformApi = {
     api.get<Tenant[]>('/tenants', { params: include_archived ? { include_archived: true } : undefined }),
   tenant: (id: number) => api.get<Tenant>(`/tenants/${id}`),
   createTenant: (data: CreateTenantBody) => api.post<Tenant>('/tenants', data),
+  addTenantAdmin: (id: number, data: { full_name: string; email: string }) =>
+    api.post<{ id: number; email: string; invited: boolean }>(`/tenants/${id}/admins`, data),
   updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; max_mailboxes: number; timezone: string }>) =>
     api.patch<Tenant>(`/tenants/${id}`, data),
   tenantLifecycle: (id: number, action: string, confirmation_token?: string) =>

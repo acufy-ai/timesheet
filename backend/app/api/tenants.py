@@ -11,6 +11,7 @@ from app.db_control import AsyncControlSessionLocal
 from app.models.control.platform_audit import PlatformAuditCategory, PlatformAuditSeverity
 from app.models.service_token import ServiceToken
 from app.schemas import (
+    TenantAdminCreate,
     TenantCreate,
     TenantResponse,
     TenantUpdate,
@@ -29,6 +30,61 @@ from app.services.activity import (
 from app.services.platform_audit import record_platform_audit_event
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
+
+
+async def _seed_tenant_admin(
+    *, tenant, full_name: str, email: str, actor: User
+) -> dict:
+    """Create an ADMIN user in a tenant's own database and email a set-password
+    invite. Routes to the per-tenant DB (isolated) or the legacy shared DB
+    automatically via ``tenant_session(slug)``. Returns a small status dict.
+
+    Platform admins have no tenant of their own, so this can't reuse the
+    request's ``get_db`` session — we open a tenant-scoped session for the
+    TARGET tenant and create the admin there. Used by both tenant-create
+    (optional first admin) and the standalone add-admin endpoint.
+    """
+    from app.db_tenant import tenant_session
+    from app.crud.user import create_user, get_user_by_email
+    from app.schemas import UserCreate
+    from app.services.password_invite import issue_invite_token, build_set_password_url
+    from app.services.email_verification import send_local_invitation_email
+    from app.api.platform_settings import get_effective_smtp_config
+
+    async with tenant_session(tenant.slug) as tdb:
+        existing = await get_user_by_email(tdb, email)
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{email} already belongs to a user in this tenant.",
+            )
+        uc = UserCreate(
+            full_name=full_name,
+            email=email,
+            role=UserRole.ADMIN,
+            is_external=False,
+            is_active=True,
+            tenant_id=tenant.id,
+        )
+        new_admin, _temp_pw, auth0_url = await create_user(tdb, uc)
+        await tdb.commit()
+
+        # Email the set-password invite (best-effort: the admin exists even if
+        # the email fails — it can be resent).
+        invited = False
+        try:
+            token = await issue_invite_token(tdb, new_admin, purpose="invite")
+            await tdb.commit()
+            invite_url = auth0_url or build_set_password_url(token, purpose="invite")
+            smtp_config = await get_effective_smtp_config(tdb)
+            await send_local_invitation_email(
+                new_admin, invite_url, smtp_config, tenant.name, tenant.id
+            )
+            invited = True
+        except Exception:  # noqa: BLE001 — invite email is best-effort
+            invited = False
+
+        return {"id": new_admin.id, "email": email, "invited": invited}
 
 
 @router.get("/mine", response_model=TenantResponse)
@@ -246,7 +302,45 @@ async def create_new_tenant(
         )
         await control_db.commit()
 
+    # Optional first admin. Created in the tenant's own DB (isolated or shared)
+    # and emailed a set-password invite. Best-effort: a failure here does NOT
+    # roll back the tenant (it already exists + is provisioned) — the PA can add
+    # an admin afterward via the add-admin endpoint.
+    if tenant_in.admin_full_name and tenant_in.admin_email:
+        try:
+            await _seed_tenant_admin(
+                tenant=tenant,
+                full_name=tenant_in.admin_full_name,
+                email=str(tenant_in.admin_email),
+                actor=current_user,
+            )
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 — never block tenant create on admin seed
+            pass
+
     return tenant
+
+
+@router.post("/{tenant_id}/admins", status_code=status.HTTP_201_CREATED)
+async def add_tenant_admin_endpoint(
+    tenant_id: int,
+    payload: TenantAdminCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("PLATFORM_ADMIN")),
+):
+    """Add an ADMIN to an existing tenant (PLATFORM_ADMIN only) and email a
+    set-password invite."""
+    tenant = await get_tenant(db, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    result = await _seed_tenant_admin(
+        tenant=tenant,
+        full_name=payload.full_name,
+        email=str(payload.email),
+        actor=current_user,
+    )
+    return result
 
 
 @router.get("/{tenant_id}", response_model=TenantResponse)

@@ -46,6 +46,9 @@ export interface CreateTenantBody {
   name: string;
   slug: string;
   is_isolated?: boolean;
+  // Optional first admin to seed at create time.
+  admin_full_name?: string;
+  admin_email?: string;
 }
 
 // GET /platform/dashboard/summary

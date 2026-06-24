@@ -1382,6 +1382,16 @@ class TenantCreate(BaseModel):
     # safe at onboarding (no data to migrate). For existing tenants,
     # use the migrate-then-flip procedure.
     is_isolated: bool = Field(default=False)
+    # Optional first admin to seed at create time. When both are present the
+    # API creates an ADMIN in the new tenant and emails a set-password invite.
+    admin_full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    admin_email: Optional[EmailStr] = None
+
+
+class TenantAdminCreate(BaseModel):
+    """Create an admin in an existing tenant (PLATFORM_ADMIN only)."""
+    full_name: str = Field(..., min_length=1, max_length=255)
+    email: EmailStr
 
 
 class TenantUpdate(BaseModel):
