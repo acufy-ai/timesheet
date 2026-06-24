@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   MoreVertical,
-  Pencil,
   KeyRound,
   LockOpen,
   Send,
@@ -13,12 +12,11 @@ import {
 
 import type { ManagedUser } from '@/types/admin';
 
-// Per-row kebab menu mirroring frontend2's UserActionMenu: Edit, Reset
-// password, Send invite, Activate/Deactivate, Delete. Closes on outside click
-// or Escape.
+// Per-row kebab menu: Reset password, Send invite, Activate/Deactivate, Delete.
+// (Edit is NOT here — it's a dedicated icon button next to the menu, so a menu
+// entry would be redundant.) Closes on outside click or Escape.
 export function UserActionMenu({
   user,
-  onEdit,
   onResetPassword,
   onSendInvite,
   onToggleActive,
@@ -27,7 +25,6 @@ export function UserActionMenu({
   onUnlock,
 }: {
   user: ManagedUser;
-  onEdit: () => void;
   onResetPassword: () => void;
   onSendInvite: () => void;
   onToggleActive: () => void;
@@ -68,9 +65,6 @@ export function UserActionMenu({
       </button>
       {open ? (
         <div className="absolute right-0 z-30 mt-1 w-52 rounded-xl border border-border bg-card p-1 shadow-xl">
-          <button type="button" className={item} onClick={run(onEdit)}>
-            <Pencil className="h-4 w-4 text-muted-foreground" /> Edit
-          </button>
           {onViewTimesheets ? (
             <button type="button" className={item} onClick={run(onViewTimesheets)}>
               <CalendarClock className="h-4 w-4 text-muted-foreground" /> View timesheets

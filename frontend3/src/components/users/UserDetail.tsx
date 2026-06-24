@@ -70,7 +70,9 @@ export function UserDetail(props: Props) {
   return (
     <div className="min-w-0">
       {/* ── Hero (soft theme-blended) ── */}
-      <div className="overflow-hidden rounded-2xl border border-border bg-primary/[0.05]">
+      {/* No overflow-hidden: the actions dropdown opens below the hero and must
+          not be clipped by the card edge. */}
+      <div className="rounded-2xl border border-border bg-primary/[0.05]">
         <div className="flex items-start gap-4 px-6 py-5">
           <span className={cn('grid h-14 w-14 shrink-0 place-items-center rounded-2xl text-lg font-semibold ring-2 ring-primary/15', avatarTone(user.full_name))}>
             {initials(user.full_name)}
@@ -90,12 +92,11 @@ export function UserDetail(props: Props) {
           <div className="flex shrink-0 items-center gap-1.5">
             {isAdmin ? (
               <>
-                <Button variant="secondary" size="sm" onClick={() => props.onEdit(user)}>
-                  <Pencil className="h-4 w-4" /> Edit user
+                <Button variant="secondary" size="sm" aria-label="Edit user" title="Edit user" onClick={() => props.onEdit(user)}>
+                  <Pencil className="h-4 w-4" />
                 </Button>
                 <UserActionMenu
                   user={user}
-                  onEdit={() => props.onEdit(user)}
                   onResetPassword={() => props.onResetPassword(user)}
                   onSendInvite={() => props.onSendInvite(user)}
                   onToggleActive={() => props.onToggleActive(user)}
