@@ -60,6 +60,58 @@ async def _mirror_password_to_shared_db(email: str, hashed_password: str) -> Non
         logger.error("shared-DB password mirror failed for %s: %s", email, exc)
 
 
+async def _find_tenant_slug_for_token_jti(jti: str, email: str):
+    """Return the slug of the DB whose password_invite_tokens holds this jti.
+
+    Returns:
+      - a slug string  → token lives in that isolated tenant's DB
+      - None           → token lives in the shared DB
+      - False          → not found in shared OR any isolated tenant (truly bad)
+
+    We resolve by jti (globally unique) instead of email, so a reused email
+    across tenants can't send us to the wrong DB. We narrow the isolated scan to
+    tenants that actually contain the email, to keep it cheap."""
+    from sqlalchemy import text
+    from app.db import AsyncSessionLocal
+    from app.db_tenant import tenant_session
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import ControlTenant
+    from app.crud.user import get_users_by_email as _get_all
+
+    async def _jti_here(session) -> bool:
+        return (await session.execute(
+            text("SELECT 1 FROM password_invite_tokens WHERE jti = :j LIMIT 1"),
+            {"j": jti},
+        )).scalar_one_or_none() is not None
+
+    # Shared DB first (covers non-isolated tenants).
+    async with AsyncSessionLocal() as shared_db:
+        if await _jti_here(shared_db):
+            return None
+        candidates = await _get_all(shared_db, email)
+
+    # Isolated tenants the email appears in — check each for the jti.
+    tenant_ids = {c.tenant_id for c in candidates if c.tenant_id is not None}
+    if tenant_ids:
+        async with AsyncControlSessionLocal() as cdb:
+            rows = (await cdb.execute(
+                select(ControlTenant).where(
+                    ControlTenant.id.in_(list(tenant_ids)),
+                    ControlTenant.is_isolated == True,  # noqa: E712
+                )
+            )).scalars().all()
+        for trow in rows:
+            if not trow.db_name:
+                continue
+            try:
+                async with tenant_session(trow.slug) as tdb:
+                    if await _jti_here(tdb):
+                        return trow.slug
+            except (LookupError, ValueError):
+                continue
+    return False
+
+
 async def _find_user_across_tenant_dbs(email: str) -> tuple[User, str | None]:
     """Resolve an email to (user, tenant_slug) by checking shared + tenants.
 
@@ -194,12 +246,20 @@ async def set_password_via_invitation(
     try:
         peek = _jwt.decode(body.token, settings.secret_key, algorithms=[settings.algorithm])
         email = peek.get("email")
+        jti = peek.get("jti")
     except _JWTError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired link.")
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid link.")
 
-    user, tenant_slug = await _find_user_across_tenant_dbs(email)
+    # Resolve the DB that actually OWNS this token by its jti, not by email.
+    # An email can exist in several tenants (migration 054), so resolving by
+    # email alone can land on the wrong tenant's DB and the token's jti won't be
+    # there → a confusing "Invalid link". The invite token row lives in exactly
+    # one tenant's DB; find that one.
+    tenant_slug = await _find_tenant_slug_for_token_jti(jti, email) if jti else None
+    if tenant_slug is False:  # sentinel: scanned everywhere, jti not found
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid link.")
 
     async def _do(session: AsyncSession) -> tuple[User, str]:
         try:
