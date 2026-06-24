@@ -263,14 +263,24 @@ function AccessCard({ user, isAdmin, nameById, onFlash, editing, onEdit, onClose
   const update = useUpdateUser();
   const [role, setRole] = useState(user.role);
   const [extraPortals, setExtraPortals] = useState<string[]>((user.roles ?? []).filter((r) => r !== user.role));
-  const [managerId, setManagerId] = useState<number | ''>(user.manager_id ?? '');
+  // A user can report to MULTIPLE managers (employee_manager_assignments is
+  // many-to-many). Seed from manager_ids; fall back to the single manager_id for
+  // older payloads. The first id is treated as primary (org-chart parent).
+  const seedManagerIds = (u: ManagedUser) =>
+    (u.manager_ids && u.manager_ids.length ? u.manager_ids
+      : u.manager_id != null ? [u.manager_id] : []);
+  const [managerIds, setManagerIds] = useState<number[]>(seedManagerIds(user));
   const [canReview, setCanReview] = useState(!!user.can_review);
   const [active, setActive] = useState(user.is_active);
 
   useEffect(() => {
     setRole(user.role); setExtraPortals((user.roles ?? []).filter((r) => r !== user.role));
-    setManagerId(user.manager_id ?? ''); setCanReview(!!user.can_review); setActive(user.is_active);
+    setManagerIds(seedManagerIds(user)); setCanReview(!!user.can_review); setActive(user.is_active);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id, editing]);
+
+  const toggleManager = (id: number) =>
+    setManagerIds((s) => s.includes(id) ? s.filter((x) => x !== id) : [...s, id]);
 
   const togglePortal = (p: string) => setExtraPortals((s) => s.includes(p) ? s.filter((x) => x !== p) : [...s, p]);
 
@@ -278,7 +288,10 @@ function AccessCard({ user, isAdmin, nameById, onFlash, editing, onEdit, onClose
     try {
       await update.mutateAsync({ id: user.id, data: {
         role, roles: [role, ...extraPortals.filter((p) => p !== role)],
-        manager_id: managerId === '' ? null : Number(managerId),
+        // Multi-manager: send the full set + the primary (first selected).
+        // Empty list clears all managers.
+        manager_ids: managerIds,
+        primary_manager_id: managerIds.length ? managerIds[0] : null,
         can_review: canReview, is_active: active,
       } });
       onFlash('ok', 'Access updated.'); onClose();
@@ -310,12 +323,34 @@ function AccessCard({ user, isAdmin, nameById, onFlash, editing, onEdit, onClose
               </button>
             </div>
           </div>
-          <label className="block"><DT>Manager</DT>
-            <select className={inputCls()} value={managerId} onChange={(e) => setManagerId(e.target.value === '' ? '' : Number(e.target.value))}>
-              <option value="">No manager</option>
-              {(managersQ.data ?? []).filter((m) => m.id !== user.id).map((m) => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-            </select>
-          </label>
+          <div className="block">
+            <DT>Managers</DT>
+            <div className="mt-1 flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-border p-1.5">
+              {(managersQ.data ?? []).filter((m) => m.role === 'MANAGER' || m.role === 'ADMIN').filter((m) => m.id !== user.id).length === 0 ? (
+                <p className="px-1.5 py-1 text-[12px] text-muted-foreground">No managers available.</p>
+              ) : (
+                (managersQ.data ?? [])
+                  .filter((m) => (m.role === 'MANAGER' || m.role === 'ADMIN') && m.id !== user.id)
+                  .map((m) => {
+                    const checked = managerIds.includes(m.id);
+                    const isPrimary = checked && managerIds[0] === m.id;
+                    return (
+                      <button key={m.id} type="button" onClick={() => toggleManager(m.id)}
+                        className={cn('flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] hover:bg-primary/5',
+                          checked && 'bg-primary/[0.06]')}>
+                        <span className={cn('grid h-4 w-4 shrink-0 place-items-center rounded border',
+                          checked ? 'border-primary bg-primary text-primary-foreground' : 'border-border')}>
+                          {checked ? <Check className="h-3 w-3" /> : null}
+                        </span>
+                        <span className="flex-1 truncate">{m.full_name}</span>
+                        {isPrimary ? <span className="rounded-full bg-muted px-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Primary</span> : null}
+                      </button>
+                    );
+                  })
+              )}
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">Pick one or more. The first selected is the primary manager (shown in lists + the org chart).</p>
+          </div>
           <label className="flex items-center gap-2.5 text-[13px]"><input type="checkbox" className="h-4 w-4" checked={active} onChange={(e) => setActive(e.target.checked)} /> Active (can sign in)</label>
         </div>
       </CardShell>
@@ -327,7 +362,17 @@ function AccessCard({ user, isAdmin, nameById, onFlash, editing, onEdit, onClose
       <div className="grid grid-cols-[140px_1fr] gap-x-3.5 gap-y-3">
         <DT>Role</DT><DD><RoleBadge role={user.role} /></DD>
         <DT>Additional portals</DT><DD>{extra.length ? <span className="flex flex-wrap gap-1.5">{extra.map((r) => <RoleBadge key={r} role={r} />)}</span> : <Muted>None</Muted>}</DD>
-        <DT>Manager</DT><DD>{user.manager_id ? (nameById.get(user.manager_id) ?? `#${user.manager_id}`) : <Muted>No manager</Muted>}</DD>
+        <DT>{(user.manager_ids?.length ?? 0) > 1 ? 'Managers' : 'Manager'}</DT>
+        <DD>{
+          (user.manager_ids && user.manager_ids.length)
+            ? <span className="flex flex-wrap gap-1.5">{user.manager_ids.map((id, i) => (
+                <span key={id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[12px]">
+                  {nameById.get(id) ?? `#${id}`}{i === 0 && user.manager_ids!.length > 1 ? <span className="text-[9px] uppercase tracking-wide text-muted-foreground">primary</span> : null}
+                </span>
+              ))}</span>
+            : user.manager_id ? (nameById.get(user.manager_id) ?? `#${user.manager_id}`)
+            : <Muted>No manager</Muted>
+        }</DD>
         <DT>Reviewer access</DT><DD>{user.can_review ? <TonePill tone="info">Can review ingestion queue</TonePill> : <Muted>No</Muted>}</DD>
         <DT>Active</DT><DD>{user.is_active ? <TonePill tone="success">Can sign in</TonePill> : <TonePill tone="neutral">Disabled</TonePill>}</DD>
       </div>
