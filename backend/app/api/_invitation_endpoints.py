@@ -39,6 +39,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
+async def _mirror_password_to_shared_db(email: str, hashed_password: str) -> None:
+    """Copy a bcrypt hash into the shared login DB for an isolated tenant's user.
+
+    Login resolves email -> tenant via the shared ``users`` table and, on
+    Auth0-disabled deployments, verifies the bcrypt hash there. The canonical row
+    lives in the per-tenant DB, so after an invite set-password we must update the
+    shared mirror too or the user still can't log in. Best-effort + logged."""
+    from sqlalchemy import text
+    from app.db import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as shared_db:
+            await shared_db.execute(
+                text("UPDATE users SET hashed_password = :h, has_changed_password = true "
+                     "WHERE email = :email"),
+                {"h": hashed_password, "email": email},
+            )
+            await shared_db.commit()
+    except Exception as exc:  # noqa: BLE001 — best-effort; per-tenant row is set
+        logger.error("shared-DB password mirror failed for %s: %s", email, exc)
+
+
 async def _find_user_across_tenant_dbs(email: str) -> tuple[User, str | None]:
     """Resolve an email to (user, tenant_slug) by checking shared + tenants.
 
@@ -195,27 +216,37 @@ async def set_password_via_invitation(
                 status_code=code_to_status.get(exc.code, status.HTTP_400_BAD_REQUEST),
                 detail=str(exc),
             )
-        if not u.auth0_sub:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This account is not bound to Auth0. Contact your admin.",
-            )
+        # Two password backends:
+        #  - Auth0 (when configured AND the user is Auth0-bound): set the
+        #    password via the Management API.
+        #  - Local bcrypt (Auth0 not configured for this deployment, OR the user
+        #    has no auth0_sub): set the hashed_password column directly. Prod
+        #    runs without Auth0, so a freshly-created admin is bcrypt-only and
+        #    MUST be able to set its password here — previously this 409'd
+        #    ("not bound to Auth0"), which broke invite-accept entirely.
+        use_auth0 = bool(u.auth0_sub) and settings.auth0_mgmt_enabled
+        if use_auth0:
+            # Try Auth0 BEFORE consuming the token so a policy rejection lets
+            # the user retry.
+            try:
+                await auth0_mgmt.set_user_password(
+                    sub=u.auth0_sub,
+                    password=body.new_password,
+                    mark_email_verified=True,
+                )
+            except auth0_mgmt.Auth0MgmtError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                )
+        else:
+            # Local bcrypt: set the per-tenant hash now; mirror to the shared
+            # login DB below so login (which resolves email -> tenant via the
+            # shared users table, then verifies bcrypt) works for this user.
+            from app.core.security import get_password_hash
+            u.hashed_password = get_password_hash(body.new_password)
 
-        # Try to set the password BEFORE consuming the token so a
-        # policy rejection lets the user retry.
-        try:
-            await auth0_mgmt.set_user_password(
-                sub=u.auth0_sub,
-                password=body.new_password,
-                mark_email_verified=True,
-            )
-        except auth0_mgmt.Auth0MgmtError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            )
-
-        # Auth0 said yes — consume token, flip flags, commit.
+        # Password accepted — consume token, flip flags, commit.
         await consume_invite_token(session, row)
         u.has_changed_password = True
         if not u.email_verified:
@@ -223,6 +254,13 @@ async def set_password_via_invitation(
             u.email_verified_at = datetime.now(timezone.utc)
         session.add(u)
         await session.commit()
+
+        # Mirror the bcrypt hash into the shared login DB so the fallback
+        # auth path can verify it. No-op when the tenant isn't isolated (the
+        # shared and per-tenant rows are the same).
+        if not use_auth0 and tenant_slug:
+            await _mirror_password_to_shared_db(u.email, u.hashed_password)
+
         return u, row.purpose
 
     if tenant_slug:
