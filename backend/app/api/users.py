@@ -1140,6 +1140,7 @@ async def create_new_user(
             send_verification_email,
             send_local_invitation_email,
         )
+        from app.services.password_invite import issue_invite_token, build_set_password_url
         from app.api.platform_settings import get_effective_smtp_config
         new_user, temp_password, auth0_invite_url = await create_user(db, user_create)
 
@@ -1151,14 +1152,20 @@ async def create_new_user(
             and provided_real_email
         )
 
-        # When Auth0 provisioning succeeded the create_user CRUD also
-        # issued a local /set-password invite URL (returned as
-        # auth0_invite_url for historical reasons — it's actually our
-        # own token URL now, pointing at /set-password?token=...).
-        # Falls back to the legacy verification email + temp password
-        # flow when Auth0 is disabled or provisioning failed.
+        # Preferred onboarding for EVERY deployment is the "set your password"
+        # invite link — never a temp password shown on screen or emailed.
+        #   - Auth0 on  → create_user already minted the invite URL (auth0_invite_url).
+        #   - Auth0 off → mint our OWN set-password token here (same flow the
+        #     /set-password endpoint consumes). This is the prod path; before
+        #     this it fell back to the legacy verification email + a temp
+        #     password surfaced to the admin.
+        # Only fall back to a temp password if we somehow can't mint a token.
         token: str | None = None
-        use_local_invite = bool(auth0_invite_url) and send_invitation
+        invite_url: str | None = auth0_invite_url
+        if send_invitation and not invite_url:
+            invite_token = await issue_invite_token(db, new_user, purpose="invite")
+            invite_url = build_set_password_url(invite_token, purpose="invite")
+        use_local_invite = bool(invite_url) and send_invitation
         if send_invitation and not use_local_invite:
             token = set_verification_token(new_user)
             db.add(new_user)
@@ -1176,7 +1183,7 @@ async def create_new_user(
         if use_local_invite:
             background_tasks.add_task(
                 send_local_invitation_email,
-                new_user, auth0_invite_url, smtp_config, tenant_name,
+                new_user, invite_url, smtp_config, tenant_name,
                 new_user.tenant_id,
             )
         elif send_invitation and token is not None:
@@ -1248,9 +1255,10 @@ async def create_new_user(
         await record_activity_events(db, activity_events)
         return {
             "user": new_user,
-            # Auth0 owns the password when provisioning succeeded — the
-            # temp bcrypt one we generated is never shown to the user,
-            # so don't leak it back to the admin UI either.
+            # When a set-password invite was sent (Auth0 or our own token),
+            # the user sets their own password — the temp bcrypt one we
+            # generated is never shown to the user, so don't leak it to the
+            # admin UI either. Only surfaced in the rare no-invite fallback.
             "temporary_password": None if use_local_invite else temp_password,
             "verification_email_sent": send_invitation,
         }

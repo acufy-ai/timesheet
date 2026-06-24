@@ -60,6 +60,26 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
     return await get_user_by_id(db, alias_row)
 
 
+async def get_users_by_email(db: AsyncSession, email: str) -> list[User]:
+    """All users sharing a primary email. An email is unique per (tenant, email),
+    not globally (migration 054), so the same address can exist in several
+    tenants. Login uses this to disambiguate by password. Ordered by tenant_id
+    for deterministic results."""
+    normalized_email = email.strip().lower()
+    rows = (await db.execute(
+        select(User)
+        .where(User.email == normalized_email)
+        .options(
+            selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
+            selectinload(User.project_access),
+            selectinload(User.task_access),
+        )
+        .order_by(User.tenant_id)
+    )).scalars().all()
+    return list(rows)
+
+
 async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
     """Get user by username."""
     normalized_username = username.strip().lower()

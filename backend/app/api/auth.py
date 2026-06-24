@@ -613,31 +613,58 @@ async def login(
         if auth0_result is not None:
             return auth0_result
 
-    # Look up by email in shared DB, then re-fetch from the tenant DB
-    # if the tenant is isolated (source of truth for password + lockout).
-    user = await get_user_by_email(db, login_request.email)
+    # Look up by email in the shared DB. An email is unique only per tenant
+    # (migration 054), so the SAME address can belong to accounts in several
+    # tenants. We disambiguate by password: the candidate whose password
+    # verifies is the one the user meant. This prevents silently logging into
+    # the wrong tenant when an email is reused. For each candidate we verify
+    # against its EFFECTIVE hash (the per-tenant DB hash for isolated tenants,
+    # else the shared row's).
+    from app.crud.user import get_users_by_email as _get_users_by_email
+    from app.db_tenant import tenant_session as _tenant_session
 
-    if not user:
+    candidates = await _get_users_by_email(db, login_request.email)
+    if not candidates:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
 
-    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
-    use_tenant_db = bool(tenant_slug)
-
-    if use_tenant_db:
-        from app.db_tenant import tenant_session
+    async def _resolve_candidate(cand):
+        """Return (effective_user, tenant_slug, use_tenant_db) for a candidate,
+        re-fetching from its per-tenant DB when isolated."""
+        c_slug = await _resolve_tenant_slug(db, cand.tenant_id)
+        if not c_slug:
+            return cand, None, False
         try:
-            async with tenant_session(tenant_slug) as tenant_db:
-                refreshed = await get_user_by_email(tenant_db, login_request.email)
+            async with _tenant_session(c_slug) as t_db:
+                refreshed = await get_user_by_email(t_db, login_request.email)
             if refreshed is not None:
-                user = refreshed
-            else:
-                # Tenant DB doesn't know this email; fall back to shared.
-                use_tenant_db = False
+                return refreshed, c_slug, True
+            return cand, c_slug, False  # tenant DB lacks the email; use shared row
         except (LookupError, ValueError):
-            use_tenant_db = False
+            return cand, c_slug, False
+
+    if len(candidates) == 1:
+        user, tenant_slug, use_tenant_db = await _resolve_candidate(candidates[0])
+    else:
+        # Reused email across tenants: pick the account whose password matches.
+        # Skip locked accounts so a lockout on one tenant doesn't mask a valid
+        # login to another. If none match, fall through with the first candidate
+        # so the normal failed-password handling (lockout, generic 401) runs.
+        chosen = None
+        for cand in candidates:
+            eff_user, c_slug, c_use_tenant = await _resolve_candidate(cand)
+            locked = bool(eff_user.locked_until and eff_user.locked_until > datetime.now(timezone.utc))
+            if not locked and eff_user.hashed_password and verify_password(
+                login_request.password, eff_user.hashed_password
+            ):
+                chosen = (eff_user, c_slug, c_use_tenant)
+                break
+        if chosen is not None:
+            user, tenant_slug, use_tenant_db = chosen
+        else:
+            user, tenant_slug, use_tenant_db = await _resolve_candidate(candidates[0])
 
     # Check if account is locked
     if user.locked_until and user.locked_until > datetime.now(timezone.utc):
