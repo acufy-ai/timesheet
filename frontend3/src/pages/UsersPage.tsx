@@ -5,6 +5,7 @@ import { Download, FolderX, Network, Plus, Search, Upload, Users as UsersIcon } 
 import { Button, Card, Empty, Input, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import {
+  useAssignableUsers,
   useBulkDeleteUsers, useClients, useDeleteUser, useSendInvite, useUnlockTimesheet,
   useUpdateUser, useUsers, useUsersPaged,
 } from '@/hooks/useAdmin';
@@ -38,10 +39,11 @@ export function UsersPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
-  const [audienceFilter, setAudienceFilter] = useState<'all' | 'internal' | 'external'>('all');
+  const [audienceFilter, setAudienceFilter] = useState<'all' | 'internal' | 'external' | 'client'>('all');
   const [attentionFilter, setAttentionFilter] = useState<'all' | 'no_manager' | 'unverified'>('all');
   const [page, setPage] = useState(1);
   const [activeId, setActiveId] = useState<number | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
 
   // Modals / overlays
   const [editing, setEditing] = useState<ManagedUser | null>(null);
@@ -105,11 +107,19 @@ export function UsersPage() {
     (clientsQ.data ?? []).forEach((c) => m.set(c.id, c.name));
     return m;
   }, [clientsQ.data]);
+  // Full tenant directory for resolving names (e.g. a report's manager).
+  // /users/assignable is available to managers too — unlike the admin-only
+  // unpaged roster (`all`) — so a manager's My Team can still show their own
+  // name as the "Manager" of each report instead of "None"/"#5".
+  const assignableQ = useAssignableUsers();
   const nameById = useMemo(() => {
     const m = new Map<number, string>();
+    (assignableQ.data ?? []).forEach((u) => m.set(u.id, u.full_name));
     all.forEach((u) => m.set(u.id, u.full_name));
+    pageUsers.forEach((u) => m.set(u.id, u.full_name));
+    if (user) m.set(user.id, user.full_name);
     return m;
-  }, [all]);
+  }, [assignableQ.data, all, pageUsers, user]);
 
   const update = useUpdateUser();
   const del = useDeleteUser();
@@ -262,7 +272,29 @@ export function UsersPage() {
           <Card className="flex flex-wrap items-center gap-2.5 p-3">
             <div className="relative min-w-[220px] flex-1 max-w-[420px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-[30px] rounded-full pl-9" placeholder="Search people..." value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input className="h-[30px] rounded-full pl-9" placeholder="Search people..." value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)} />
+              {/* Typeahead: live matches from the current page; click to jump. */}
+              {searchFocused && search.trim() && pageUsers.length ? (
+                <div className="absolute left-0 right-0 top-[34px] z-20 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-card shadow-lg">
+                  {pageUsers.slice(0, 8).map((u) => (
+                    <button key={u.id} type="button"
+                      onMouseDown={(e) => { e.preventDefault(); setActiveId(u.id); setSearchFocused(false); }}
+                      className="flex w-full items-center gap-2 border-b border-border/40 px-3 py-2 text-left last:border-0 hover:bg-primary/[0.05]">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium">{u.full_name}</span>
+                        <span className="block truncate text-[11.5px] text-muted-foreground">{u.email}</span>
+                      </span>
+                      <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{u.role}</span>
+                    </button>
+                  ))}
+                  {total > pageUsers.slice(0, 8).length ? (
+                    <div className="px-3 py-1.5 text-[11px] text-muted-foreground">Showing top matches — refine to narrow.</div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             {isAdmin ? (
               <>
@@ -277,7 +309,7 @@ export function UsersPage() {
                     <option value="all">Any status</option><option value="active">Active</option><option value="inactive">Inactive</option>
                   </FilterSelect>
                   <FilterSelect value={audienceFilter} onChange={(v) => setAudienceFilter(v as typeof audienceFilter)}>
-                    <option value="all">Any type</option><option value="internal">Internal</option><option value="external">External</option>
+                    <option value="all">Any type</option><option value="internal">Internal</option><option value="external">External</option><option value="client">Clients</option>
                   </FilterSelect>
                   <Chip active={attentionFilter === 'no_manager'} onClick={() => setAttentionFilter(attentionFilter === 'no_manager' ? 'all' : 'no_manager')}>
                     No manager{attentionCounts.noManager ? <span className="rounded-full bg-primary/15 px-1.5 text-[10.5px]">{attentionCounts.noManager}</span> : null}

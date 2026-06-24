@@ -23,6 +23,7 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
         .where(User.id == user_id)
         .options(
             selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
             selectinload(User.project_access),
             selectinload(User.task_access),
         )
@@ -40,6 +41,7 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
         .where(User.email == normalized_email)
         .options(
             selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
             selectinload(User.project_access),
             selectinload(User.task_access),
         )
@@ -74,29 +76,46 @@ async def _sync_user_assignments(
     manager_id: Optional[int],
     project_ids: list[int],
     task_ids: Optional[list[int]] = None,
+    manager_ids: Optional[list[int]] = None,
+    primary_manager_id: Optional[int] = None,
 ) -> None:
     await db.execute(delete(UserProjectAccess).where(UserProjectAccess.user_id == user.id))
     await db.execute(delete(UserTaskAccess).where(UserTaskAccess.user_id == user.id))
     await db.execute(delete(EmployeeManagerAssignment).where(EmployeeManagerAssignment.employee_id == user.id))
 
-    if manager_id is not None:
-        if manager_id == user.id:
-            raise ValueError("A user cannot be their own manager")
+    # Resolve the manager set. Multi-manager callers pass manager_ids (+ an
+    # optional primary); legacy callers pass a single manager_id (treated as the
+    # sole, primary manager). The two are unioned so either path works.
+    resolved_manager_ids: list[int] = []
+    for mid in ([*(manager_ids or []), manager_id]):
+        if mid is not None and mid not in resolved_manager_ids:
+            resolved_manager_ids.append(mid)
 
-        manager = await get_user_by_id(db, manager_id)
+    if resolved_manager_ids:
         allowed_manager_roles = _allowed_manager_roles_for_role(role)
         if not allowed_manager_roles:
             raise ValueError("Selected role cannot have a supervisor")
 
-        if not manager or manager.role not in allowed_manager_roles:
-            raise ValueError("Selected supervisor is invalid")
+        # Choose the primary: an explicit primary_manager_id if it's in the set,
+        # else the legacy manager_id if present, else the first manager.
+        primary = None
+        if primary_manager_id in resolved_manager_ids:
+            primary = primary_manager_id
+        elif manager_id in resolved_manager_ids:
+            primary = manager_id
+        else:
+            primary = resolved_manager_ids[0]
 
-        # Validate that the manager belongs to the same tenant
-        if user.tenant_id is not None and manager.tenant_id != user.tenant_id:
-            raise ValueError("Selected supervisor must belong to the same tenant")
-
-        db.add(EmployeeManagerAssignment(
-            employee_id=user.id, manager_id=manager_id))
+        for mid in resolved_manager_ids:
+            if mid == user.id:
+                raise ValueError("A user cannot be their own manager")
+            manager = await get_user_by_id(db, mid)
+            if not manager or manager.role not in allowed_manager_roles:
+                raise ValueError("Selected supervisor is invalid")
+            if user.tenant_id is not None and manager.tenant_id != user.tenant_id:
+                raise ValueError("Selected supervisor must belong to the same tenant")
+            db.add(EmployeeManagerAssignment(
+                employee_id=user.id, manager_id=mid, is_primary=(mid == primary)))
 
     unique_project_ids = sorted(set(project_ids or []))
     if unique_project_ids:
@@ -138,6 +157,52 @@ def _normalize_profile_text(value: Optional[str]) -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+async def _resolve_department_id(
+    db: AsyncSession,
+    *,
+    tenant_id: Optional[int],
+    name: Optional[str],
+    explicit_id: Optional[int] = None,
+) -> Optional[int]:
+    """Resolve a department FK during the additive rollout.
+
+    Priority:
+      1. An explicit department_id (validated to this tenant).
+      2. Otherwise, match the free-text `name` to a Department row (case-
+         insensitive, per tenant), creating the row if it doesn't exist yet —
+         so the FK stays in sync with the name the form still sends.
+    Returns None when there's nothing to resolve.
+    """
+    from app.models.department import Department
+
+    if explicit_id is not None:
+        row = (await db.execute(
+            select(Department).where(
+                Department.id == explicit_id,
+                Department.tenant_id == tenant_id,
+            )
+        )).scalars().first()
+        return row.id if row else None
+
+    clean = _normalize_profile_text(name)
+    if not clean or tenant_id is None:
+        return None
+
+    existing = (await db.execute(
+        select(Department).where(
+            Department.tenant_id == tenant_id,
+            sa_func.lower(Department.name) == clean.lower(),
+        )
+    )).scalars().first()
+    if existing:
+        return existing.id
+
+    dept = Department(tenant_id=tenant_id, name=clean)
+    db.add(dept)
+    await db.flush()
+    return dept.id
 
 
 def _validate_role_profile(
@@ -302,6 +367,12 @@ async def create_user(
         role, normalized_title, normalized_department,
         is_external=bool(user_create.is_external),
     )
+    resolved_department_id = await _resolve_department_id(
+        db,
+        tenant_id=user_create.tenant_id,
+        name=normalized_department,
+        explicit_id=getattr(user_create, "department_id", None),
+    )
 
     # Always generate a secure random temporary password; ignore any client-supplied value.
     password = _generate_default_password()
@@ -333,6 +404,7 @@ async def create_user(
         full_name=user_create.full_name.strip(),
         title=normalized_title,
         department=normalized_department,
+        department_id=resolved_department_id,
         hashed_password=get_password_hash(password),
         has_changed_password=False,
         email_verified=False,
@@ -355,6 +427,8 @@ async def create_user(
             user_create.manager_id,
             user_create.project_ids,
             getattr(user_create, "task_ids", None),
+            manager_ids=getattr(user_create, "manager_ids", None),
+            primary_manager_id=getattr(user_create, "primary_manager_id", None),
         )
         await db.commit()
     except IntegrityError:
@@ -714,9 +788,12 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     update_data = user_update.model_dump(exclude_unset=True)
 
     manager_id_supplied = "manager_id" in update_data
+    manager_ids_supplied = "manager_ids" in update_data
     project_ids_supplied = "project_ids" in update_data
     task_ids_supplied = "task_ids" in update_data
     manager_id = update_data.pop("manager_id", user.manager_id)
+    manager_ids = update_data.pop("manager_ids", None)
+    primary_manager_id = update_data.pop("primary_manager_id", None)
     project_ids = update_data.pop("project_ids", user.project_ids)
     task_ids = update_data.pop("task_ids", user.task_ids)
 
@@ -738,6 +815,18 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     if "department" in update_data:
         update_data["department"] = _normalize_profile_text(
             update_data["department"])
+
+    # Keep the structured FK in sync. Resolve from an explicit department_id if
+    # supplied, else from the (possibly just-updated) department name.
+    if "department_id" in update_data or "department" in update_data:
+        explicit_dept_id = update_data.pop("department_id", None)
+        name_for_lookup = update_data.get("department", user.department)
+        update_data["department_id"] = await _resolve_department_id(
+            db,
+            tenant_id=user.tenant_id,
+            name=name_for_lookup,
+            explicit_id=explicit_dept_id,
+        )
 
     if "password" in update_data:
         update_data["hashed_password"] = get_password_hash(
@@ -802,8 +891,22 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
         if client_row is None or (user.tenant_id is not None and client_row.tenant_id != user.tenant_id):
             raise ValueError("default_client_id references a client from a different tenant or it doesn't exist")
 
-    if not manager_id_supplied:
-        manager_id = user.manager_id
+    # Preserve the existing manager SET when the caller didn't touch managers.
+    # Without this, a non-manager edit (e.g. title) would collapse a
+    # multi-manager user down to just their primary, silently dropping the rest.
+    # Query the rows directly rather than trust the relationship to be loaded.
+    if not manager_ids_supplied and not manager_id_supplied:
+        existing_rows = (await db.execute(
+            select(EmployeeManagerAssignment).where(
+                EmployeeManagerAssignment.employee_id == user.id)
+        )).scalars().all()
+        manager_ids = [r.manager_id for r in existing_rows]
+        primary_row = next((r for r in existing_rows if r.is_primary), None)
+        primary_manager_id = primary_row.manager_id if primary_row else (
+            manager_ids[0] if manager_ids else None)
+        manager_id = None
+    elif not manager_id_supplied:
+        manager_id = None  # manager_ids drives it
     if not project_ids_supplied:
         project_ids = user.project_ids
     if not task_ids_supplied:
@@ -827,7 +930,9 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     db.add(user)
     try:
         await db.flush()
-        await _sync_user_assignments(db, user, next_role, manager_id, project_ids or [], task_ids or [])
+        await _sync_user_assignments(
+            db, user, next_role, manager_id, project_ids or [], task_ids or [],
+            manager_ids=manager_ids, primary_manager_id=primary_manager_id)
         await db.commit()
     except ValueError:
         await db.rollback()
@@ -840,6 +945,9 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     if mirror_fields_changed:
         await _mirror_user_update_to_shared_db(user, previous_email=previous_email)
 
+    # Expire the in-session object so the re-fetch below reloads the freshly
+    # reconciled manager assignments rather than a stale identity-map copy.
+    db.expire(user)
     return await get_user_by_id(db, user.id)
 
 
@@ -1010,10 +1118,16 @@ def _apply_user_filters(query, *, q=None, role=None, status=None, audience=None,
         query = query.where(User.is_active.is_(True))
     elif status == "inactive":
         query = query.where(User.is_active.is_(False))
+    # Audience: internal (our staff), external (external collaborators), or
+    # client (the client-portal personas). Client roles are external too, so we
+    # exclude them from internal/external to keep the three buckets distinct.
+    _client_roles = [UserRole.CLIENT, UserRole.CLIENT_MANAGER, UserRole.CLIENT_EMPLOYEE]
     if audience == "internal":
-        query = query.where(User.is_external.is_(False))
+        query = query.where(User.is_external.is_(False), User.role.notin_(_client_roles))
     elif audience == "external":
-        query = query.where(User.is_external.is_(True))
+        query = query.where(User.is_external.is_(True), User.role.notin_(_client_roles))
+    elif audience == "client":
+        query = query.where(User.role.in_(_client_roles))
     if unverified:
         # "Unverified" = internal users who haven't confirmed their email.
         # External users never log in (they have no verification step), so they
@@ -1045,6 +1159,7 @@ async def list_users(
     result = await db.execute(
         base.options(
             selectinload(User.manager_assignment),
+            selectinload(User.manager_assignments),
             selectinload(User.project_access),
             selectinload(User.task_access),
         )

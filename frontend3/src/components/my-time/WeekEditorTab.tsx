@@ -31,7 +31,8 @@ import {
   useUpdateEntry,
   useWeeklySubmitStatus,
 } from '@/hooks/useTime';
-import { useWeekStartDay } from '@/hooks/useAdmin';
+import { useWeekStartDay, useApprovalByAssignedManager, useAssignableUsers } from '@/hooks/useAdmin';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   addDays,
   diffHours,
@@ -138,6 +139,20 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
   const del = useDeleteEntry();
   const submit = useSubmitEntries();
   const recall = useRecallEntries();
+
+  // Multi-manager submit routing. When the setting is on and the employee has
+  // more than one manager, submitting prompts for which manager to send to.
+  const { user } = useAuth();
+  const multiManager = useApprovalByAssignedManager();
+  const myManagerIds = user?.manager_ids ?? (user?.manager_id != null ? [user.manager_id] : []);
+  const needsManagerChoice = multiManager && myManagerIds.length > 1;
+  const assignableQ = useAssignableUsers(needsManagerChoice);
+  const managerNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    (assignableQ.data ?? []).forEach((u) => m.set(u.id, u.full_name));
+    return m;
+  }, [assignableQ.data]);
+  const [managerChoiceOpen, setManagerChoiceOpen] = useState(false);
 
   const projects = projectsQ.data ?? [];
   const allTasks = tasksQ.data ?? [];
@@ -371,8 +386,17 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
       flashAndFade('err', weeklyStatusQ.data?.reason ?? 'Nothing to submit.');
       return;
     }
+    // With multiple managers + routing on, ask which manager to submit to.
+    if (needsManagerChoice) {
+      setManagerChoiceOpen(true);
+      return;
+    }
+    await doSubmit(null);
+  }
+  async function doSubmit(approverManagerId: number | null) {
+    setManagerChoiceOpen(false);
     try {
-      await submit.mutateAsync(draftIds);
+      await submit.mutateAsync({ entryIds: draftIds, approverManagerId });
       flashAndFade('ok', 'Submitted for approval.');
     } catch (err) {
       flashAndFade('err', extractError(err));
@@ -809,6 +833,37 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
           </Button>
         </div>
       </div>
+
+      {/* Multi-manager: choose which manager to submit this week to. */}
+      {managerChoiceOpen ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={() => setManagerChoiceOpen(false)}>
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-foreground">Submit to which manager?</h3>
+            <p className="mt-1 text-[13px] text-muted-foreground">
+              You report to more than one manager. Choose who should review this week's entries.
+            </p>
+            <div className="mt-4 space-y-2">
+              {myManagerIds.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => void doSubmit(id)}
+                  disabled={submit.isPending}
+                  className="flex w-full items-center justify-between rounded-xl border border-border px-4 py-3 text-left text-sm font-medium transition hover:border-primary/40 hover:bg-primary/[0.04]"
+                >
+                  <span>{managerNameById.get(id) ?? `Manager #${id}`}</span>
+                  {user?.primary_manager_id === id ? (
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-primary">Primary</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <Button variant="ghost" size="sm" onClick={() => setManagerChoiceOpen(false)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
     </div>
   );

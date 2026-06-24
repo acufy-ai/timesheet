@@ -13,6 +13,8 @@ export interface ManagedUser {
   title?: string | null;
   timezone?: string | null;
   manager_id?: number | null;
+  manager_ids?: number[];
+  primary_manager_id?: number | null;
   project_ids?: number[];
   task_ids?: number[];
   default_client_id?: number | null;
@@ -24,6 +26,7 @@ export interface ManagedUser {
   has_changed_password?: boolean;
   timesheet_locked?: boolean;
   timesheet_locked_reason?: string | null;
+  created_at?: string | null;
 }
 
 // POST /users body. full_name + is_external required; password is always
@@ -40,6 +43,8 @@ export interface CreateUserBody {
   role?: string;
   is_active?: boolean;
   manager_id?: number | null;
+  manager_ids?: number[];
+  primary_manager_id?: number | null;
   project_ids?: number[];
   task_ids?: number[];
   default_client_id?: number | null;
@@ -61,6 +66,8 @@ export interface UpdateUserBody {
   can_review?: boolean;
   is_external?: boolean;
   manager_id?: number | null;
+  manager_ids?: number[];
+  primary_manager_id?: number | null;
   project_ids?: number[];
   task_ids?: number[];
   default_client_id?: number | null;
@@ -74,7 +81,7 @@ export interface UserListParams {
   q?: string;
   role?: string;
   status?: 'active' | 'inactive';
-  audience?: 'internal' | 'external';
+  audience?: 'internal' | 'external' | 'client';
   no_manager?: boolean;
   unverified?: boolean;
 }
@@ -124,7 +131,65 @@ export interface ClientPortalUser {
   full_name: string;
   email: string;
   label?: string | null;
+  // False until the client accepts the invite + sets a password.
+  email_verified?: boolean;
   grants: ClientGrant[];
+}
+
+// ── Two-tier client portal (CLIENT_MANAGER manages CLIENT_EMPLOYEEs) ──
+export interface ClientManagerContext {
+  client_ids: number[];
+  client_names: string[];
+  can_invite_employees: boolean;
+  employee_count: number;
+}
+
+export interface ClientEmployeeAssignmentInfo {
+  grant_id: number;
+  scope: 'project' | 'task';
+  project_id?: number | null;
+  project_name?: string | null;
+  task_id?: number | null;
+  task_name?: string | null;
+  capabilities: string[];
+}
+
+export interface ClientEmployeeSummary {
+  user_id: number;
+  full_name: string;
+  email: string;
+  label?: string | null;
+  email_verified?: boolean;
+  assignment_count: number;
+  assignments?: ClientEmployeeAssignmentInfo[];
+}
+
+export interface PortalContactInfo {
+  name: string;
+  title?: string | null;
+  email?: string | null;
+}
+
+export interface PortalContext {
+  role: string;
+  role_label: string;
+  client_names: string[];
+  manager?: PortalContactInfo | null;
+  account_team: PortalContactInfo[];
+}
+
+export interface ClientReviewItem {
+  review_id: number;
+  task_id: number;
+  task_name: string;
+  project_name?: string | null;
+  employee_user_id: number;
+  employee_name: string;
+  status: 'pending' | 'approved' | 'rejected';
+  note?: string | null;
+  task_status?: string | null;
+  submitted_at?: string | null;
+  reviewed_at?: string | null;
 }
 
 // One scoped grant in an invite: a whole project XOR a specific task, each with
@@ -140,6 +205,10 @@ export interface ClientInviteBody {
   full_name: string;
   email: string;
   label?: string | null;
+  // "manager" => CLIENT_MANAGER (delegates to own employees); "employee" =>
+  // CLIENT_EMPLOYEE (auto-linked to the client's manager; read/update only).
+  portal_role?: 'manager' | 'employee';
+  manager_user_id?: number | null; // only needed when a client has >1 manager
   grants?: ClientGrantSpec[];
   // Legacy flat form (every project gets the same caps); used only when
   // `grants` is omitted.
@@ -220,6 +289,9 @@ export interface Client {
   contact_name?: string | null;
   contact_email?: string | null;
   contact_phone?: string | null;
+  // Two-tier portal: when true, this client's CLIENT_MANAGER may invite their
+  // own employees.
+  client_self_manage_enabled?: boolean;
 }
 
 // POST/PUT /clients body (ClientCreate / ClientUpdate share these fields).
@@ -233,6 +305,7 @@ export interface ClientBody {
   contact_name?: string | null;
   contact_email?: string | null;
   contact_phone?: string | null;
+  client_self_manage_enabled?: boolean;
 }
 
 // A member of a client's team (GET /clients/{id}/team). assignment_role marks
@@ -315,14 +388,15 @@ export interface ClientRoleRateBody {
 export interface ClientNote {
   id: number;
   client_id: number;
-  author?: string | null;
+  author?: string | null;       // server-stamped display name
+  author_user_id?: number | null; // provable author link
   body: string;
   note_date?: string | null;
   created_at: string;
   updated_at: string;
 }
+// `author` is server-stamped from the logged-in user — not sendable.
 export interface ClientNoteBody {
-  author?: string | null;
   body?: string;
   note_date?: string | null;
 }
@@ -346,11 +420,11 @@ export interface FullProject {
   budget_amount?: string | number | null;
   currency?: string | null;
   is_active: boolean;
-  client_access_enabled?: boolean; // per-project client-portal exposure toggle
   status?: ProjectStatus;
   manager_id?: number | null; // first PM, back-compat
   manager_ids?: number[]; // project managers (user ids)
   resource_ids?: number[]; // project roster (user ids), from user_project_access
+  contract_id?: number | null; // the contract (MSA/SOW) this project is under
 }
 
 // POST/PUT /projects body. billable_rate required on create.
@@ -371,6 +445,7 @@ export interface ProjectBody {
   manager_id?: number | null;
   manager_ids?: number[]; // when set, replaces the project's managers
   resource_ids?: number[]; // when set, replaces the project roster
+  contract_id?: number | null;
 }
 
 export type TaskPriority = 'low' | 'medium' | 'high';
@@ -387,6 +462,7 @@ export interface FullTask {
   priority?: TaskPriority;
   status?: TaskStatus;
   assignee_ids?: number[]; // task_assignees (user ids)
+  client_assignees?: { user_id: number; full_name: string }[]; // client employees on this task
 }
 
 // POST/PUT /tasks body.

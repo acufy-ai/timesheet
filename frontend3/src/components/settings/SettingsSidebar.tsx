@@ -17,6 +17,8 @@ const MailIcon    = () => <svg {...iconProps}><path d="M4 4h16c1.1 0 2 .9 2 2v12
 const InboxIcon   = () => <svg {...iconProps}><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>;
 const ImageIcon   = () => <svg {...iconProps}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>;
 const PaletteIcon = () => <svg {...iconProps}><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>;
+const UsersIcon   = () => <svg {...iconProps}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>;
+const CheckIcon   = () => <svg {...iconProps}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
 
 type NavItem = { key: string; label: string; icon: React.ReactNode };
 type NavGroup = { title: string; items: NavItem[] };
@@ -41,6 +43,8 @@ const buildNav = (ingestionEnabled: boolean): NavGroup[] => {
       items: [
         { key: 'time-entry',      label: 'Time entry',        icon: <ClockIcon /> },
         { key: 'timeoff-policy',  label: 'Time-off policy',   icon: <CalIcon /> },
+        { key: 'staffing',        label: 'Staffing',          icon: <UsersIcon /> },
+        { key: 'approvals',       label: 'Approvals',         icon: <CheckIcon /> },
       ],
     },
     {

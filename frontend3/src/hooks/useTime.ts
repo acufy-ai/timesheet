@@ -92,7 +92,11 @@ export function useDeleteEntry() {
 export function useSubmitEntries() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (entryIds: number[]) => timeApi.submit(entryIds),
+    mutationFn: (args: number[] | { entryIds: number[]; approverManagerId?: number | null }) => {
+      const entryIds = Array.isArray(args) ? args : args.entryIds;
+      const approver = Array.isArray(args) ? undefined : args.approverManagerId;
+      return timeApi.submit(entryIds, approver);
+    },
     onSuccess: () => invalidate(qc),
   });
 }

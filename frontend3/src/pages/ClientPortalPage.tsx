@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Briefcase, Check, ChevronRight, Folder, Loader2, Pencil, Plus, Shield, Trash2 } from 'lucide-react';
+import { Briefcase, Check, ChevronRight, Folder, Loader2, Lock, Pencil, Plus, Trash2, UserRound } from 'lucide-react';
 
 import { Button, Card, Empty, TonePill } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -23,7 +23,62 @@ const TASK_STATUSES = ['to_do', 'in_progress', 'done'];
 // description; create = add tasks; delete = remove tasks). Mirrors the approved
 // prototype (client-portal-redesign.html).
 export function ClientPortalPage() {
+  return (
+    <div className="space-y-5">
+      <PortalHero />
+      <ClientWorkView />
+    </div>
+  );
+}
+
+// Soft, theme-blended hero (matches the User Management hero) with orienting
+// context: which client org, the user's role, their client manager (for
+// employees), and the account team (our internal PMs).
+export function PortalHero() {
   const { user } = useAuth();
+  const ctxQ = useQuery({
+    queryKey: ['client-portal', 'context'],
+    queryFn: () => clientPortalApi.portalContext().then((r) => r.data),
+  });
+  const ctx = ctxQ.data;
+  const orgLine = ctx?.client_names?.length ? ctx.client_names.join(', ') : 'Client portal';
+  const roleLabel = ctx?.role_label ?? 'Client';
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-primary/[0.05]">
+      <div className="flex items-start gap-4 px-6 py-5">
+        <span className={cn('grid h-14 w-14 shrink-0 place-items-center rounded-2xl text-lg font-semibold ring-2 ring-primary/15', avatarTone(user?.full_name ?? '?'))}>
+          {initials(user?.full_name ?? '?')}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h1 className="font-display text-[22px] font-bold tracking-tight text-foreground">{user?.full_name ?? 'Client'}</h1>
+          <div className="mt-1 text-[13px] text-muted-foreground">{orgLine} · {roleLabel}</div>
+          {/* Orienting context lines: manager (for employees) + account team. */}
+          <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1.5 text-[12.5px] text-muted-foreground">
+            {ctx?.manager ? (
+              <span className="inline-flex items-center gap-1.5">
+                <UserRound className="h-3.5 w-3.5 text-primary" />
+                Your manager: <span className="font-medium text-foreground">{ctx.manager.name}</span>
+              </span>
+            ) : null}
+            {ctx?.account_team?.length ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Briefcase className="h-3.5 w-3.5 text-primary" />
+                Account team: <span className="font-medium text-foreground">{ctx.account_team.map((p) => p.name).join(', ')}</span>
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The scoped project/task list for a client-side user (their own granted work).
+// Reused by ClientPortalPage (with the hero above) and the CLIENT_MANAGER portal's
+// "My work" tab (no hero, since that portal has its own). Capability-gated:
+// create/delete buttons appear only when the grant carries those caps.
+export function ClientWorkView({ heading = true }: { heading?: boolean }) {
   const qc = useQueryClient();
   const projectsQ = useQuery({
     queryKey: ['client-portal', 'projects'],
@@ -38,33 +93,14 @@ export function ClientPortalPage() {
   const refresh = () => qc.invalidateQueries({ queryKey: ['client-portal', 'projects'] });
 
   const projects = projectsQ.data ?? [];
-  const allCaps = new Set<ClientCapability>();
-  projects.forEach((p) => {
-    p.capabilities.forEach((c) => allCaps.add(c));
-    p.tasks.forEach((t) => t.capabilities.forEach((c) => allCaps.add(c)));
-  });
-  const heroCaps = CAPS.filter((c) => allCaps.has(c));
-  const clientLabel = (user as { title?: string } | null)?.title;
+  const portalOff = (() => {
+    const err = projectsQ.error as { response?: { status?: number; data?: { detail?: string } } } | null;
+    const detail = err?.response?.data?.detail ?? '';
+    return err?.response?.status === 403 && /disabled for this workspace/i.test(detail);
+  })();
 
   return (
     <div className="space-y-5">
-      <div className="overflow-hidden rounded-2xl text-white shadow-lg" style={{ background: 'linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary) / 0.7))' }}>
-        <div className="flex items-center gap-4 px-6 py-6">
-          <span className={cn('grid h-14 w-14 shrink-0 place-items-center rounded-2xl text-lg font-bold ring-[3px] ring-white/25', avatarTone(user?.full_name ?? '?'))}>
-            {initials(user?.full_name ?? '?')}
-          </span>
-          <div className="min-w-0 flex-1">
-            <h1 className="font-display text-[22px] font-bold tracking-tight">{user?.full_name ?? 'Client'}</h1>
-            <div className="mt-0.5 text-[13px] text-white/90">{clientLabel ? `${clientLabel} · ` : ''}Client portal</div>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {(heroCaps.length ? heroCaps : (['read'] as ClientCapability[])).map((c) => (
-                <span key={c} className="rounded-full bg-white/20 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide">{CAP_LABEL[c]}</span>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
       {flash ? (
         <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm',
           flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
@@ -73,30 +109,30 @@ export function ClientPortalPage() {
         </div>
       ) : null}
 
-      <div>
-        <h2 className="font-display text-lg font-bold">Your projects</h2>
-        <p className="text-[13px] text-muted-foreground">Only the projects and tasks you've been given access to appear here.</p>
-      </div>
+      {heading ? (
+        <div>
+          <h2 className="font-display text-lg font-bold">Your projects</h2>
+          <p className="text-[13px] text-muted-foreground">Only the projects and tasks you've been given access to appear here.</p>
+        </div>
+      ) : null}
 
       {projectsQ.isLoading ? (
         <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>
+      ) : portalOff ? (
+        <Empty Icon={Lock} title="Client portal is turned off"
+          description="Your workspace has paused the client portal. Please check back later or contact your project team." />
       ) : projects.length === 0 ? (
         <Empty Icon={Briefcase} title="Nothing shared yet" description="When your team gives you access to a project or task, it'll show up here." />
       ) : (
         <div className="space-y-3">
           {projects.map((p) => (
             <ProjectCard key={p.id} project={p}
-              open={expanded[p.id] ?? true}
-              onToggle={() => setExpanded((s) => ({ ...s, [p.id]: !(s[p.id] ?? true) }))}
+              open={expanded[p.id] ?? false}
+              onToggle={() => setExpanded((s) => ({ ...s, [p.id]: !(s[p.id] ?? false) }))}
               onFlash={flashAndFade} onChanged={refresh} />
           ))}
         </div>
       )}
-
-      <div className="flex items-start gap-2.5 rounded-xl bg-primary/[0.06] px-4 py-3 text-[12.5px] text-muted-foreground">
-        <Shield className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-        <span>The client portal shows <b className="text-foreground">only</b> the projects and tasks shared with you.</span>
-      </div>
     </div>
   );
 }
@@ -113,7 +149,13 @@ function ProjectCard({
   const pcaps = project.capabilities;
   const canCreate = pcaps.includes('create');
   const canUpdateProject = pcaps.includes('update');
-  const capSummary = pcaps.length ? CAPS.filter((c) => pcaps.includes(c)).map((c) => CAP_LABEL[c][0]).join('') : 'task access';
+  // Plain-English access label for the project row (replaces cryptic "R" / "RU"
+  // initials a client can't decode). Task-only grants (no project-level caps)
+  // read as "Task access"; otherwise it's "Can edit" when any change capability
+  // is present, else "View only".
+  const canEditProject = pcaps.some((c) => c === 'update' || c === 'create' || c === 'delete');
+  const accessLabel = !pcaps.length ? 'Task access' : canEditProject ? 'Can edit' : 'View only';
+  const accessTone: 'brand' | 'neutral' = !pcaps.length ? 'neutral' : canEditProject ? 'brand' : 'neutral';
 
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
@@ -145,7 +187,7 @@ function ProjectCard({
           </span>
           {project.client_name ? <span className="block text-[12px] text-muted-foreground">{project.client_name}</span> : null}
         </span>
-        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{capSummary}</span>
+        <TonePill tone={accessTone} className="shrink-0">{accessLabel}</TonePill>
       </button>
 
       {open ? (

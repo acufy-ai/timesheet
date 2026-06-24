@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Briefcase, ChevronRight, Folder, Pencil, Plus, Trash2 } from 'lucide-react';
 
-import { Button, Empty, TonePill } from '@/components/ui';
+import { Button, Empty, Modal, TonePill } from '@/components/ui';
 import { useAllProjects, useAllTasks, useClients, useDeleteProject, useDeleteTask } from '@/hooks/useAdmin';
 import { cn } from '@/lib/cn';
 import type { FullProject, FullTask, ManagedUser } from '@/types/admin';
@@ -35,6 +35,9 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   const [expProject, setExpProject] = useState<Record<number, boolean>>({});
   const [projModal, setProjModal] = useState<{ clientId: number; project: FullProject | null } | null>(null);
   const [taskModal, setTaskModal] = useState<{ projectId: number; task: FullTask | null } | null>(null);
+  // Tab-level "Add client": pick a client, then create a project on it (which
+  // is how a user gets assigned to a new client).
+  const [addClientOpen, setAddClientOpen] = useState(false);
 
   const projectIds = new Set(user.project_ids ?? []);
   const taskIds = new Set(user.task_ids ?? []);
@@ -85,12 +88,28 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
           title="No client assignments yet"
           description={isAdmin ? 'This user is not on any project or task.' : 'Not assigned to any client, project, or task yet.'}
         />
-        {!isAdmin ? (
+        {isAdmin ? (
+          <div className="mt-3">
+            <Button onClick={() => setAddClientOpen(true)}>
+              <Plus className="h-4 w-4" /> Add client
+            </Button>
+          </div>
+        ) : (
           <div className="mt-3">
             <Button variant="secondary" onClick={() => (window.location.href = '/client-management')}>
               <Briefcase className="h-4 w-4" /> Manage assignments in Client Management
             </Button>
           </div>
+        )}
+        <AddClientPicker
+          open={addClientOpen} clients={clientsQ.data ?? []} existingClientIds={new Set(byClient.keys())}
+          onClose={() => setAddClientOpen(false)}
+          onPick={(cid) => { setAddClientOpen(false); setProjModal({ clientId: cid, project: null }); }}
+        />
+        {projModal ? (
+          <ProjectFormModal open clientId={projModal.clientId} project={projModal.project}
+            onClose={() => setProjModal(null)}
+            onSaved={() => { onFlash('ok', 'Project created.'); setProjModal(null); }} />
         ) : null}
       </>
     );
@@ -98,6 +117,13 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
 
   return (
     <div className="space-y-2.5">
+      {isAdmin ? (
+        <div className="flex justify-end">
+          <Button size="sm" onClick={() => setAddClientOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> Add client
+          </Button>
+        </div>
+      ) : null}
       {[...byClient.entries()].map(([cid, projs]) => {
         const c = clientById.get(cid);
         const open = expClient[cid] ?? true;
@@ -198,6 +224,57 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
           onSaved={() => { onFlash('ok', taskModal.task ? 'Task updated.' : 'Task created.'); setTaskModal(null); }}
         />
       ) : null}
+      <AddClientPicker
+        open={addClientOpen} clients={clientsQ.data ?? []} existingClientIds={new Set(byClient.keys())}
+        onClose={() => setAddClientOpen(false)}
+        onPick={(cid) => { setAddClientOpen(false); setProjModal({ clientId: cid, project: null }); }}
+      />
     </div>
+  );
+}
+
+// Tab-level "Add client": pick a client (one the user isn't already on) to add
+// the user to via a new project. Reuses the project modal afterward.
+function AddClientPicker({
+  open, clients, existingClientIds, onClose, onPick,
+}: {
+  open: boolean;
+  clients: { id: number; name: string; client_type: string }[];
+  existingClientIds: Set<number>;
+  onClose: () => void;
+  onPick: (clientId: number) => void;
+}) {
+  const [q, setQ] = useState('');
+  const candidates = clients
+    .filter((c) => !existingClientIds.has(c.id))
+    .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <Modal open={open} onClose={onClose} title="Add the user to a client" className="max-w-md">
+      <div className="space-y-3">
+        <p className="text-[12.5px] text-muted-foreground">
+          Pick a client, then create a project to assign this user to it.
+        </p>
+        <input
+          autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search clients…"
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+        />
+        <div className="max-h-[320px] overflow-y-auto rounded-lg border border-border">
+          {candidates.length === 0 ? (
+            <p className="px-3 py-4 text-center text-[12.5px] text-muted-foreground">
+              {clients.length === existingClientIds.size ? 'The user is already on every client.' : 'No clients match.'}
+            </p>
+          ) : candidates.map((c) => (
+            <button key={c.id} type="button" onClick={() => onPick(c.id)}
+              className="flex w-full items-center justify-between border-b border-border/40 px-3 py-2.5 text-left last:border-0 hover:bg-primary/[0.05]">
+              <span className="truncate text-[13.5px] font-medium">{c.name}</span>
+              <TonePill tone={c.client_type === 'internal' ? 'success' : 'neutral'}>
+                {c.client_type === 'internal' ? 'Internal' : 'External'}
+              </TonePill>
+            </button>
+          ))}
+        </div>
+      </div>
+    </Modal>
   );
 }

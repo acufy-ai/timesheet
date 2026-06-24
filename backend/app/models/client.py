@@ -1,7 +1,7 @@
 import enum
 from datetime import date
 
-from sqlalchemy import Date, Enum as SAEnum, String, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, Date, Enum as SAEnum, String, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
 from .base import Base, TimestampMixin
@@ -50,6 +50,12 @@ class Client(Base, TimestampMixin):
     contact_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     contact_phone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Two-tier client portal: when true, a CLIENT_MANAGER on this client may
+    # invite/create their own client employees. When false, our internal team
+    # provisions the client employees instead.
+    client_self_manage_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="clients")

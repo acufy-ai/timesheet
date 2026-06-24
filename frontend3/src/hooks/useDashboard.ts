@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { dashboardApi, dashboardSummaryApi } from '@/api/client';
+import { dashboardApi, dashboardSummaryApi, tasksApi } from '@/api/client';
 // useTeamRejectionStats is exported below alongside the other manager hooks.
 // (useDashboardSummary retained for any future use; the dashboard now uses the
 // analytics-driven widget grid for the personal view.)
@@ -24,6 +24,37 @@ export function useManagerProjectHealth(enabled = true) {
     queryFn: () => dashboardApi.managerProjectHealth().then((r) => r.data),
     enabled,
     staleTime: 60_000,
+  });
+}
+
+export function useManagerFinancials(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'manager-financials'],
+    queryFn: () => dashboardApi.managerFinancials().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useMyWork(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'my-work'],
+    queryFn: () => dashboardApi.myWork().then((r) => r.data),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+// Assignee-scoped task progress edit (status / description) from My Work.
+// Invalidates My Work so the row reflects the new state.
+export function useUpdateTaskProgress() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, ...body }: { taskId: number; status?: string; description?: string }) =>
+      tasksApi.updateProgress(taskId, body).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['dashboard', 'my-work'] });
+    },
   });
 }
 

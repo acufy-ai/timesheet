@@ -56,6 +56,10 @@ class Project(Base, TimestampMixin):
     # app to the client's assigned PMs; FK only enforces a real user.
     manager_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # The contract (MSA/SOW) this project is delivered under. Optional; used for
+    # contract value burn (approved billed amounts vs contract.value).
+    contract_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("contracts.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="projects")
@@ -63,6 +67,8 @@ class Project(Base, TimestampMixin):
         "Client", back_populates="projects")
     manager: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[manager_id])
+    contract: Mapped[Optional["Contract"]] = relationship(
+        "Contract", foreign_keys=[contract_id])
     managers: Mapped[List["ProjectManager"]] = relationship(
         "ProjectManager", back_populates="project", cascade="all, delete-orphan")
     user_access: Mapped[List["UserProjectAccess"]] = relationship(

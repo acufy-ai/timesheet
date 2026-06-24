@@ -3,7 +3,7 @@
 // actually consume in step 4 / 6 / 7. Add fields here as pages start
 // needing them.
 
-export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'VIEWER' | 'ADMIN' | 'PLATFORM_ADMIN' | 'CLIENT';
+export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'VIEWER' | 'ADMIN' | 'PLATFORM_ADMIN' | 'CLIENT' | 'CLIENT_MANAGER' | 'CLIENT_EMPLOYEE';
 
 export interface User {
   id: number;
@@ -22,6 +22,8 @@ export interface User {
   is_external?: boolean;
   tenant_id: number | null;
   manager_id?: number | null;
+  manager_ids?: number[];
+  primary_manager_id?: number | null;
   preferences?: Record<string, unknown>;
   created_at: string;
   updated_at: string;

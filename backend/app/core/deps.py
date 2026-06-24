@@ -32,11 +32,20 @@ _CLIENT_ALLOWED_PREFIXES = (
     "/users/me/",                 # self-service profile/preferences subpaths
 )
 
+# Every client-side role (the flat legacy CLIENT plus the two-tier
+# CLIENT_MANAGER / CLIENT_EMPLOYEE) is confined to the same fail-closed portal
+# allowlist. The client-portal API itself does the finer per-role gating.
+_CLIENT_SIDE_ROLES = (
+    UserRole.CLIENT,
+    UserRole.CLIENT_MANAGER,
+    UserRole.CLIENT_EMPLOYEE,
+)
+
 
 def _client_path_allowed(path: str) -> bool:
-    """True if a CLIENT user may reach this request path. Fail-closed: anything
-    not explicitly allowed is denied. A trailing-slash-insensitive match keeps
-    behaviour stable across route definitions."""
+    """True if a client-side user may reach this request path. Fail-closed:
+    anything not explicitly allowed is denied. A trailing-slash-insensitive
+    match keeps behaviour stable across route definitions."""
     p = path.rstrip("/") or "/"
     if p in _CLIENT_ALLOWED_EXACT or path in _CLIENT_ALLOWED_EXACT:
         return True
@@ -231,7 +240,7 @@ async def get_current_user(
             # adapter is in-memory and never queried, so set it explicitly to
             # None (a platform admin has no manager) — otherwise /auth/me 500s
             # on serialization with "manager_assignment was not eager-loaded".
-            adapter.manager_assignment = None
+            adapter.manager_assignments = []
             request.state.current_user = adapter
             return adapter
 
@@ -356,8 +365,8 @@ async def get_current_user(
         # auto-denied to CLIENT unless added to the allowlist, so this can't
         # silently leak. Enforced here because every authenticated request
         # funnels through get_current_user.
-        if user.role == UserRole.CLIENT and not _client_path_allowed(request.url.path):
-            logger.warning("CLIENT user %s blocked from %s", user_id, request.url.path)
+        if user.role in _CLIENT_SIDE_ROLES and not _client_path_allowed(request.url.path):
+            logger.warning("Client-side user %s (%s) blocked from %s", user_id, user.role.value, request.url.path)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Client accounts can only access the client portal.",

@@ -416,6 +416,18 @@ export function useDeleteClientNote() {
   });
 }
 
+// Next auto project code (PR####) for the New project form. Enabled only while
+// the create modal is open; not cached (each new project gets a fresh code).
+export function useNextProjectCode(enabled: boolean) {
+  return useQuery({
+    queryKey: ['projects', 'next-code'],
+    queryFn: () => projectsApi.nextCode().then((r) => r.data.code),
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
@@ -661,6 +673,28 @@ export function useWeekStartDay(): 0 | 1 {
   const q = usePublicTenantSettings();
   const v = (q.data as Record<string, unknown> | undefined)?.week_start_day;
   return v === 1 || v === '1' ? 1 : 0;
+}
+
+// Whether cross-team staffing is enabled for the workspace. Read from PUBLIC
+// settings (is_public=true) so MANAGERS get it without the admin-only endpoint.
+// When false (the default), project-team and task-assignee pickers are limited
+// to the project manager's own reports; when true the pool widens to the
+// client's whole management chain + their reports. Returns true only when the
+// setting is explicitly truthy.
+export function useCrossTeamStaffing(): boolean {
+  const q = usePublicTenantSettings();
+  const v = (q.data as Record<string, unknown> | undefined)?.allow_cross_team_staffing;
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+
+// Whether multi-manager / per-entry approval routing is enabled. When false
+// (the default), the user form shows a single manager and time entries are
+// approved as one weekly batch by the reporting manager. When true, a user can
+// have multiple managers (one primary) and entries route to a chosen manager.
+export function useApprovalByAssignedManager(): boolean {
+  const q = usePublicTenantSettings();
+  const v = (q.data as Record<string, unknown> | undefined)?.approval_by_assigned_manager;
+  return v === true || v === 'true' || v === 1 || v === '1';
 }
 
 export function useUpdateTenantSettings() {

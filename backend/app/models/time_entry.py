@@ -59,8 +59,22 @@ class TimeEntry(Base, TimestampMixin):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_billable: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
+    # Frozen rate snapshot, stamped at approval (role-rate card -> project rate
+    # fallback). NULL until approved; once set, a later rate-card/project edit
+    # never re-prices this entry. Reporting reads this when present, else falls
+    # back to the live project rate.
+    billed_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True)
+    billed_currency: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True)
     status: Mapped[TimeEntryStatus] = mapped_column(SQLEnum(
         TimeEntryStatus), nullable=False, default=TimeEntryStatus.DRAFT, index=True)
+
+    # Per-entry approval routing (multi-manager). When set, only this manager
+    # may approve the entry; NULL = any of the employee's managers. Honored only
+    # when the approval_by_assigned_manager tenant setting is on.
+    approver_manager_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Approval tracking
     submitted_at: Mapped[Optional[datetime]] = mapped_column(

@@ -18,6 +18,14 @@ class UserRole(str, Enum):
     # via ClientAccessGrant. Locked out of every other surface by a fail-closed
     # global gate (see app/core/deps.py require_not_client / client allowlist).
     CLIENT = "CLIENT"
+    # Two-tier client portal. A CLIENT_MANAGER is the senior person on the
+    # client's side: they receive grants from our side and can re-assign their
+    # own client employees to that shared work, review it, and (per-client
+    # toggle) invite their own employees. A CLIENT_EMPLOYEE is assigned by their
+    # client manager to specific tasks (read+update only, never create/delete).
+    # All three client roles share the same fail-closed portal allowlist.
+    CLIENT_MANAGER = "CLIENT_MANAGER"
+    CLIENT_EMPLOYEE = "CLIENT_EMPLOYEE"
 
 
 class User(Base, TimestampMixin):
@@ -46,8 +54,13 @@ class User(Base, TimestampMixin):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Free-text department label (legacy). Kept alongside department_id during
+    # the additive rollout; department_id (FK to the managed Department table) is
+    # the structured source for rollups/filtering. A later migration drops this.
     department: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True)
+    department_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, default="UTC")
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -149,12 +162,29 @@ class User(Base, TimestampMixin):
 
     # Relationships
     tenant: Mapped[Optional["Tenant"]] = relationship("Tenant", back_populates="users")
+    department_ref: Mapped[Optional["Department"]] = relationship("Department")
+    # The PRIMARY manager assignment. An employee may now have several manager
+    # rows (multi-manager); this relationship resolves to the one flagged
+    # is_primary so all legacy callers (selectinload + .manager_assignment.
+    # manager_id) transparently keep seeing the primary manager. Read-only:
+    # writes go through `manager_assignments` (the full list) in the CRUD.
     manager_assignment: Mapped[Optional["EmployeeManagerAssignment"]] = relationship(
+        "EmployeeManagerAssignment",
+        primaryjoin=(
+            "and_(User.id == EmployeeManagerAssignment.employee_id, "
+            "EmployeeManagerAssignment.is_primary == True)"
+        ),
+        foreign_keys="EmployeeManagerAssignment.employee_id",
+        viewonly=True,
+        uselist=False,
+    )
+    # All of the employee's manager assignments (multi-manager). This is the
+    # writable collection; the CRUD reconciles it.
+    manager_assignments: Mapped[List["EmployeeManagerAssignment"]] = relationship(
         "EmployeeManagerAssignment",
         back_populates="employee",
         foreign_keys="EmployeeManagerAssignment.employee_id",
         cascade="all, delete-orphan",
-        uselist=False,
     )
     direct_report_assignments: Mapped[List["EmployeeManagerAssignment"]] = relationship(
         "EmployeeManagerAssignment",
@@ -192,21 +222,42 @@ class User(Base, TimestampMixin):
 
     @property
     def manager_id(self) -> Optional[int]:
-        # Raise if the relationship wasn't eager-loaded. The implicit
-        # lazy-load that SQLAlchemy would otherwise emit fails with
-        # DetachedInstanceError once the session closes — surfacing the
-        # missing selectinload here is far easier to debug than a
-        # request-time crash deep in response serialization.
+        """The PRIMARY manager's id (back-compat single-manager accessor).
+
+        Resolves from the loaded manager list when available (avoids a second
+        relationship load), else the primary-only relationship. Raises if
+        neither was eager-loaded so a missing selectinload surfaces here rather
+        than as a DetachedInstanceError deep in serialization.
+        """
         from sqlalchemy import inspect as sa_inspect
 
         state = sa_inspect(self)
-        if "manager_assignment" in state.unloaded:
-            raise RuntimeError(
-                "User.manager_assignment was not eager-loaded. Add "
-                "selectinload(User.manager_assignment) to the query, or "
-                "populate the field via a DTO before serialization."
-            )
-        return self.manager_assignment.manager_id if self.manager_assignment else None
+        if "manager_assignments" not in state.unloaded:
+            primary = next((a for a in self.manager_assignments if a.is_primary), None)
+            chosen = primary or (self.manager_assignments[0] if self.manager_assignments else None)
+            return chosen.manager_id if chosen else None
+        if "manager_assignment" not in state.unloaded:
+            return self.manager_assignment.manager_id if self.manager_assignment else None
+        raise RuntimeError(
+            "User manager assignments were not eager-loaded. Add "
+            "selectinload(User.manager_assignments) (or .manager_assignment) "
+            "to the query, or populate the field via a DTO before serialization."
+        )
+
+    @property
+    def manager_ids(self) -> List[int]:
+        """All managers this employee reports to (multi-manager). Requires
+        manager_assignments to be eager-loaded."""
+        from sqlalchemy import inspect as sa_inspect
+
+        if "manager_assignments" in sa_inspect(self).unloaded:
+            return []
+        return sorted(a.manager_id for a in self.manager_assignments)
+
+    @property
+    def primary_manager_id(self) -> Optional[int]:
+        """The primary manager's id (alias of manager_id, explicit for clarity)."""
+        return self.manager_id
 
     @property
     def project_ids(self) -> List[int]:

@@ -9,7 +9,7 @@ import { ApprovalsPage } from '@/pages/ApprovalsPage';
 import { AuditTrailPage } from '@/pages/AuditTrailPage';
 import { CalendarPage } from '@/pages/CalendarPage';
 import { ClientsPage } from '@/pages/ClientsPage';
-import { ClientPortalPage } from '@/pages/ClientPortalPage';
+import { PortalRouter } from '@/pages/PortalRouter';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { InboxPage } from '@/pages/InboxPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -17,6 +17,7 @@ import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage';
 import { SetPasswordPage } from '@/pages/SetPasswordPage';
 import { VerifyAccountPage } from '@/pages/VerifyAccountPage';
 import { MyTimePage } from '@/pages/MyTimePage';
+import { MyWorkPage } from '@/pages/MyWorkPage';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { TimeOffPage } from '@/pages/TimeOffPage';
@@ -76,9 +77,10 @@ export default function App() {
               {/* Authenticated app shell */}
               <Route element={<AppShell />}>
                 <Route path="/" element={<LandingRedirect />} />
-                <Route path="/portal" element={<ClientPortalPage />} />
+                <Route path="/portal" element={<PortalRouter />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/my-time" element={<MyTimePage />} />
+                <Route path="/my-work" element={<MyWorkPage />} />
                 <Route path="/time-off" element={<TimeOffPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/approvals" element={<ApprovalsPage />} />

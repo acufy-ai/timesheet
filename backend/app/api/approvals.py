@@ -46,6 +46,29 @@ async def _get_direct_report_ids(db: AsyncSession, manager_user_id: int) -> list
     return list(result.scalars().all())
 
 
+async def _multi_manager_enabled(db: AsyncSession, tenant_id: int) -> bool:
+    """Whether per-entry / multi-manager approval routing is on for this tenant."""
+    from app.core.tenant_settings import get_setting
+    return bool(await get_setting(db, tenant_id, "approval_by_assigned_manager"))
+
+
+async def _can_approve_entry(db: AsyncSession, manager: User, entry: TimeEntry) -> bool:
+    """Whether `manager` may approve/reject this single entry.
+
+    OFF (default): manager must be the employee's (reporting) manager — the
+        legacy single-manager rule.
+    ON: the entry is approvable if it was routed to this manager
+        (approver_manager_id == manager.id) OR it's unrouted and the employee
+        reports to this manager (any of their managers can act).
+    """
+    report_ids = set(await _get_direct_report_ids(db, manager.id))
+    if not await _multi_manager_enabled(db, manager.tenant_id):
+        return entry.user_id in report_ids
+    if entry.approver_manager_id is not None:
+        return entry.approver_manager_id == manager.id
+    return entry.user_id in report_ids
+
+
 def _week_start(value: date, week_start_day: int = 0) -> date:
     """0=Sunday, 1=Monday."""
     py_weekday = value.weekday()  # 0=Mon..6=Sun
@@ -78,6 +101,33 @@ async def _validate_weekly_batch(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cannot approve entries from a different tenant",
         )
+
+    multi = await _multi_manager_enabled(db, current_user.tenant_id)
+
+    if multi:
+        # Multi-manager / partial approval: the only requirements are that every
+        # requested entry is one this manager may act on, and the batch is a
+        # single employee+week (the email/audit summary assumes that). The
+        # "all submitted entries for the week" rule is intentionally dropped so a
+        # manager can approve just their slice of a split week.
+        for entry in entries:
+            if not await _can_approve_entry(db, current_user, entry):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only review entries assigned to you",
+                )
+        if len(user_ids) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval must target one employee at a time",
+            )
+        wsd = await _resolve_week_start_day(db, current_user.tenant_id)
+        if len({_week_start(e.entry_date, wsd) for e in entries}) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval must target one work week at a time",
+            )
+        return
 
     direct_report_ids = set(await _get_direct_report_ids(db, current_user.id))
     if not user_ids.issubset(direct_report_ids):
@@ -143,6 +193,10 @@ async def get_pending_approvals(
     assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
     employee_ids = assigned_employee_ids or []
 
+    # When multi-manager routing is on, scope the queue to entries this manager
+    # can actually act on (routed to them + unrouted entries of their reports).
+    multi = await _multi_manager_enabled(db, current_user.tenant_id)
+
     return await list_pending_approvals(
         db,
         employee_ids=employee_ids,
@@ -152,6 +206,7 @@ async def get_pending_approvals(
         sort_order=sort_order,
         skip=skip,
         limit=limit,
+        routed_to_manager_id=current_user.id if multi else None,
     )
 
 
@@ -458,10 +513,10 @@ async def approve_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if not await _can_approve_entry(db, current_user, entry):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only approve entries for your direct reports",
+            detail="You can only approve entries assigned to you for review",
         )
 
     if entry.user_id == current_user.id:
@@ -524,10 +579,10 @@ async def reject_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if not await _can_approve_entry(db, current_user, entry):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only reject entries for your direct reports",
+            detail="You can only reject entries assigned to you for review",
         )
 
     if entry.user_id == current_user.id:
@@ -586,6 +641,11 @@ async def revert_entry_rejection(
     entry = await db.get(TimeEntry, entry_id)
     if not entry or entry.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entry not found")
+    if not await _can_approve_entry(db, current_user, entry):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only revert entries assigned to you for review",
+        )
     if entry.status != TimeEntryStatus.REJECTED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only REJECTED entries can be reverted")
 

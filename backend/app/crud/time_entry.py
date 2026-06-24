@@ -1,7 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import asc, desc, func, or_
+from sqlalchemy import and_, asc, desc, func, or_
+from sqlalchemy import false as sa_false
 from sqlalchemy.exc import IntegrityError
 from decimal import Decimal
 from app.models.time_entry import TimeEntry, TimeEntryEditHistory, TimeEntryStatus
@@ -495,8 +496,14 @@ async def submit_time_entries(
     db: AsyncSession,
     user_id: int,
     entry_ids: list[int],
+    approver_manager_id: Optional[int] = None,
 ) -> list[TimeEntry]:
-    """Submit multiple time entries for approval."""
+    """Submit multiple time entries for approval.
+
+    approver_manager_id routes the entries to a specific manager (multi-manager
+    mode). It's honored only when the approval_by_assigned_manager setting is on
+    and the chosen manager is actually one of the employee's managers; otherwise
+    it's ignored (entries stay unrouted = any manager can approve)."""
     # Get all entries with relationships loaded
     query = select(TimeEntry).where(
         (TimeEntry.user_id == user_id) &
@@ -566,11 +573,32 @@ async def submit_time_entries(
                 f"Cannot submit week of {week_start.isoformat()} because weekly hours are below minimum required ({policy['min_submit_weekly']:g})"
             )
 
+    # Resolve the routing target. Only honor it when multi-manager routing is on
+    # AND the chosen manager is one of this employee's managers.
+    routed_manager_id: Optional[int] = None
+    if approver_manager_id is not None:
+        from app.core.tenant_settings import get_setting
+        from app.models.assignments import EmployeeManagerAssignment
+
+        if await get_setting(db, tenant_id, "approval_by_assigned_manager"):
+            is_mine = await db.scalar(
+                select(func.count())
+                .select_from(EmployeeManagerAssignment)
+                .where(
+                    EmployeeManagerAssignment.employee_id == user_id,
+                    EmployeeManagerAssignment.manager_id == approver_manager_id,
+                )
+            )
+            if is_mine:
+                routed_manager_id = approver_manager_id
+
     # Update status
     for entry in entries:
         entry.status = TimeEntryStatus.SUBMITTED
         entry.submitted_at = datetime.now(timezone.utc)
         entry.updated_by = user_id
+        if routed_manager_id is not None:
+            entry.approver_manager_id = routed_manager_id
         db.add(entry)
 
     await db.commit()
@@ -705,10 +733,19 @@ async def list_pending_approvals(
     sort_order: str = "desc",
     skip: int = 0,
     limit: int = 100,
+    routed_to_manager_id: Optional[int] = None,
 ) -> list[TimeEntry]:
     """
     List submitted time entries for managers to approve.
-    This is a simplified version - ideally would have team assignment logic.
+
+    Default (single-manager): pass ``employee_ids`` = the manager's reports;
+    every submitted entry for those employees is returned.
+
+    Multi-manager routing: pass ``routed_to_manager_id`` = the manager AND
+    ``employee_ids`` = their reports. The queue then shows entries explicitly
+    routed to this manager (approver_manager_id == them) PLUS unrouted entries
+    (approver_manager_id IS NULL) of their reports — so a week split across two
+    managers shows each manager only their own slice.
     """
     # Backward compatibility: historical callers passed manager_ids, but that
     # parameter never actually filtered results.
@@ -718,7 +755,19 @@ async def list_pending_approvals(
         TimeEntry.status == TimeEntryStatus.SUBMITTED)
     if tenant_id is not None:
         query = query.where(TimeEntry.tenant_id == tenant_id)
-    if employee_ids is not None:
+    if routed_to_manager_id is not None:
+        # Routed to me, OR unrouted and one of my reports.
+        report_clause = (
+            TimeEntry.user_id.in_(employee_ids)
+            if employee_ids else sa_false()
+        )
+        query = query.where(
+            or_(
+                TimeEntry.approver_manager_id == routed_to_manager_id,
+                and_(TimeEntry.approver_manager_id.is_(None), report_clause),
+            )
+        )
+    elif employee_ids is not None:
         if not employee_ids:
             return []
         query = query.where(TimeEntry.user_id.in_(employee_ids))
@@ -759,6 +808,22 @@ async def list_pending_approvals(
     return result.scalars().all()
 
 
+async def _stamp_billed_rate(db: AsyncSession, entry: TimeEntry) -> None:
+    """Freeze the resolved billable rate onto the entry at approval. Best-effort:
+    a resolution failure must never block an approval, so it's swallowed (the
+    entry keeps NULL snapshot and reporting falls back to the live project rate).
+    """
+    try:
+        from app.services.billing_rates import resolve_entry_rate
+
+        resolved = await resolve_entry_rate(db, entry)
+        if resolved is not None:
+            entry.billed_rate = resolved.rate
+            entry.billed_currency = resolved.currency
+    except Exception:  # noqa: BLE001 - never let rate resolution break approval
+        pass
+
+
 async def approve_time_entry(
     db: AsyncSession,
     entry_id: int,
@@ -785,6 +850,10 @@ async def approve_time_entry(
     entry.approved_at = datetime.now(timezone.utc)
     entry.rejection_reason = None
     entry.updated_by = approved_by_id
+
+    # Freeze the billable rate onto the entry (role-rate card -> project rate).
+    # Once stamped, later rate-card/project edits never re-price this entry.
+    await _stamp_billed_rate(db, entry)
 
     db.add(entry)
     await db.commit()
@@ -816,6 +885,8 @@ async def approve_time_entries_batch(
         entry.approved_at = approved_at
         entry.rejection_reason = None
         entry.updated_by = approved_by_id
+        # Freeze the billable rate (see approve_time_entry).
+        await _stamp_billed_rate(db, entry)
         db.add(entry)
 
     await db.commit()

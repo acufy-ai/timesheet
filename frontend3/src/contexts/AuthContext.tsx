@@ -239,7 +239,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshUser = useCallback(async (): Promise<User | null> => {
     try {
       const res = await authApi.me();
-      const me = res.data as User;
+      // Overlay the token's active_role: /auth/me returns users.role (the
+      // PRIMARY role), so without this a multi-role user silently reverts to
+      // their primary role view whenever refreshUser runs (e.g. after a 401
+      // refresh or a manual re-fetch). That was the "came back and the portal
+      // had switched roles" bug.
+      const me = applyActiveRole(res.data as User, window.sessionStorage.getItem(TOKEN_KEY));
       setUser(me);
       writeCachedUser(me);
       return me;

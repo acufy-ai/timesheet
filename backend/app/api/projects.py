@@ -3,14 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas import ProjectResponse, ProjectCreate, ProjectUpdate, ProjectWithClient
 from app.crud.project import (
     get_project_by_id, create_project, update_project, delete_project,
-    list_projects_for_user, validate_project_manager_ids
+    list_projects_for_user, validate_project_manager_ids, next_project_code,
 )
 from app.crud.client import get_client_by_id
 from app.crud.time_entry import count_protected_entries_for_project
 from app.crud.task import validate_assignee_ids as validate_user_ids_in_tenant
 from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.models.assignments import UserProjectAccess, ProjectManager
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.api._client_access import (
     require_client_manager, assert_client_access, visible_client_ids,
 )
@@ -75,11 +75,31 @@ async def list_all_projects(
         skip=skip,
         limit=limit,
     )
-    # Managers only see projects under clients they PM (admins: all).
-    visible = await visible_client_ids(db, current_user)
-    if visible is not None:
-        projects = [p for p in projects if p.client_id in visible]
+    # Managers only see projects under clients they PM (admins: all). This
+    # client-visibility filter is a MANAGER scoping rule — `visible_client_ids`
+    # returns the user's PM-client set, which is empty for an EMPLOYEE/VIEWER and
+    # would wrongly drop every project. Employees are already scoped to their
+    # assigned projects inside `list_projects_for_user`, so only apply the PM
+    # filter for managers.
+    if current_user.role == UserRole.MANAGER:
+        visible = await visible_client_ids(db, current_user)
+        if visible is not None:
+            projects = [p for p in projects if p.client_id in visible]
     return await _attach_roster(db, list(projects))
+
+
+@router.get("/next-code")
+async def get_next_project_code(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """The next auto project code (PR####) for the New project form. Managers
+    and admins only — this surface is the client-management create flow.
+
+    Declared before /{project_id} so 'next-code' isn't parsed as an id."""
+    require_client_manager(current_user)
+    code = await next_project_code(db, current_user.tenant_id)
+    return {"code": code}
 
 
 @router.get("/{project_id}", response_model=ProjectWithClient)

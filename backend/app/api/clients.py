@@ -425,6 +425,7 @@ async def bulk_delete_clients(
 ) -> dict:
     require_client_manager(current_user)
     deleted = 0
+    skipped_protected: list[int] = []
     for client_id in body.client_ids:
         client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
         if not client:
@@ -435,6 +436,15 @@ async def bulk_delete_clients(
                 await assert_client_access(db, current_user, client_id)
             except HTTPException:
                 continue
+        # Same delete-protection as the single-delete endpoint: never cascade
+        # away a client whose projects carry submitted/approved/rejected time
+        # entries. Skip it (partial-safe bulk op) and report it back.
+        protected = await count_protected_entries_for_client(
+            db, client_id, tenant_id=current_user.tenant_id
+        )
+        if protected:
+            skipped_protected.append(client_id)
+            continue
         ingestion_client_id = client.ingestion_client_id
         client_id_local = client.id
         success = await delete_client(db, client_id, tenant_id=current_user.tenant_id)
@@ -452,7 +462,7 @@ async def bulk_delete_clients(
                 changed_by_name=current_user.full_name,
                 session=db,
             )
-    return {"deleted": deleted}
+    return {"deleted": deleted, "skipped_protected": skipped_protected}
 
 
 @router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)

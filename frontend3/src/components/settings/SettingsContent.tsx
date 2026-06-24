@@ -10,6 +10,8 @@ import { EmailTemplateSettings } from './sections/EmailTemplateSettings';
 import { BrandingSettings } from './sections/BrandingSettings';
 import { CustomizationSettings } from './sections/CustomizationSettings';
 import { ClientPortalSettings } from './sections/ClientPortalSettings';
+import { StaffingSettings } from './sections/StaffingSettings';
+import { ApprovalsSettings } from './sections/ApprovalsSettings';
 
 // Legacy ``email-smtp`` aliases ``outbound-email``: the standalone
 // Email / SMTP page used to show the same SMTP credentials that Outbound
@@ -18,6 +20,8 @@ import { ClientPortalSettings } from './sections/ClientPortalSettings';
 const sectionMap: Record<string, React.FC> = {
   'time-entry':      TimeEntrySettings,
   'timeoff-policy':  TimeOffPolicySettings,
+  'staffing':        StaffingSettings,
+  'approvals':       ApprovalsSettings,
   'security':        SecuritySettings,
   'reminders':       RemindersSettings,
   'notifications':   NotificationsSettings,

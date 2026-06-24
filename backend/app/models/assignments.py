@@ -1,21 +1,27 @@
-from sqlalchemy import ForeignKey, Integer
+from sqlalchemy import Boolean, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
 
 
 class EmployeeManagerAssignment(Base, TimestampMixin):
+    """An employee->manager reporting edge. Multi-manager: an employee may have
+    several rows (composite PK on employee_id + manager_id); exactly one may be
+    flagged is_primary (enforced by a partial unique index)."""
+
     __tablename__ = "employee_manager_assignments"
 
     employee_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), primary_key=True)
     manager_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id"), nullable=False, index=True)
+        ForeignKey("users.id"), primary_key=True, index=True)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
     employee = relationship(
         "User",
         foreign_keys=[employee_id],
-        back_populates="manager_assignment",
+        back_populates="manager_assignments",
     )
     manager = relationship(
         "User",
