@@ -190,33 +190,36 @@ async def verify_invitation_token(
     try:
         peek = _jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         email = peek.get("email")
+        jti = peek.get("jti")
     except _JWTError:
         return {"valid": False, "reason": "malformed"}
-    if not email:
+    if not email or not jti:
         return {"valid": False, "reason": "malformed"}
 
-    try:
-        user, tenant_slug = await _find_user_across_tenant_dbs(email)
-    except HTTPException:
-        return {"valid": False, "reason": "user_gone"}
+    # Resolve the DB that OWNS this token by jti (NOT by email). An email can
+    # exist in several tenants, so an email-based lookup can hit the wrong DB and
+    # report "unknown" even though the token is valid in its real tenant DB.
+    tenant_slug = await _find_tenant_slug_for_token_jti(jti, email)
+    if tenant_slug is False:
+        return {"valid": False, "reason": "unknown"}
 
     if tenant_slug:
         try:
             async with tenant_session(tenant_slug) as tdb:
                 try:
-                    _, row = await verify_invite_token(tdb, token)
-                    return {"valid": True, "email": user.email, "purpose": row.purpose}
+                    u, row = await verify_invite_token(tdb, token)
+                    return {"valid": True, "email": u.email, "purpose": row.purpose}
                 except PasswordInviteError as exc:
-                    return {"valid": False, "email": user.email, "reason": exc.code}
+                    return {"valid": False, "reason": exc.code}
         except (LookupError, ValueError):
-            pass
+            return {"valid": False, "reason": "unknown"}
 
     async with AsyncSessionLocal() as sdb:
         try:
-            _, row = await verify_invite_token(sdb, token)
-            return {"valid": True, "email": user.email, "purpose": row.purpose}
+            u, row = await verify_invite_token(sdb, token)
+            return {"valid": True, "email": u.email, "purpose": row.purpose}
         except PasswordInviteError as exc:
-            return {"valid": False, "email": user.email, "reason": exc.code}
+            return {"valid": False, "reason": exc.code}
 
 
 @router.post("/invitation/set-password", response_model=SetPasswordResponse)
