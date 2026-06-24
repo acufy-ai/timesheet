@@ -44,6 +44,7 @@ async def _seed_tenant_admin(
     TARGET tenant and create the admin there. Used by both tenant-create
     (optional first admin) and the standalone add-admin endpoint.
     """
+    from sqlalchemy import text as _sa_text
     from app.db_tenant import tenant_session
     from app.crud.user import create_user, get_user_by_email
     from app.schemas import UserCreate
@@ -52,6 +53,25 @@ async def _seed_tenant_admin(
     from app.api.platform_settings import get_effective_smtp_config
 
     async with tenant_session(tenant.slug) as tdb:
+        # Guard the FK invariant up front. users.tenant_id FKs into the LOCAL
+        # tenants table; for an isolated tenant that row MUST match the control
+        # plane (same id + slug). A freshly-provisioned isolated DB can carry the
+        # schema-template placeholder (id=1, slug "default") that was never
+        # reconciled, which would fail the insert with a confusing FK violation.
+        # Detect that and return an actionable 409 instead.
+        local_tid = (await tdb.execute(_sa_text(
+            "SELECT id FROM tenants WHERE id = :tid"
+        ), {"tid": tenant.id})).scalar_one_or_none()
+        if local_tid is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"This tenant's database is missing its tenant row "
+                    f"(id={tenant.id}, slug={tenant.slug}); it was provisioned with a "
+                    "placeholder. Reconcile the per-tenant 'tenants' row before adding users."
+                ),
+            )
+
         existing = await get_user_by_email(tdb, email)
         if existing is not None:
             raise HTTPException(

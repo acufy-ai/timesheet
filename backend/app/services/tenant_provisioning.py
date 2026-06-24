@@ -169,6 +169,53 @@ async def _read_alembic_revision(db_url: str) -> Optional[str]:
         await engine.dispose()
 
 
+async def _reconcile_tenant_row(db_url: str, *, tenant_id: int, slug: str, name: str) -> None:
+    """Make the per-tenant DB's ``tenants`` table carry the REAL tenant row.
+
+    Migration 002 seeds a placeholder ``('Default Tenant', 'default')`` row that
+    auto-gets id=1. For an isolated tenant whose control-plane id is not 1, that
+    placeholder is wrong: every ``users.tenant_id`` FK (and other tenant_id FKs)
+    must resolve to a tenants row with the CONTROL id. Without this, the first
+    user/admin created in the new DB fails with a ForeignKeyViolation.
+
+    We force the single tenants row to (control_id, slug, name): update the
+    placeholder's id in place when it's the only row, else insert/upsert. Safe to
+    re-run (idempotent)."""
+    engine = create_async_engine(db_url)
+    try:
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text("SELECT id FROM tenants ORDER BY id"))).scalars().all()
+            if rows == [tenant_id]:
+                # Already correct.
+                await conn.execute(
+                    text("UPDATE tenants SET slug = :slug, name = :name WHERE id = :tid"),
+                    {"slug": slug, "name": name, "tid": tenant_id},
+                )
+            elif len(rows) == 1:
+                # Single placeholder row with the wrong id — retarget it to the
+                # control id (children FK by id, but a fresh DB has no children
+                # yet, so an id rewrite is safe here).
+                await conn.execute(
+                    text("UPDATE tenants SET id = :tid, slug = :slug, name = :name WHERE id = :old"),
+                    {"tid": tenant_id, "slug": slug, "name": name, "old": rows[0]},
+                )
+                await conn.execute(text(
+                    "SELECT setval('tenants_id_seq', GREATEST((SELECT COALESCE(MAX(id),0) FROM tenants), :tid))"
+                ), {"tid": tenant_id})
+            elif tenant_id not in rows:
+                # Multiple rows and ours is missing — insert it.
+                await conn.execute(
+                    text("INSERT INTO tenants (id, name, slug, status, created_at, updated_at) "
+                         "VALUES (:tid, :name, :slug, 'active', NOW(), NOW()) ON CONFLICT (id) DO NOTHING"),
+                    {"tid": tenant_id, "slug": slug, "name": name},
+                )
+                await conn.execute(text(
+                    "SELECT setval('tenants_id_seq', GREATEST((SELECT COALESCE(MAX(id),0) FROM tenants), :tid))"
+                ), {"tid": tenant_id})
+    finally:
+        await engine.dispose()
+
+
 async def provision_tenant_db(
     control_session: AsyncSession,
     tenant: ControlTenant,
@@ -213,6 +260,13 @@ async def provision_tenant_db(
     try:
         await _ensure_database_exists(db_name)
         _run_alembic_upgrade(db_url)
+
+        # Reconcile the per-tenant DB's tenants row to the control identity so
+        # tenant_id FKs (users, etc.) resolve. Migration 002 leaves a wrong
+        # placeholder row; without this the first user-write FK-violates.
+        await _reconcile_tenant_row(
+            db_url, tenant_id=tenant.id, slug=tenant.slug, name=tenant.name,
+        )
 
         tenant.db_name = db_name
         tenant.db_host = db_host
