@@ -965,10 +965,17 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     if mirror_fields_changed:
         await _mirror_user_update_to_shared_db(user, previous_email=previous_email)
 
-    # Expire the in-session object so the re-fetch below reloads the freshly
-    # reconciled manager assignments rather than a stale identity-map copy.
-    db.expire(user)
-    return await get_user_by_id(db, user.id)
+    # Reload the freshly-reconciled state. We refresh IN PLACE (re-using the
+    # session's current connection) rather than expiring + issuing a brand-new
+    # query: on the per-tenant async engine, a new connection checkout right
+    # after commit can trip pool pre-ping's do_ping in a non-greenlet context
+    # (MissingGreenlet), which left the change committed but the request 500-ing.
+    # refresh() with eager relationship loads gives the same result without a
+    # fresh checkout.
+    await db.refresh(user, attribute_names=[
+        "manager_assignment", "manager_assignments", "project_access", "task_access",
+    ])
+    return user
 
 
 async def delete_user(db: AsyncSession, user_id: int) -> bool:

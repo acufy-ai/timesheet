@@ -1298,6 +1298,19 @@ async def update_user_endpoint(
                 detail="That username or email is already in use.",
             )
 
+        # Snapshot the freshly-loaded scalars/derived values NOW, before any
+        # other query on this session (e.g. the manager lookups below) can expire
+        # `updated_user`. The `project_ids` property reads the `project_access`
+        # relationship lazily; touching it after re-expiry raises MissingGreenlet
+        # in async context — which left the manager change committed but the
+        # request 500-ing ("Could not update access" but it actually saved).
+        u_id = updated_user.id
+        u_tenant_id = updated_user.tenant_id
+        u_full_name = updated_user.full_name
+        u_manager_id = updated_user.manager_id
+        u_is_active = updated_user.is_active
+        u_project_ids = sorted(updated_user.project_ids or [])
+
         if deactivated:
             background_tasks.add_task(
                 _send_outbound_webhook,
@@ -1381,49 +1394,57 @@ async def update_user_endpoint(
                         )
                     )
 
-            if previous_manager_id != updated_user.manager_id:
-                old_manager = await get_user_by_id(db, previous_manager_id) if previous_manager_id else None
-                new_manager = await get_user_by_id(db, updated_user.manager_id) if updated_user.manager_id else None
+            if previous_manager_id != u_manager_id:
+                # Resolve names via lightweight scalar queries (these expire the
+                # ORM `updated_user`, which is why we snapshotted its derived
+                # values above before any of this).
+                old_manager_name = (await db.execute(
+                    select(User.full_name).where(User.id == previous_manager_id)
+                )).scalar_one_or_none() if previous_manager_id else None
+                new_manager_name = (await db.execute(
+                    select(User.full_name).where(User.id == u_manager_id)
+                )).scalar_one_or_none() if u_manager_id else None
                 activity_events.append(
                     build_activity_event(
                         activity_type="USER_MANAGER_CHANGED",
                         visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-                        tenant_id=updated_user.tenant_id,
+                        tenant_id=u_tenant_id,
                         actor_user=current_user,
                         entity_type="user",
-                        entity_id=updated_user.id,
-                        summary=f"{current_user.full_name} changed {updated_user.full_name}'s manager from {old_manager.full_name if old_manager else 'Unassigned'} to {new_manager.full_name if new_manager else 'Unassigned'}.",
+                        entity_id=u_id,
+                        summary=f"{current_user.full_name} changed {u_full_name}'s manager from {old_manager_name or 'Unassigned'} to {new_manager_name or 'Unassigned'}.",
                         route="/user-management",
-                        route_params={"userId": updated_user.id},
+                        route_params={"userId": u_id},
                         metadata={
                             "old_manager_id": previous_manager_id,
-                            "new_manager_id": updated_user.manager_id,
-                            "old_manager_name": old_manager.full_name if old_manager else None,
-                            "new_manager_name": new_manager.full_name if new_manager else None,
+                            "new_manager_id": u_manager_id,
+                            "old_manager_name": old_manager_name,
+                            "new_manager_name": new_manager_name,
                         },
                     )
                 )
 
-            next_project_ids = sorted(updated_user.project_ids or [])
-            if previous_project_ids != next_project_ids:
+            if previous_project_ids != u_project_ids:
                 activity_events.append(
                     build_activity_event(
                         activity_type="USER_PROJECT_ACCESS_CHANGED",
                         visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-                        tenant_id=updated_user.tenant_id,
+                        tenant_id=u_tenant_id,
                         actor_user=current_user,
                         entity_type="user",
-                        entity_id=updated_user.id,
-                        summary=f"{current_user.full_name} updated project access for {updated_user.full_name}.",
+                        entity_id=u_id,
+                        summary=f"{current_user.full_name} updated project access for {u_full_name}.",
                         route="/user-management",
-                        route_params={"userId": updated_user.id},
-                        metadata={"old_project_ids": previous_project_ids, "new_project_ids": next_project_ids},
+                        route_params={"userId": u_id},
+                        metadata={"old_project_ids": previous_project_ids, "new_project_ids": u_project_ids},
                     )
                 )
 
         await record_activity_events(db, activity_events)
 
-        return updated_user
+        # Re-fetch fresh (eager-loaded) so response serialization never touches an
+        # expired relationship after the activity-log queries above.
+        return await get_user_by_id(db, u_id)
 
     if user_id == current_user.id:
         raise HTTPException(
