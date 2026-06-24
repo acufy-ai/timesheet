@@ -237,7 +237,7 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
     <Card>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <p className="text-sm font-semibold text-foreground">Project hours by person</p>
-        <p className="text-xs text-muted-foreground">last {data.days_back}d · approved · {Number(data.grand_total_hours)}h total</p>
+        <p className="text-xs text-muted-foreground">hours: last {data.days_back}d · revenue: all-time · approved</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -250,6 +250,7 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
                 </th>
               ))}
               <th className="px-4 py-2 text-right font-semibold">Total</th>
+              <th className="px-4 py-2 text-right font-semibold" title="All-time billed revenue this person generated on these projects (approved billable hours x rate)">Revenue</th>
             </tr>
           </thead>
           <tbody>
@@ -268,6 +269,7 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
                   );
                 })}
                 <td className="px-4 py-2 text-right font-semibold tabular-nums text-foreground">{Number(r.total_hours)}h</td>
+                <td className="px-4 py-2 text-right tabular-nums text-foreground">{Number(r.revenue) > 0 ? fmtMoney(r.revenue) : '·'}</td>
               </tr>
             ))}
           </tbody>
@@ -278,6 +280,7 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
                 <td key={p.project_id} className="px-3 py-2 text-right tabular-nums">{Number(p.total_hours)}h</td>
               ))}
               <td className="px-4 py-2 text-right font-semibold tabular-nums text-foreground">{Number(data.grand_total_hours)}h</td>
+              <td className="px-4 py-2 text-right font-semibold tabular-nums text-foreground">{fmtMoney(rows.reduce((s, r) => s + Number(r.revenue), 0))}</td>
             </tr>
           </tfoot>
         </table>

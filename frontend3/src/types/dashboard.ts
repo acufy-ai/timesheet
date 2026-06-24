@@ -196,6 +196,7 @@ export interface TeamProjectMatrixRow {
   full_name: string;
   title?: string | null;
   total_hours: string | number;
+  revenue?: string | number;
   cells: TeamProjectMatrixCell[];
 }
 export interface TeamProjectMatrix {

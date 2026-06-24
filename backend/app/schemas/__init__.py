@@ -1243,6 +1243,9 @@ class TeamProjectMatrixRow(BaseModel):
     # against). Shown next to their name so a manager sees role context inline.
     title: Optional[str] = None
     total_hours: Decimal
+    # All-time billed revenue this person generated on the displayed projects
+    # (approved billable hours x rate) — "budget consumed" in dollars.
+    revenue: Decimal = Decimal("0")
     cells: list[TeamProjectMatrixCell]
 
 

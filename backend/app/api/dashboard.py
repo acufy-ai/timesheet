@@ -1888,6 +1888,29 @@ async def get_team_project_matrix(
         for pid in ordered_project_ids
     ]
 
+    # All-time revenue each person generated on these projects (approved billable
+    # hours x the frozen/resolved rate). This is "how much budget they consumed"
+    # in dollars. ALL-TIME on purpose — it matches the Financials tile, NOT the
+    # 30-day hours column (the UI labels the revenue accordingly).
+    from app.services.billing_rates import entry_billed_amount
+    revenue_by_user: dict[int, Decimal] = {}
+    if ordered_project_ids:
+        rev_rows = (await db.execute(
+            select(TimeEntry, Project)
+            .join(Project, TimeEntry.project_id == Project.id)
+            .where(
+                TimeEntry.user_id.in_(team_member_ids),
+                TimeEntry.project_id.in_(ordered_project_ids),
+                TimeEntry.status == TimeEntryStatus.APPROVED,
+                TimeEntry.is_billable.is_(True),
+            )
+        )).all()
+        for entry, proj in rev_rows:
+            revenue_by_user[entry.user_id] = (
+                revenue_by_user.get(entry.user_id, Decimal("0"))
+                + entry_billed_amount(entry, proj)
+            )
+
     rows: list[TeamProjectMatrixRow] = []
     for user_id, full_name, title in members:
         cells: list[TeamProjectMatrixCell] = []
@@ -1904,7 +1927,9 @@ async def get_team_project_matrix(
         rows.append(
             TeamProjectMatrixRow(
                 user_id=user_id, full_name=full_name, title=title,
-                total_hours=row_total, cells=cells
+                total_hours=row_total,
+                revenue=revenue_by_user.get(user_id, Decimal("0")),
+                cells=cells,
             )
         )
     # Busiest employee first.
