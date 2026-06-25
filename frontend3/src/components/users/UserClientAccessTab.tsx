@@ -237,7 +237,6 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                           ) : tasks.map((t) => (
                             <div key={t.id} className="mb-1.5 flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2">
                               <span className="flex-1 truncate text-[13px] font-semibold">{t.name}</span>
-                              <span className="shrink-0 text-[11px] text-muted-foreground">{t.assignee_ids?.length ?? 0} assignee{(t.assignee_ids?.length ?? 0) === 1 ? '' : 's'}</span>
                               {t.status ? <TonePill tone={TASK_TONE[t.status] ?? 'neutral'}>{fmtStatus(t.status)}</TonePill> : null}
                               {isAdmin ? (
                                 <span className="flex shrink-0 gap-1">
