@@ -20,8 +20,9 @@ const TASK_TONE: Record<string, Tone> = {
 const fmtStatus = (s?: string) => (s ? s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '');
 
 // The Client Access tab: shows the client > project > task tree the user is on
-// (their project access + task access), with full CRUD for admins (mirrors
-// Client Management). Managers get the read-only view + a link out.
+// (their project access + task access). Admins get full structural CRUD
+// (create/edit/delete projects + tasks); both admins and managers can grant a
+// report access to a client's existing projects/tasks via the grant modal.
 export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   user: ManagedUser; isAdmin: boolean; onFlash: (tone: 'ok' | 'err', text: string) => void;
 }) {
@@ -116,8 +117,8 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
           description={isAdmin ? 'This user is not on any project or task.' : 'Not assigned to any client, project, or task yet.'}
         />
         {/* Both admins and managers can add a client. The client list and the
-            grant tree are server-scoped to a manager's own PM clients/projects,
-            and the grant modal limits managers to whole-project grants. */}
+            grant tree are server-scoped to a manager's own PM clients/projects;
+            both can grant whole-project or per-task access. */}
         <div className="mt-3">
           <Button onClick={() => setAddClientOpen(true)}>
             <Plus className="h-4 w-4" /> Add client
@@ -130,7 +131,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
         />
         {grantClientId != null ? (
           <GrantClientAccessModal key={grantClientId}
-            user={user} clientId={grantClientId} isAdmin={isAdmin}
+            user={user} clientId={grantClientId}
             clientName={clientById.get(grantClientId)?.name ?? `Client #${grantClientId}`}
             onClose={() => setGrantClientId(null)}
             onSaved={(msg) => { onFlash('ok', msg); setGrantClientId(null); }}
@@ -264,7 +265,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
       />
       {grantClientId != null ? (
         <GrantClientAccessModal key={grantClientId}
-          user={user} clientId={grantClientId} isAdmin={isAdmin}
+          user={user} clientId={grantClientId}
           clientName={clientById.get(grantClientId)?.name ?? `Client #${grantClientId}`}
           onClose={() => setGrantClientId(null)}
           onSaved={(msg) => { onFlash('ok', msg); setGrantClientId(null); }}
@@ -372,12 +373,11 @@ function AddClientPicker({
 // project_ids). On save we merge this client's selection into the user's full
 // access set across all clients and PATCH project_ids/task_ids.
 function GrantClientAccessModal({
-  user, clientId, clientName, isAdmin, onClose, onSaved, onAddProject,
+  user, clientId, clientName, onClose, onSaved, onAddProject,
 }: {
   user: ManagedUser;
   clientId: number;
   clientName: string;
-  isAdmin: boolean;
   onClose: () => void;
   onSaved: (msg: string) => void;
   onAddProject: () => void;
@@ -439,9 +439,8 @@ function GrantClientAccessModal({
 
   async function save() {
     setError(null);
-    const data = isAdmin
-      ? { project_ids: [...projSel], task_ids: [...taskSel] }
-      : { project_ids: [...projSel] }; // managers: project grain only
+    // Admins and managers can both grant project + task access for their reports.
+    const data = { project_ids: [...projSel], task_ids: [...taskSel] };
     try {
       await update.mutateAsync({ id: user.id, data });
       onSaved('Client access updated.');
@@ -466,9 +465,7 @@ function GrantClientAccessModal({
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-[12.5px] text-muted-foreground">
-            {isAdmin
-              ? 'Select the projects and tasks this user can access.'
-              : 'Select the projects this user can access.'}
+            Select the projects and tasks this user can access.
           </p>
           {/* Both admins and managers (PMs on this client) can create a new
               project here; the backend authorizes managers by client access. */}
@@ -508,10 +505,8 @@ function GrantClientAccessModal({
                       <span className="ml-auto shrink-0 text-[11.5px] text-muted-foreground">{tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
                     </button>
                   </div>
-                  {/* Tasks are visible to everyone. Per-task SELECTION is
-                      admin-only (managers grant whole projects; the backend
-                      rejects task_ids from managers), so for managers the task
-                      boxes just reflect the whole-project state, read-only. */}
+                  {/* Per-task selection — available to admins and managers alike
+                      (the backend validates task access to the tenant). */}
                   {open ? (
                     <div className="border-t border-border bg-background px-3 py-2">
                       {tasks.length === 0 ? (
@@ -519,8 +514,8 @@ function GrantClientAccessModal({
                       ) : tasks.map((t) => {
                         const on = taskSel.has(t.id) || projSel.has(p.id);
                         return (
-                          <label key={t.id} className={cn('flex items-center gap-2.5 py-1.5', isAdmin ? 'cursor-pointer' : 'cursor-default')}>
-                            <span onClick={isAdmin ? (e) => { e.preventDefault(); toggleTask(t); } : undefined}><Box state={on ? 'on' : 'off'} /></span>
+                          <label key={t.id} className="flex cursor-pointer items-center gap-2.5 py-1.5">
+                            <span onClick={(e) => { e.preventDefault(); toggleTask(t); }}><Box state={on ? 'on' : 'off'} /></span>
                             <span className="text-[13px]">{t.name}</span>
                           </label>
                         );

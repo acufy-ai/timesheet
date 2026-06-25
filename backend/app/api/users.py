@@ -1488,15 +1488,22 @@ async def update_user_endpoint(
             detail="Access denied",
         )
 
+    # Managers may set project AND task access for their reports (task access is
+    # validated to the tenant in _sync_user_assignments, same as project access).
     requested_update_fields = set(
         user_update.model_dump(exclude_unset=True).keys())
-    if requested_update_fields - {"project_ids"}:
+    if requested_update_fields - {"project_ids", "task_ids"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Managers can only update employee project assignments",
+            detail="Managers can only update employee project and task assignments",
         )
 
-    restricted_update = UserUpdate(project_ids=user_update.project_ids or [])
+    restricted_fields: dict = {}
+    if "project_ids" in requested_update_fields:
+        restricted_fields["project_ids"] = user_update.project_ids or []
+    if "task_ids" in requested_update_fields:
+        restricted_fields["task_ids"] = user_update.task_ids or []
+    restricted_update = UserUpdate(**restricted_fields)
     previous_project_ids = sorted(user.project_ids or [])
 
     try:
