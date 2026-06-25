@@ -5,6 +5,7 @@ import { Briefcase, Check, ChevronRight, Folder, Loader2, Minus, Pencil, Plus, T
 import { Button, Empty, Modal, TonePill } from '@/components/ui';
 import { useAllProjects, useAllTasks, useAssignableUsers, useClients, useClientTeam, useDeleteProject, useDeleteTask, useUpdateUser, useUserClients } from '@/hooks/useAdmin';
 import { clientPortalApi } from '@/api/client';
+import { useAuth } from '@/contexts/AuthContext';
 import { isClientRole } from '@/lib/clientRole';
 import { cn } from '@/lib/cn';
 import type { ClientGrant, ClientTeamMember, FullProject, FullTask, ManagedUser } from '@/types/admin';
@@ -29,6 +30,7 @@ const fmtStatus = (s?: string) => (s ? s.replace(/_/g, ' ').replace(/\b\w/g, (c)
 export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   user: ManagedUser; isAdmin: boolean; onFlash: (tone: 'ok' | 'err', text: string) => void;
 }) {
+  const { user: viewer } = useAuth();
   const clientsQ = useClients();
   const projectsQ = useAllProjects();
   const tasksQ = useAllTasks();
@@ -131,10 +133,16 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   }, [usersDir]);
   const nameOf = (uid: number): string => userById.get(uid)?.full_name ?? `#${uid}`;
 
-  // Structural/grant edits in THIS tab write internal user_project_access — they
-  // don't apply to a CLIENT user (whose access is client-portal grants, edited
-  // on the Client Management page). So for client users this tab is read-only.
-  const canManage = isAdmin && !isClient;
+  // Two tiers of management on this tab, neither of which applies to a CLIENT
+  // user (their access is client-portal grants, edited on the Client Management
+  // page — so this tab is read-only for them):
+  //   canGrant      — Add client / Manage access (grant existing projects/tasks).
+  //                   Admins AND managers can do this for an internal report; the
+  //                   backend authorizes a manager only for their own reports.
+  //   canStructural — New project / Edit / Delete project + task. Admin only.
+  const viewerIsManager = viewer?.role === 'MANAGER';
+  const canGrant = !isClient && (isAdmin || viewerIsManager);
+  const canStructural = isAdmin && !isClient;
 
   async function removeProject(p: FullProject) {
     if (!window.confirm(`Delete project "${p.name}" and its tasks?`)) return;
@@ -157,7 +165,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
         />
         {/* Admins/managers can add a client (internal access). Hidden for client
             users — their access is managed via the client-portal grant flow. */}
-        {canManage ? (
+        {canGrant ? (
           <div className="mt-3">
             <Button onClick={() => setAddClientOpen(true)}>
               <Plus className="h-4 w-4" /> Add client
@@ -196,7 +204,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
 
   return (
     <div className="space-y-2.5">
-      {canManage ? (
+      {canGrant ? (
         <div className="flex justify-end">
           <Button size="sm" onClick={() => setAddClientOpen(true)}>
             <Plus className="h-3.5 w-3.5" /> Add client
@@ -228,16 +236,19 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
               <div className="border-t border-border bg-background px-3 py-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Projects</span>
-                  {/* Manage access / structural CRUD apply only to INTERNAL
-                      access — hidden for client users (read-only here). */}
-                  {canManage ? (
+                  {/* Manage access = grant existing projects/tasks (admins +
+                      managers). New project = structural create (admins). Both
+                      hidden for client users (read-only here). */}
+                  {canGrant ? (
                     <div className="flex items-center gap-1.5">
                       <Button size="sm" variant="secondary" onClick={() => setGrantClientId(cid)}>
                         <Plus className="h-3.5 w-3.5" /> Manage access
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setProjModal({ clientId: cid, project: null })}>
-                        New project
-                      </Button>
+                      {canStructural ? (
+                        <Button size="sm" variant="ghost" onClick={() => setProjModal({ clientId: cid, project: null })}>
+                          New project
+                        </Button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -255,7 +266,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                           {p.status ? <TonePill tone={PROJ_TONE[p.status] ?? 'neutral'}>{fmtStatus(p.status)}</TonePill> : null}
                           <span className="ml-auto shrink-0 text-[11.5px] text-muted-foreground">{tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
                         </button>
-                        {canManage ? (
+                        {canStructural ? (
                           <span className="flex shrink-0 gap-1">
                             <button type="button" className="icon-btn-sm" title="Edit project" onClick={() => setProjModal({ clientId: cid, project: p })}><Pencil className="h-3.5 w-3.5" /></button>
                             <button type="button" className="icon-btn-sm icon-btn-danger" title="Delete project" onClick={() => removeProject(p)}><Trash2 className="h-3.5 w-3.5" /></button>
@@ -266,7 +277,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                         <div className="border-t border-border bg-background px-3 py-2.5">
                           <div className="mb-2 flex items-center justify-between">
                             <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Tasks</span>
-                            {canManage ? (
+                            {canStructural ? (
                               <Button size="sm" variant="secondary" onClick={() => setTaskModal({ projectId: p.id, task: null })}>
                                 <Plus className="h-3.5 w-3.5" /> Add task
                               </Button>
@@ -278,7 +289,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                             <div key={t.id} className="mb-1.5 flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2">
                               <span className="flex-1 truncate text-[13px] font-semibold">{t.name}</span>
                               {t.status ? <TonePill tone={TASK_TONE[t.status] ?? 'neutral'}>{fmtStatus(t.status)}</TonePill> : null}
-                              {canManage ? (
+                              {canStructural ? (
                                 <span className="flex shrink-0 gap-1">
                                   <button type="button" className="icon-btn-sm" title="Edit task" onClick={() => setTaskModal({ projectId: p.id, task: t })}><Pencil className="h-3.5 w-3.5" /></button>
                                   <button type="button" className="icon-btn-sm icon-btn-danger" title="Delete task" onClick={() => removeTask(t)}><Trash2 className="h-3.5 w-3.5" /></button>
