@@ -505,9 +505,9 @@ export function DashboardPage() {
                     <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                       <th className="px-4 py-2 font-semibold">Project</th>
                       <th className="px-4 py-2 font-semibold">Client</th>
-                      <th className="px-4 py-2 font-semibold">Hours this week</th>
-                      <th className="px-4 py-2 font-semibold">Budget</th>
-                      <th className="px-4 py-2 font-semibold">Health</th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours this week" /></th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget" /></th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Health" /></th>
                     </tr>
                   </thead>
                   <tbody>
