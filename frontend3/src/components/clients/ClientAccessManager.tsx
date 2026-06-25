@@ -320,14 +320,13 @@ function InviteClientModal({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [label, setLabel] = useState('Project Sponsor');
-  const [portalRole, setPortalRole] = useState<'manager' | 'employee'>('manager');
   const [selected, setSelected] = useState<SelMap>({});
   const [modes, setModes] = useState<Record<number, Mode>>({});
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   function reset() {
-    setFullName(''); setEmail(''); setLabel('Project Sponsor'); setPortalRole('manager');
+    setFullName(''); setEmail(''); setLabel('Project Sponsor');
     setSelected({}); setModes({}); setErrors({});
   }
 
@@ -348,7 +347,6 @@ function InviteClientModal({
     try {
       const res = await clientPortalApi.invite({
         full_name: fullName.trim(), email: email.trim(), label: label.trim() || null,
-        portal_role: portalRole,
         grants,
       });
       reset();
@@ -409,23 +407,6 @@ function InviteClientModal({
               <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /> <span className="font-normal">(an invite link is sent here)</span></label>
               <Input type="email" value={email} error={!!errors.email} onChange={(e) => { setEmail(e.target.value); setErrors((p) => ({ ...p, email: '' })); }} placeholder="dana@client.com" />
               <FieldError error={errors.email} />
-            </div>
-            <div>
-              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Portal access</label>
-              <div className="inline-flex rounded-full bg-muted p-0.5">
-                {([['manager', 'Client manager'], ['employee', 'Client employee']] as const).map(([val, lbl]) => (
-                  <button key={val} type="button" onClick={() => setPortalRole(val)}
-                    className={cn('rounded-full px-3.5 py-1.5 text-xs font-semibold transition',
-                      portalRole === val ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground')}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {portalRole === 'manager'
-                  ? 'A client manager can manage their own team and review their work.'
-                  : 'A client employee is added under this client’s manager (read/update only).'}
-              </p>
             </div>
             <div>
               <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Title <span className="font-normal">(label, e.g. Project Sponsor)</span></label>

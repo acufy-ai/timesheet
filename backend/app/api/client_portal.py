@@ -1056,46 +1056,25 @@ async def invite_client(
     for project_id, task_id, _ in scopes:
         await _assert_grant_project_access(db, current_user, project_id=project_id, task_id=task_id)
 
-    # Resolve the role to create. "employee" => CLIENT_EMPLOYEE, linked to the
-    # client's manager (auto when there's one; PM-chosen when several). Anything
-    # else => CLIENT_MANAGER (the default).
-    as_employee = (payload.portal_role or "manager").lower() == "employee"
-    new_role = UserRole.CLIENT_EMPLOYEE if as_employee else UserRole.CLIENT_MANAGER
-    resolved_manager_id: Optional[int] = None
+    # Client-side invitees are tagged with a single flat CLIENT role. The former
+    # CLIENT_MANAGER / CLIENT_EMPLOYEE split is retired for the invite flow; a
+    # CLIENT can do exactly what their per-project grants permit. (`portal_role`
+    # and `manager_user_id` on the request are now ignored.)
+    new_role = UserRole.CLIENT
+
+    # Create the CLIENT user via the shared CRUD (handles legacy login mirror).
+    from app.crud.user import create_user, get_user_by_email
+    from sqlalchemy.exc import IntegrityError
+
+    # Durable client association from the first grant scope, so the account
+    # always shows under its client even with zero grants later.
     resolved_client_id: Optional[int] = None
-    if as_employee:
-        # Determine the client from the first grant scope.
-        if not scopes:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="A client employee must be invited with at least one project or task to work on.")
+    if scopes:
         first_pid, first_tid, _ = scopes[0]
         owning_project_id = await _assert_grant_project_access(
             db, current_user, project_id=first_pid, task_id=first_tid)
         owning_project = await db.get(Project, owning_project_id)
         resolved_client_id = owning_project.client_id if owning_project else None
-        if resolved_client_id is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Could not resolve the client.")
-        # Find the client's managers (CLIENT_MANAGERs with a grant on this client).
-        manager_ids = await _client_manager_ids_for_client(db, current_user.tenant_id, resolved_client_id)
-        if not manager_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Add a client manager for this client before adding client employees.")
-        if payload.manager_user_id is not None:
-            if payload.manager_user_id not in manager_ids:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chosen manager doesn't manage this client.")
-            resolved_manager_id = payload.manager_user_id
-        elif len(manager_ids) == 1:
-            resolved_manager_id = manager_ids[0]
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This client has multiple managers. Choose which one this employee reports to.")
-
-    # Create the CLIENT user via the shared CRUD (handles legacy login mirror).
-    from app.crud.user import create_user, get_user_by_email
-    from sqlalchemy.exc import IntegrityError
 
     # Pre-check the email so a collision returns a clear message instead of a
     # raw DB unique-constraint error. The email may already belong to an
@@ -1125,8 +1104,8 @@ async def invite_client(
         full_name=payload.full_name,
         email=payload.email,
         is_external=True,                  # external person…
-        role=new_role,                     # …CLIENT_MANAGER or CLIENT_EMPLOYEE
-        title=payload.label or ("Client employee" if as_employee else "Client"),
+        role=new_role,                     # …a flat CLIENT
+        title=payload.label or "Client",
         is_active=True,
         tenant_id=current_user.tenant_id,
         # Durable client association so the account always shows under its client
@@ -1149,26 +1128,15 @@ async def invite_client(
             detail="Could not create the client account. Please check the details and try again.",
         )
 
-    # Attach one grant per requested scope (each with its own capabilities). For
-    # an employee, clamp caps to read/update (they can never create/delete).
+    # Attach one grant per requested scope, each with exactly the capabilities
+    # the PM chose (a CLIENT can do precisely what their grants permit).
     if scopes:
         for project_id, task_id, caps in scopes:
-            grant_caps = [c for c in caps if c in ("read", "update")] if as_employee else caps
-            if as_employee and "read" not in grant_caps:
-                grant_caps.append("read")
             db.add(ClientAccessGrant(
                 tenant_id=current_user.tenant_id, user_id=new_user.id,
                 project_id=project_id, task_id=task_id,
-                capabilities=sorted(set(grant_caps)), created_by=current_user.id,
+                capabilities=sorted(set(caps)), created_by=current_user.id,
             ))
-        await db.commit()
-
-    # Link a new employee to their client manager.
-    if as_employee and resolved_manager_id is not None and resolved_client_id is not None:
-        db.add(ClientEmployeeLink(
-            tenant_id=current_user.tenant_id, employee_user_id=new_user.id,
-            manager_user_id=resolved_manager_id, client_id=resolved_client_id,
-        ))
         await db.commit()
 
     # Email the set-password invite link. CLIENTs log in too, but they get
