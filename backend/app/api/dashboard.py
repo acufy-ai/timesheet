@@ -976,19 +976,23 @@ async def get_manager_team_overview(
     # truthful "started waiting on a manager" time; fall back to
     # created_at when missing (legacy rows).
     pending_rows = (await db.execute(
-        select(TimeEntry.submitted_at, TimeEntry.created_at)
+        select(TimeEntry.user_id, TimeEntry.submitted_at, TimeEntry.created_at)
         .where(
             TimeEntry.user_id.in_(team_member_ids),
             TimeEntry.status == TimeEntryStatus.SUBMITTED,
         )
     )).all()
-    pending_approvals_count = len(pending_rows)
+    # Count EMPLOYEES awaiting approval, not raw entries — the approval UI groups
+    # by employee (and week), so 5 pending days from one employee is "1 pending",
+    # matching the Approvals tab. The timestamps below still use all rows for the
+    # oldest/avg age of waiting work.
+    pending_approvals_count = len({r.user_id for r in pending_rows})
     pending_approvals_oldest_hours: Optional[int] = None
     pending_approvals_avg_hours: Optional[int] = None
     if pending_rows:
         now_utc = datetime.now(timezone.utc)
         ages_hours: list[float] = []
-        for submitted_at, created_at in pending_rows:
+        for _uid, submitted_at, created_at in pending_rows:
             ts = submitted_at or created_at
             if ts is None:
                 continue
