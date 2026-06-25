@@ -43,6 +43,8 @@ import type {
   AuditEvent,
   Client,
   ClientBody,
+  ClientImportPreview,
+  ClientImportResult,
   ClientTeamMember,
   ClientTeamBody,
   Contract,
@@ -529,6 +531,16 @@ export const clientPortalApi = {
 export const clientsApi = {
   list: () => api.get<Client[]>('/clients'),
   create: (data: ClientBody) => api.post<Client>('/clients', data),
+  // Bulk import: clients + projects + tasks + assignments from an XLSX/CSV.
+  importTemplate: () => api.get('/clients/import/template', { responseType: 'blob' }),
+  importPreview: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<ClientImportPreview>('/clients/import/preview', form,
+      { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+  importCommit: (data: ClientImportPreview['data']) =>
+    api.post<ClientImportResult>('/clients/import/commit', { data }),
   update: (id: number, data: Partial<ClientBody>) => api.put<Client>(`/clients/${id}`, data),
   remove: (id: number) => api.delete(`/clients/${id}`),
   bulkDelete: (client_ids: number[]) => api.post('/clients/bulk-delete', { client_ids }),

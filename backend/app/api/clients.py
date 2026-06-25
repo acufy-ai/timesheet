@@ -107,9 +107,16 @@ async def get_client(
     return client
 
 
+class ClientCreateWithTeam(ClientCreate):
+    """Create body that can carry the initial team so the client + its roster are
+    written in one request (no follow-up PUT /team that would re-check access)."""
+    pm_ids: list[int] = Field(default_factory=list)
+    member_ids: list[int] = Field(default_factory=list)
+
+
 @router.post("", response_model=ClientResponse, status_code=status.HTTP_201_CREATED)
 async def create_new_client(
-    client_create: ClientCreate,
+    client_create: ClientCreateWithTeam,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -124,8 +131,20 @@ async def create_new_client(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin, reviewer, or manager role required to create clients.",
         )
-    new_client = await create_client(db, client_create, tenant_id=current_user.tenant_id)
+    # Strip the team fields before creating the client row itself.
+    base = ClientCreate(**client_create.model_dump(exclude={"pm_ids", "member_ids"}))
+    new_client = await create_client(db, base, tenant_id=current_user.tenant_id)
     await add_creator_as_pm(db, current_user, new_client.id)
+    # Set the initial team in THIS request (the creator can always staff a client
+    # they just made). Doing it here — rather than a follow-up PUT /team that
+    # re-checks access — avoids a 403 when a role-switched admin's active role
+    # isn't recognized as a PM yet, and avoids a duplicate-name 500 on retry.
+    if client_create.pm_ids or client_create.member_ids:
+        await _write_client_roster(
+            db, new_client.id, current_user.tenant_id,
+            pm_ids=client_create.pm_ids, member_ids=client_create.member_ids,
+            replace=False)
+        await db.commit()
     if new_client.tenant_id is not None:
         await record_activity_events(
             db,
@@ -562,6 +581,43 @@ async def get_client_team(
     ]
 
 
+async def _write_client_roster(
+    db: AsyncSession, client_id: int, tenant_id: int,
+    *, pm_ids: list[int], member_ids: list[int], replace: bool = True,
+) -> None:
+    """Set a client's roster: pm_ids -> 'pm', member_ids -> 'member' (PM wins on
+    overlap). When replace=True, removes anyone no longer listed (the edit-team
+    semantics); when False, only adds/promotes (the create semantics, so the
+    auto-added creator-PM isn't wiped). Caller commits."""
+    desired: dict[int, ClientAssignmentRole] = {}
+    for uid in member_ids:
+        desired[uid] = ClientAssignmentRole.member
+    for uid in pm_ids:
+        desired[uid] = ClientAssignmentRole.pm
+
+    existing = (
+        await db.execute(
+            select(UserClientAssignment)
+            .where(UserClientAssignment.client_id == client_id)
+            .where(UserClientAssignment.tenant_id == tenant_id)
+        )
+    ).scalars().all()
+    by_user = {row.user_id: row for row in existing}
+
+    if replace:
+        for row in existing:
+            if row.user_id not in desired:
+                await db.delete(row)
+    for uid, role in desired.items():
+        row = by_user.get(uid)
+        if row is None:
+            db.add(UserClientAssignment(
+                tenant_id=tenant_id, user_id=uid, client_id=client_id, assignment_role=role))
+        elif row.assignment_role != role:
+            row.assignment_role = role
+            db.add(row)
+
+
 @router.put("/{client_id}/team", response_model=list[ClientTeamMember])
 async def set_client_team(
     client_id: int,
@@ -576,37 +632,82 @@ async def set_client_team(
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
     await assert_client_access(db, current_user, client_id)
-    tenant_id = current_user.tenant_id
-
-    # Desired role per user (PM wins over member).
-    desired: dict[int, ClientAssignmentRole] = {}
-    for uid in body.member_ids:
-        desired[uid] = ClientAssignmentRole.member
-    for uid in body.pm_ids:
-        desired[uid] = ClientAssignmentRole.pm
-
-    existing = (
-        await db.execute(
-            select(UserClientAssignment)
-            .where(UserClientAssignment.client_id == client_id)
-            .where(UserClientAssignment.tenant_id == tenant_id)
-        )
-    ).scalars().all()
-    by_user = {row.user_id: row for row in existing}
-
-    # Remove anyone no longer in the roster.
-    for row in existing:
-        if row.user_id not in desired:
-            await db.delete(row)
-    # Add or update the rest.
-    for uid, role in desired.items():
-        row = by_user.get(uid)
-        if row is None:
-            db.add(UserClientAssignment(
-                tenant_id=tenant_id, user_id=uid, client_id=client_id, assignment_role=role))
-        elif row.assignment_role != role:
-            row.assignment_role = role
-            db.add(row)
+    await _write_client_roster(
+        db, client_id, current_user.tenant_id,
+        pm_ids=body.pm_ids, member_ids=body.member_ids, replace=True)
     await db.commit()
-
     return await get_client_team(client_id, db=db, current_user=current_user)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk import: clients + projects + tasks + assignments from an XLSX/CSV.
+# Three-step (preview → commit) mirroring the user-import flow. Admin-gated.
+# ─────────────────────────────────────────────────────────────────────────────
+from fastapi import UploadFile, File  # noqa: E402
+from fastapi.responses import Response  # noqa: E402
+from app.services import client_import as _ci  # noqa: E402
+
+
+@router.get("/import/template")
+async def download_client_import_template(
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+):
+    """Download a pre-formatted XLSX template (Clients/Projects/Tasks/Assignments
+    tabs with the expected columns + one example row each)."""
+    import io
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    examples = {
+        "clients": ["Acme Health", "Acme Corporation LLC", "external", "active",
+                    "Jane Doe", "jane@acme.com", "+1 555 000 0000", "2026-01-01"],
+        "projects": ["Acme Health", "Website redesign", "WEB-01", "150", "100000",
+                     "USD", "planning", "2026-02-01", "2026-08-01", "pm@example.com"],
+        "tasks": ["Acme Health", "Website redesign", "Design mockups", "medium",
+                  "to_do", "Initial mockups for the homepage"],
+        "assignments": ["Acme Health", "Website redesign", "Design mockups",
+                        "employee@example.com"],
+    }
+    for sheet_key, cols in _ci.SHEETS.items():
+        ws = wb.create_sheet(title=sheet_key.capitalize())
+        ws.append(cols)
+        ws.append(examples[sheet_key])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="client-import-template.xlsx"'},
+    )
+
+
+@router.post("/import/preview")
+async def import_clients_preview(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Parse + validate the upload (no writes). Returns counts, errors, warnings,
+    and the parsed data (echoed back so commit needn't re-upload the file)."""
+    content = await file.read()
+    try:
+        data = _ci.parse_workbook(file.filename or "upload.xlsx", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _ci.build_preview(db, data, current_user.tenant_id)
+
+
+class _ClientImportCommitBody(PydanticBaseModel):
+    data: dict
+
+
+@router.post("/import/commit")
+async def import_clients_commit(
+    body: _ClientImportCommitBody,
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Create clients → projects → tasks → assignments from the previewed data."""
+    return await _ci.commit_import(db, body.data, current_user.tenant_id)

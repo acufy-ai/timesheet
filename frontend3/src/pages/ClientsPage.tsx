@@ -37,6 +37,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button, Card, Empty, Input, Modal, TonePill, WorkspaceHeader, RequiredMark, FieldError, errorBorder } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
+import { ImportClientsModal } from '@/components/clients/ImportClientsModal';
 import {
   useAllProjects,
   useAssignableUsers,
@@ -216,6 +217,7 @@ const TASK_PRIORITY_DOT: Record<TaskPriority, string> = {
 
 export function ClientsPage() {
   const { user: actingUser } = useAuth();
+  const pageQc = useQueryClient();
   // Client Management is for ADMIN, MANAGER, or reviewers (mirrors the backend
   // require_client_manager gate). VIEWER/EMPLOYEE have no client surface, so
   // they're bounced to the dashboard on a direct visit — the nav already hides
@@ -277,6 +279,7 @@ export function ClientsPage() {
   const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
 
   const [clientModal, setClientModal] = useState<{ open: boolean; client: Client | null }>({ open: false, client: null });
+  const [importing, setImporting] = useState(false);
   const [projectModal, setProjectModal] = useState<{ open: boolean; project: FullProject | null }>({ open: false, project: null });
   const [taskModal, setTaskModal] = useState<{ open: boolean; project: FullProject | null; task: FullTask | null }>({ open: false, project: null, task: null });
 
@@ -469,9 +472,14 @@ export function ClientsPage() {
         description={`${clients.length} ${clients.length === 1 ? 'client' : 'clients'} · ${totalProjects} ${totalProjects === 1 ? 'project' : 'projects'}`}
         primary={
           canManageClients ? (
-            <Button onClick={() => setClientModal({ open: true, client: null })}>
-              <Plus className="h-4 w-4" /> Add client
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" onClick={() => setImporting(true)}>
+                <Download className="h-4 w-4" /> Import
+              </Button>
+              <Button onClick={() => setClientModal({ open: true, client: null })}>
+                <Plus className="h-4 w-4" /> Add client
+              </Button>
+            </div>
           ) : null
         }
       />
@@ -650,6 +658,16 @@ export function ClientsPage() {
         onSaved={(m, id) => {
           flashAndFade('ok', m);
           if (id != null) setActiveClientId(id);
+        }}
+      />
+      <ImportClientsModal
+        open={importing}
+        onClose={() => setImporting(false)}
+        onDone={(m) => {
+          flashAndFade('ok', m);
+          // Refresh everything the import touched.
+          ['clients', 'projects', 'tasks'].forEach((k) =>
+            pageQc.invalidateQueries({ queryKey: [k] }));
         }}
       />
       {activeClient ? (
@@ -1936,6 +1954,7 @@ function ClientModal({
   onSaved: (msg: string, id?: number) => void;
 }) {
   const isEdit = !!client;
+  const { user: modalActingUser } = useAuth();
   const create = useCreateClient();
   const update = useUpdateClient();
   const setTeam = useSetClientTeam();
@@ -1981,10 +2000,31 @@ function ClientModal({
     setMemberIds(rows.filter((m) => m.assignment_role === 'member').map((m) => m.user_id));
   }, [open, isEdit, teamQ.data]);
 
-  const managerOptions: PickerOption[] = useMemo(
-    () => users.filter((u) => u.role === 'MANAGER').map((u) => ({ id: u.id, name: u.full_name, sub: 'Manager' })),
-    [users],
-  );
+  // PM options. Admins can assign any manager. A MANAGER acting here may assign
+  // only themselves + managers within their own subtree — never a manager ABOVE
+  // them (a supervisor). Mirrors the task-assignee subtree guard.
+  const managerOptions: PickerOption[] = useMemo(() => {
+    const managers = users.filter((u) => u.role === 'MANAGER');
+    const actingIsManager = modalActingUser?.role === 'MANAGER';
+    if (!actingIsManager || !modalActingUser) {
+      return managers.map((u) => ({ id: u.id, name: u.full_name, sub: 'Manager' }));
+    }
+    // Subtree of the acting manager: themselves + everyone reporting (any
+    // manager, transitively) to them.
+    const subtree = new Set<number>([modalActingUser.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      users.forEach((u) => {
+        if (!subtree.has(u.id) && managersOfUser(u).some((mid) => subtree.has(mid))) {
+          subtree.add(u.id); grew = true;
+        }
+      });
+    }
+    return managers
+      .filter((u) => subtree.has(u.id))
+      .map((u) => ({ id: u.id, name: u.full_name, sub: 'Manager' }));
+  }, [users, modalActingUser]);
 
   // Members scoped to the selected PMs' reports; fall back to any non-manager
   // user when that set is empty so the picker stays usable.
@@ -2021,12 +2061,15 @@ function ClientModal({
       if (isEdit && client) {
         await update.mutateAsync({ id: client.id, data: body });
         clientId = client.id;
+        // Edit: update the roster via the team endpoint.
+        await setTeam.mutateAsync({ id: client.id, data: { pm_ids: pmIds, member_ids: memberIds } });
       } else {
-        const created = (await create.mutateAsync(body)) as Client;
+        // Create: send the team WITH the create so it's one atomic request (no
+        // follow-up PUT /team that would re-check access and 403 / or 500 on a
+        // duplicate-name retry).
+        const created = (await create.mutateAsync({ ...body, pm_ids: pmIds, member_ids: memberIds })) as Client;
         clientId = created.id;
       }
-      // Persist the team roster after the client write so a NEW client has an id.
-      await setTeam.mutateAsync({ id: clientId, data: { pm_ids: pmIds, member_ids: memberIds } });
       onSaved(isEdit ? 'Client updated.' : 'Client created.', clientId);
       onClose();
     } catch (err) {

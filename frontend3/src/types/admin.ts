@@ -306,6 +306,10 @@ export interface ClientBody {
   contact_email?: string | null;
   contact_phone?: string | null;
   client_self_manage_enabled?: boolean;
+  // Initial team, sent on CREATE so the client + roster are written in one
+  // request (avoids a follow-up PUT /team that would re-check access).
+  pm_ids?: number[];
+  member_ids?: number[];
 }
 
 // A member of a client's team (GET /clients/{id}/team). assignment_role marks
@@ -870,4 +874,24 @@ export interface IngestionApprovalResult {
   status: string;
   overlapping_entries_count: number;
   overlapping_dates: string[];
+}
+
+// ── Client bulk import (clients + projects + tasks + assignments) ──
+export interface ClientImportRowIssue {
+  row: number;            // 0-based data-row index (matches the preview table)
+  level: 'error' | 'skip' | 'note';
+  message: string;
+}
+export interface ClientImportPreview {
+  counts: { clients: number; projects: number; tasks: number; assignments: number };
+  errors: string[];
+  warnings: string[];
+  // Per-row issues keyed by sheet, so the preview can mark each affected row.
+  row_issues: Record<string, ClientImportRowIssue[]>;
+  // Parsed sheet data, echoed back so commit doesn't re-upload the file.
+  data: Record<string, Array<Record<string, string>>>;
+}
+export interface ClientImportResult {
+  created: { clients: number; projects: number; tasks: number; assignments: number };
+  errors: string[];
 }
