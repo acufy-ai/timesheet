@@ -120,8 +120,11 @@ export function ApprovalsPage() {
   }, [tab, draftsExist, draftsProbe.isLoading]);
 
   const pending = usePendingApprovals();
-  const totalEntries = useMemo(
-    () => groupPending((pending.data ?? []) as TimeEntry[], weekStartDay).reduce((s, e) => s + e.entryCount, 0),
+  // Badge counts employees awaiting review (one per employee), matching the
+  // Pending list (which renders one row per employee) and the "Employees
+  // awaiting review" stat tile — not the raw time-entry rows underneath.
+  const pendingEmployeeCount = useMemo(
+    () => groupPending((pending.data ?? []) as TimeEntry[], weekStartDay).length,
     [pending.data, weekStartDay],
   );
 
@@ -132,7 +135,7 @@ export function ApprovalsPage() {
       {/* Tabs: Pending Approvals · This Week · Time Off · History */}
       <div className="flex items-center gap-1.5 border-b border-border pb-3">
         <TabPill active={tab === 'pending'} onClick={() => setTab('pending')}>
-          Pending Approvals<Count active={tab === 'pending'}>{totalEntries}</Count>
+          Pending Approvals<Count active={tab === 'pending'}>{pendingEmployeeCount}</Count>
         </TabPill>
         <TabPill active={tab === 'thisweek'} onClick={() => setTab('thisweek')} disabled={!draftsExist} title={draftsExist ? undefined : 'No drafts this week — everyone has submitted'}>
           This Week
