@@ -4,10 +4,11 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import { AcufyLogo } from '@/components/layout/AcufyLogo';
 import { ThemePicker } from '@/components/layout/ThemePicker';
-import { Button } from '@/components/ui';
+import { Button, FieldError, RequiredMark, errorBorder } from '@/components/ui';
 import { authApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import { cn } from '@/lib/cn';
 
 // Centered glass-card login over an aurora backdrop (mirrors frontend2's
 // LoginPage): three soft blurred orbs in the active theme's colors, a center
@@ -31,6 +32,7 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   // True when the last login failed because the account isn't verified — we
   // then offer a "resend verification" action.
   const [needsVerify, setNeedsVerify] = useState(false);
@@ -47,6 +49,10 @@ export function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const nextErrors: Record<string, string> = {};
+    if (!email.trim()) nextErrors.email = 'This field is required.';
+    if (!password) nextErrors.password = 'This field is required.';
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); return; }
     setPending(true);
     setError(null);
     setNeedsVerify(false);
@@ -126,34 +132,35 @@ export function LoginPage() {
 
             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
               <div>
-                <label htmlFor="email" className="mb-2 block text-sm font-medium text-foreground">Email</label>
+                <label htmlFor="email" className="mb-2 block text-sm font-medium text-foreground">Email<RequiredMark /></label>
                 <div className="relative">
                   <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
                     id="email"
                     type="email"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => { setEmail(e.target.value); setErrors((er) => ({ ...er, email: '' })); }}
                     placeholder="you@company.com"
-                    className={field}
+                    className={cn(field, errorBorder(!!errors.email))}
                     required
                     autoFocus
                     autoComplete="email"
                   />
                 </div>
+                <FieldError error={errors.email} />
               </div>
 
               <div>
-                <label htmlFor="password" className="mb-2 block text-sm font-medium text-foreground">Password</label>
+                <label htmlFor="password" className="mb-2 block text-sm font-medium text-foreground">Password<RequiredMark /></label>
                 <div className="relative">
                   <Lock className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
                     id="password"
                     type={showPassword ? 'text' : 'password'}
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => { setPassword(e.target.value); setErrors((er) => ({ ...er, password: '' })); }}
                     placeholder="••••••••"
-                    className={`${field} pr-11`}
+                    className={cn(field, 'pr-11', errorBorder(!!errors.password))}
                     required
                     autoComplete="current-password"
                   />
@@ -166,6 +173,7 @@ export function LoginPage() {
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                <FieldError error={errors.password} />
                 <div className="mt-2 flex justify-end">
                   <Link to="/forgot-password" className="text-xs font-medium text-primary hover:underline">
                     Forgot password?

@@ -2,6 +2,7 @@
 export { Button } from './Button';
 export { Card, CardHeader, CardBody } from './Card';
 export { Input } from './Input';
+export { RequiredMark, FieldLabel, FieldError, errorBorder } from './Field';
 export { StatusBadge, TonePill, RoleBadge, TIMESHEET_STATUS_META, INGESTION_STATUS_META } from './StatusBadge';
 export type { Tone } from './StatusBadge';
 export { StatTile } from './StatTile';

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, Loader2, X } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { Button, Input } from '@/components/ui';
+import { Button, FieldError, Input, RequiredMark } from '@/components/ui';
 import { authApi } from '@/api/client';
 import { AuthShell } from './ForgotPasswordPage';
 
@@ -22,6 +22,7 @@ export function SetPasswordPage() {
   const [pw, setPw] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
@@ -43,8 +44,12 @@ export function SetPasswordPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (pw.length < 8) { setError('Password must be at least 8 characters.'); return; }
-    if (pw !== confirm) { setError('Passwords do not match.'); return; }
+    const nextErrors: Record<string, string> = {};
+    if (!pw) nextErrors.pw = 'This field is required.';
+    else if (pw.length < 8) nextErrors.pw = 'Password must be at least 8 characters.';
+    if (!confirm) nextErrors.confirm = 'This field is required.';
+    else if (pw && pw !== confirm) nextErrors.confirm = 'Passwords do not match.';
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); return; }
     setPending(true);
     try {
       await authApi.setPasswordViaInvitation(token, pw);
@@ -88,8 +93,9 @@ export function SetPasswordPage() {
       <form onSubmit={handleSubmit} className="space-y-4">
         {email ? <p className="text-sm text-muted-foreground">for <strong className="text-foreground">{email}</strong></p> : null}
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">New password</label>
-          <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password" autoFocus />
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">New password<RequiredMark /></label>
+          <Input type="password" value={pw} onChange={(e) => { setPw(e.target.value); setErrors((er) => ({ ...er, pw: '' })); }} placeholder="At least 8 characters" error={!!errors.pw} autoComplete="new-password" autoFocus />
+          <FieldError error={errors.pw} />
           {/* Live rule checklist (matches frontend2). */}
           <ul className="mt-2 space-y-1">
             {([
@@ -106,8 +112,9 @@ export function SetPasswordPage() {
           </ul>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Confirm password</label>
-          <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Confirm password<RequiredMark /></label>
+          <Input type="password" value={confirm} onChange={(e) => { setConfirm(e.target.value); setErrors((er) => ({ ...er, confirm: '' })); }} error={!!errors.confirm} autoComplete="new-password" />
+          <FieldError error={errors.confirm} />
         </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <Button type="submit" className="w-full" disabled={pending}>

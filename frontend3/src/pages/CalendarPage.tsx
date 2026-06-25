@@ -417,17 +417,17 @@ export function CalendarPage() {
       <Modal open={holidayModal} onClose={() => setHolidayModal(false)} title="Add holiday">
         <form onSubmit={submitHoliday} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Name</label>
             <Input value={hName} onChange={(e) => setHName(e.target.value)} placeholder="e.g. Independence Day" autoFocus />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Date</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Date</label>
               <Input type="date" value={hDate} onChange={(e) => setHDate(e.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Type</label>
-              <select value={hType} onChange={(e) => setHType(e.target.value as 'PUBLIC' | 'COMPANY')} className="h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20">
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Type</label>
+              <select value={hType} onChange={(e) => setHType(e.target.value as 'PUBLIC' | 'COMPANY')} className="h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20">
                 <option value="COMPANY">Company</option>
                 <option value="PUBLIC">Public</option>
               </select>

@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { AcufyLogo } from '@/components/layout/AcufyLogo';
-import { Button, Card, CardBody, Input } from '@/components/ui';
+import { Button, Card, CardBody, FieldError, Input, RequiredMark } from '@/components/ui';
 import { authApi } from '@/api/client';
 
 // Public: request a password-reset link. Anti-enumeration — the backend always
@@ -12,10 +12,11 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [pending, setPending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email.trim()) return;
+    if (!email.trim()) { setErrors({ email: 'This field is required.' }); return; }
     setPending(true);
     try {
       await authApi.forgotPassword(email.trim().toLowerCase());
@@ -40,8 +41,9 @@ export function ForgotPasswordPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-sm text-muted-foreground">Enter your email and we'll send you a link to reset your password.</p>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Email</label>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoFocus required />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /></label>
+            <Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setErrors((er) => ({ ...er, email: '' })); }} placeholder="you@example.com" error={!!errors.email} autoFocus required />
+            <FieldError error={errors.email} />
           </div>
           <Button type="submit" className="w-full" disabled={pending || !email.trim()}>
             {pending ? (<><Loader2 className="h-4 w-4 animate-spin" /> Sending…</>) : 'Send reset link'}

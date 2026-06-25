@@ -4,8 +4,9 @@ import { X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 // Centered modal dialog with a backdrop. Closes on Escape and backdrop click.
-// Body scroll is locked while open. Keep content small — this is for confirms
-// and short forms, not full pages.
+// Body scroll is locked while open. The dialog caps at the viewport height and
+// scrolls its body internally, so a tall form's fields (and validation errors)
+// are always reachable instead of spilling off-screen.
 export function Modal({
   open,
   onClose,
@@ -44,12 +45,14 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         className={cn(
-          'w-full max-w-md rounded-2xl border border-border bg-card text-card-foreground shadow-2xl',
+          // Flex column + capped height so the body scrolls internally (header
+          // pinned) rather than the whole dialog overflowing the viewport.
+          'flex max-h-[90vh] w-full max-w-md flex-col rounded-2xl border border-border bg-card text-card-foreground shadow-2xl',
           className,
         )}
       >
         {title ? (
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
             <p className="text-sm font-semibold text-foreground">{title}</p>
             <button
               type="button"
@@ -61,7 +64,9 @@ export function Modal({
             </button>
           </div>
         ) : null}
-        <div className="p-4">{children}</div>
+        {/* No bottom padding: a sticky form footer supplies its own pb-4 and
+            seals the bottom, so scrolled content can't peek beneath it. */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-0 pt-4">{children}</div>
       </div>
     </div>
   );

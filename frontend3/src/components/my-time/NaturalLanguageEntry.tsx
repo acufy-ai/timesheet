@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, Loader2, Sparkles, X } from 'lucide-react';
 
-import { Button, Card, Input } from '@/components/ui';
+import { Button, Card, FieldError, Input, RequiredMark } from '@/components/ui';
 import { timeApi } from '@/api/client';
 import { useCreateEntry } from '@/hooks/useTime';
 import type { ParsedEntry } from '@/types/time';
@@ -15,10 +15,12 @@ export function NaturalLanguageEntry({ onSaved }: { onSaved: (msg: string) => vo
   const [parsing, setParsing] = useState(false);
   const [rows, setRows] = useState<ParsedEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState('');
   const [saving, setSaving] = useState(false);
 
   async function parse() {
-    if (!text.trim()) return;
+    if (!text.trim()) { setFieldError('This field is required.'); return; }
+    setFieldError('');
     setParsing(true);
     setError(null);
     try {
@@ -80,16 +82,21 @@ export function NaturalLanguageEntry({ onSaved }: { onSaved: (msg: string) => vo
         <p className="text-sm font-semibold text-foreground">Quick entry</p>
         <span className="text-xs text-muted-foreground">Describe your time in plain language.</span>
       </div>
-      <div className="flex gap-2">
-        <Input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void parse(); }}
-          placeholder='e.g. "8h on Acme redesign yesterday, debugging the login flow"'
-        />
-        <Button onClick={() => void parse()} disabled={parsing || !text.trim()}>
-          {parsing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Parse'}
-        </Button>
+      <div>
+        <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Describe your time<RequiredMark /></label>
+        <div className="flex gap-2">
+          <Input
+            value={text}
+            error={!!fieldError}
+            onChange={(e) => { setText(e.target.value); setFieldError(''); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void parse(); }}
+            placeholder='e.g. "8h on Acme redesign yesterday, debugging the login flow"'
+          />
+          <Button onClick={() => void parse()} disabled={parsing}>
+            {parsing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Parse'}
+          </Button>
+        </div>
+        <FieldError error={fieldError} />
       </div>
 
       {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}

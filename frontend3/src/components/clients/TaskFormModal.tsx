@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-import { Button, Input, Modal } from '@/components/ui';
+import { Button, Input, Modal, RequiredMark, FieldError } from '@/components/ui';
 import { useCreateTask, useUpdateTask } from '@/hooks/useAdmin';
 import type { FullTask, TaskBody } from '@/types/admin';
 
@@ -29,6 +29,7 @@ export function TaskFormModal({
   const [description, setDescription] = useState('');
   const [active, setActive] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -37,6 +38,7 @@ export function TaskFormModal({
     setDescription(task?.description ?? '');
     setActive(task?.is_active ?? true);
     setError(null);
+    setErrors({});
   }, [open, task]);
 
   const saving = create.isPending || update.isPending;
@@ -44,7 +46,10 @@ export function TaskFormModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) { setError('Task name is required.'); return; }
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
     const body: TaskBody = {
       project_id: projectId,
       name: name.trim(),
@@ -67,15 +72,16 @@ export function TaskFormModal({
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-md">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-lg">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">
           <div>
-            <label className={labelClass}>Name *</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Discovery" required />
+            <label className={labelClass}>Name<RequiredMark /></label>
+            <Input value={name} onChange={(e) => { setName(e.target.value); if (errors.name) setErrors((p) => ({ ...p, name: '' })); }} placeholder="Discovery" required error={!!errors.name} />
+            <FieldError error={errors.name} />
           </div>
           <div>
             <label className={labelClass}>Code</label>
@@ -97,7 +103,7 @@ export function TaskFormModal({
           Active
         </label>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button type="submit" size="sm" disabled={saving}>
             {saving ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>) : isEdit ? 'Save changes' : 'Create task'}

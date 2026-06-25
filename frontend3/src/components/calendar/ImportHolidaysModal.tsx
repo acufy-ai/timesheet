@@ -42,7 +42,7 @@ export function ImportHolidaysModal({ open, onClose, onDone }: { open: boolean; 
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Import public holidays" className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title="Import public holidays" className="max-w-3xl">
       <div className="space-y-4">
         <div className="flex flex-wrap items-end gap-2">
           <div>
@@ -78,7 +78,7 @@ export function ImportHolidaysModal({ open, onClose, onDone }: { open: boolean; 
                   </label>
                 ))}
               </div>
-              <div className="flex justify-end gap-2 border-t border-border pt-3">
+              <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
                 <Button variant="ghost" onClick={onClose}>Cancel</Button>
                 <Button onClick={() => void doImport()} disabled={selected.size === 0 || bulk.isPending}>
                   {bulk.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /> Importing…</> : `Import ${selected.size}`}

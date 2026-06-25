@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2, Mail, Plus, RotateCcw, Trash2, Zap } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { Button, Card, Empty, Input, Modal, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, FieldError, Input, Modal, RequiredMark, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
 import {
   useCreateMailbox,
   useDeleteMailbox,
@@ -55,6 +55,7 @@ export function MailboxesPage() {
 
   // IMAP add form.
   const [form, setForm] = useState({ label: '', host: '', port: '993', username: '', password: '', use_ssl: true });
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const mailboxes = q.data ?? [];
 
@@ -110,7 +111,11 @@ export function MailboxesPage() {
   }
   async function addImap(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.label.trim() || !form.host.trim()) { flashAndFade('err', 'Label and host are required.'); return; }
+    const errs: Record<string, string> = {};
+    if (!form.label.trim()) errs.label = 'This field is required.';
+    if (!form.host.trim()) errs.host = 'This field is required.';
+    if (Object.keys(errs).length) { setErrors(errs); return; }
+    setErrors({});
     const body: MailboxCreateBody = {
       label: form.label.trim(),
       protocol: 'imap',
@@ -125,6 +130,7 @@ export function MailboxesPage() {
       await create.mutateAsync(body);
       setAddOpen(false);
       setForm({ label: '', host: '', port: '993', username: '', password: '', use_ssl: true });
+      setErrors({});
       flashAndFade('ok', 'Mailbox added.');
     } catch (err) {
       flashAndFade('err', errText(err, 'Could not add the mailbox.'));
@@ -218,26 +224,28 @@ export function MailboxesPage() {
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add IMAP mailbox">
         <form onSubmit={addImap} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Label *</label>
-            <Input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Timesheets inbox" />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Label<RequiredMark /></label>
+            <Input error={!!errors.label} value={form.label} onChange={(e) => { setForm({ ...form, label: e.target.value }); if (errors.label) setErrors((s) => ({ ...s, label: '' })); }} placeholder="Timesheets inbox" />
+            <FieldError error={errors.label} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px]">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Host *</label>
-              <Input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="imap.example.com" />
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Host<RequiredMark /></label>
+              <Input error={!!errors.host} value={form.host} onChange={(e) => { setForm({ ...form, host: e.target.value }); if (errors.host) setErrors((s) => ({ ...s, host: '' })); }} placeholder="imap.example.com" />
+              <FieldError error={errors.host} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Port</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Port</label>
               <Input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Username</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Username</label>
               <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="user@example.com" />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Password</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Password</label>
               <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="off" />
             </div>
           </div>

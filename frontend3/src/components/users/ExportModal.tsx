@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Download, Loader2 } from 'lucide-react';
 
-import { Button, Modal } from '@/components/ui';
+import { Button, FieldError, Modal, errorBorder } from '@/components/ui';
 import { usersApi } from '@/api/client';
 import { useClients, useUsers } from '@/hooks/useAdmin';
 import { useProjects } from '@/hooks/useTime';
@@ -119,6 +119,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const usersQ = useUsers(open);
   const clientsQ = useClients(open);
@@ -144,6 +145,14 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
 
   async function handleExport() {
     setError(null);
+    // Required-field check up front so empty period dates show inline.
+    if (exportType === 'timesheets') {
+      const next: Record<string, string> = {};
+      if (!periodStart) next.periodStart = 'This field is required.';
+      if (!periodEnd) next.periodEnd = 'This field is required.';
+      if (Object.keys(next).length > 0) { setErrors(next); return; }
+    }
+    setErrors({});
     setBusy(true);
     try {
       let res;
@@ -161,11 +170,6 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
         res = await usersApi.exportClients({ fmt });
         name = `clients.${fmt}`;
       } else {
-        if (!periodStart || !periodEnd) {
-          setError('Period start and end are required.');
-          setBusy(false);
-          return;
-        }
         res = await usersApi.exportTimesheets({
           fmt,
           period_start: periodStart,
@@ -186,14 +190,14 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
   const selectClass =
-    'h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
+    'h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
   const dateClass =
-    'h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
+    'h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 
   return (
-    <Modal open={open} onClose={onClose} title="Export data" className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title="Export data" className="max-w-4xl">
       <div className="space-y-5">
         <div className="space-y-5">
           {/* What to export */}
@@ -354,24 +358,32 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="date"
-                    value={periodStart}
-                    onChange={(e) => {
-                      setPreset('custom');
-                      setPeriodStart(e.target.value);
-                    }}
-                    className={dateClass}
-                  />
-                  <input
-                    type="date"
-                    value={periodEnd}
-                    onChange={(e) => {
-                      setPreset('custom');
-                      setPeriodEnd(e.target.value);
-                    }}
-                    className={dateClass}
-                  />
+                  <div>
+                    <input
+                      type="date"
+                      value={periodStart}
+                      onChange={(e) => {
+                        setPreset('custom');
+                        setPeriodStart(e.target.value);
+                        if (errors.periodStart) setErrors((p) => ({ ...p, periodStart: '' }));
+                      }}
+                      className={cn(dateClass, errorBorder(!!errors.periodStart))}
+                    />
+                    <FieldError error={errors.periodStart} />
+                  </div>
+                  <div>
+                    <input
+                      type="date"
+                      value={periodEnd}
+                      onChange={(e) => {
+                        setPreset('custom');
+                        setPeriodEnd(e.target.value);
+                        if (errors.periodEnd) setErrors((p) => ({ ...p, periodEnd: '' }));
+                      }}
+                      className={cn(dateClass, errorBorder(!!errors.periodEnd))}
+                    />
+                    <FieldError error={errors.periodEnd} />
+                  </div>
                 </div>
               </div>
 
@@ -450,7 +462,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>

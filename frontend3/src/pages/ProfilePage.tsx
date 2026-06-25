@@ -89,7 +89,7 @@ export function ProfilePage() {
   }
 
   const profile = profileQ.data;
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
     <div className="space-y-5">
@@ -149,7 +149,7 @@ export function ProfilePage() {
             <select
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
-              className="h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              className="h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
               {TIMEZONES.includes(timezone) ? null : <option value={timezone}>{timezone}</option>}
               {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}

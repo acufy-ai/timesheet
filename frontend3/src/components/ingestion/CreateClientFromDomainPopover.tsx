@@ -173,7 +173,7 @@ export const CreateClientFromDomainPopover: React.FC<CreateClientFromDomainPopov
           </p>
         )}
 
-        <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="cascade-name-input">
+        <label className="mb-1 block text-[13px] font-medium text-muted-foreground" htmlFor="cascade-name-input">
           Client name
         </label>
         <input

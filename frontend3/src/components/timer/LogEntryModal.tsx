@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-import { Button, Modal } from '@/components/ui';
+import { Button, FieldError, Modal, RequiredMark, errorBorder } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import { useProjects, useTasks } from '@/hooks/useTime';
 import { useCreateEntry } from '@/hooks/useTime';
 import { formatElapsed, useTimer } from '@/hooks/useTimer';
@@ -15,6 +16,7 @@ export function LogEntryModal() {
   const tasksQ = useTasks();
   const create = useCreateEntry();
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   if (status !== 'stopped') return null;
 
@@ -23,8 +25,12 @@ export function LogEntryModal() {
   const tasksForProject = (tasksQ.data ?? []).filter((t) => !projectId || t.project_id === projectId);
 
   async function save() {
-    if (!projectId) { setError('Pick a project to log against.'); return; }
     setError(null);
+    if (!projectId) {
+      setErrors({ project: 'Pick a project to log against.' });
+      return;
+    }
+    setErrors({});
     try {
       await create.mutateAsync({
         project_id: projectId,
@@ -41,7 +47,7 @@ export function LogEntryModal() {
   }
 
   return (
-    <Modal open onClose={discard} title="Log tracked time" className="max-w-2xl">
+    <Modal open onClose={discard} title="Log tracked time" className="max-w-3xl">
       <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
         <div className="md:col-span-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-center">
           <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{formatElapsed(elapsedMs)}</p>
@@ -50,15 +56,16 @@ export function LogEntryModal() {
         </div>
 
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Project *</label>
-          <select value={projectId ?? ''} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : null)} className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20">
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Project<RequiredMark /></label>
+          <select value={projectId ?? ''} onChange={(e) => { setProject(e.target.value ? Number(e.target.value) : null); setErrors((er) => ({ ...er, project: '' })); }} className={cn('h-9 w-full rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20', errorBorder(!!errors.project))}>
             <option value="">Select a project…</option>
             {(projectsQ.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
+          <FieldError error={errors.project} />
         </div>
 
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Task</label>
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Task</label>
           <select value={taskId ?? ''} onChange={(e) => setTask(e.target.value ? Number(e.target.value) : null)} disabled={!projectId} className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
             <option value="">No task</option>
             {tasksForProject.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -66,13 +73,13 @@ export function LogEntryModal() {
         </div>
 
         <div className="md:col-span-2">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Notes</label>
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Notes</label>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="What did you work on?" className="w-full rounded-xl border border-border bg-transparent px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
         </div>
 
         {error ? <p className="md:col-span-2 text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
 
-        <div className="md:col-span-2 flex justify-end gap-2 border-t border-border pt-3">
+        <div className="md:col-span-2 sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button variant="ghost" onClick={discard}>Discard</Button>
           <Button onClick={() => void save()} disabled={create.isPending || !projectId}>
             {create.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save entry'}

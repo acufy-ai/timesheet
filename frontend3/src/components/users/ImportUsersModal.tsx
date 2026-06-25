@@ -208,7 +208,7 @@ export function ImportUsersModal({ open, onClose, onDone }: { open: boolean; onC
             </div>
           ) : null}
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-          <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
             <Button onClick={() => setStep('defaults')} disabled={!mappedToFullName} title={mappedToFullName ? '' : 'Map a column to Full name first'}>Next: Defaults</Button>
           </div>
         </div>
@@ -341,7 +341,7 @@ export function ImportUsersModal({ open, onClose, onDone }: { open: boolean; onC
               {result.errors.map((e, i) => <p key={i}>Row {e.row_index ?? '?'}: {e.message}</p>)}
             </div>
           ) : null}
-          <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
             <Button onClick={close}>Done</Button>
           </div>
         </div>

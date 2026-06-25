@@ -5,8 +5,10 @@ import {
   Button,
   Card,
   Empty,
+  FieldError,
   Input,
   Modal,
+  RequiredMark,
   StatusBadge,
   WorkspaceHeader,
 } from '@/components/ui';
@@ -101,6 +103,7 @@ function MyTimeOff({ mode, leaveTypes, labelFor }: { mode: 'mine' | 'history'; l
   const [leaveType, setLeaveType] = useState(leaveTypes[0]?.code ?? 'PTO');
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const allRows = requests.data ?? [];
   // Split the user's OWN requests: active (draft/submitted) vs decided history.
@@ -112,21 +115,27 @@ function MyTimeOff({ mode, leaveTypes, labelFor }: { mode: 'mine' | 'history'; l
     setEditingId(null);
     const today = toISODate(new Date());
     setStartDate(today); setEndDate(today);
-    setHours('8'); setLeaveType(leaveTypes[0]?.code ?? 'PTO'); setReason(''); setError(null);
+    setHours('8'); setLeaveType(leaveTypes[0]?.code ?? 'PTO'); setReason(''); setError(null); setErrors({});
     setOpen(true);
   }
   function openEdit(r: TimeOffRequest) {
     setEditingId(r.id);
     setStartDate(r.request_date); setEndDate(r.request_date);
-    setHours(String(num(r.hours))); setLeaveType(r.leave_type); setReason(r.reason ?? ''); setError(null);
+    setHours(String(num(r.hours))); setLeaveType(r.leave_type); setReason(r.reason ?? ''); setError(null); setErrors({});
     setOpen(true);
   }
 
   async function handleSave() {
     setError(null);
     const h = Number(hours);
-    if (!Number.isFinite(h) || h <= 0) { setError('Enter a valid number of hours.'); return; }
-    if (endDate < startDate) { setError('End date cannot be before the start date.'); return; }
+    const next: Record<string, string> = {};
+    if (!startDate) next.startDate = 'This field is required.';
+    if (!editingId && !endDate) next.endDate = 'This field is required.';
+    if (!hours.trim()) next.hours = 'This field is required.';
+    else if (!Number.isFinite(h) || h <= 0) next.hours = 'Enter a valid number of hours.';
+    if (startDate && endDate && endDate < startDate) next.endDate = 'End date cannot be before the start date.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
     try {
       if (editingId) {
         // Edit applies to the single existing request (date range is create-only).
@@ -275,32 +284,36 @@ function MyTimeOff({ mode, leaveTypes, labelFor }: { mode: 'mine' | 'history'; l
         <div className="space-y-3">
           {editingId ? (
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Date</label>
-              <Input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setEndDate(e.target.value); }} />
+              <label className="text-xs font-medium text-muted-foreground">Date<RequiredMark /></label>
+              <Input type="date" error={!!errors.startDate} value={startDate} onChange={(e) => { setStartDate(e.target.value); setEndDate(e.target.value); setErrors((p) => ({ ...p, startDate: '' })); }} />
+              <FieldError error={errors.startDate} />
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">Start date</label>
-                <Input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }} />
+                <label className="text-xs font-medium text-muted-foreground">Start date<RequiredMark /></label>
+                <Input type="date" error={!!errors.startDate} value={startDate} onChange={(e) => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); setErrors((p) => ({ ...p, startDate: '', endDate: '' })); }} />
+                <FieldError error={errors.startDate} />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">End date</label>
-                <Input type="date" value={endDate} min={startDate} onChange={(e) => setEndDate(e.target.value)} />
+                <label className="text-xs font-medium text-muted-foreground">End date<RequiredMark /></label>
+                <Input type="date" error={!!errors.endDate} value={endDate} min={startDate} onChange={(e) => { setEndDate(e.target.value); setErrors((p) => ({ ...p, endDate: '' })); }} />
+                <FieldError error={errors.endDate} />
               </div>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Hours{!editingId ? ' / day' : ''}</label>
-              <Input type="number" step="0.5" min="0" value={hours} onChange={(e) => setHours(e.target.value)} />
+              <label className="text-xs font-medium text-muted-foreground">Hours{!editingId ? ' / day' : ''}<RequiredMark /></label>
+              <Input type="number" step="0.5" min="0" error={!!errors.hours} value={hours} onChange={(e) => { setHours(e.target.value); setErrors((p) => ({ ...p, hours: '' })); }} />
+              <FieldError error={errors.hours} />
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">Leave type</label>
               <select
                 value={leaveType}
                 onChange={(e) => setLeaveType(e.target.value)}
-                className="h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                className="h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               >
                 {leaveTypes.map((t) => (
                   <option key={t.code} value={t.code} className="bg-popover text-popover-foreground">{t.label}</option>

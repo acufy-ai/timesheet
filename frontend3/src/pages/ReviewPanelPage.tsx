@@ -237,7 +237,7 @@ const CreateClientFromDomainPopover: React.FC<{
             Create a new client. The sender's domain is personal (gmail, outlook, etc.) so no domain mapping is added.
           </p>
         )}
-        <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="cascade-name-input">Client name</label>
+        <label className="mb-1 block text-[13px] font-medium text-muted-foreground" htmlFor="cascade-name-input">Client name</label>
         <input
           id="cascade-name-input"
           ref={inputRef}

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Archive, Building2, Database, Loader2, PauseCircle, Plus, Search, ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Empty, Input, Modal, StatTile, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, FieldError, Input, Modal, RequiredMark, StatTile, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
 import type { TileTone, Tone } from '@/components/ui';
 import { useCreateTenant, useTenants, useTenantStats } from '@/hooks/usePlatform';
 import type { Tenant } from '@/types/platform';
@@ -50,6 +50,7 @@ export function PlatformTenantsPage() {
   const [adminName, setAdminName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const visible = useMemo(() => visibleQ.data ?? [], [visibleQ.data]);
   const all = useMemo(() => allQ.data ?? [], [allQ.data]);
@@ -99,12 +100,15 @@ export function PlatformTenantsPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim() || !slug.trim()) { setError('Name and slug are required.'); return; }
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
+    if (!slug.trim()) next.slug = 'This field is required.';
     // Admin is optional, but if either field is filled both must be valid.
     const wantsAdmin = adminName.trim() !== '' || adminEmail.trim() !== '';
-    if (wantsAdmin && (!adminName.trim() || !adminEmail.includes('@'))) {
-      setError('To add an admin, provide both a name and a valid email.'); return;
-    }
+    if (wantsAdmin && !adminName.trim()) next.adminName = 'This field is required.';
+    if (wantsAdmin && !adminEmail.includes('@')) next.adminEmail = 'Enter a valid email address.';
+    if (Object.keys(next).length > 0) { setErrors(next); return; }
+    setErrors({});
     try {
       const t = await create.mutateAsync({
         name: name.trim(),
@@ -112,7 +116,7 @@ export function PlatformTenantsPage() {
         is_isolated: isolated,
         ...(wantsAdmin ? { admin_full_name: adminName.trim(), admin_email: adminEmail.trim() } : {}),
       });
-      setCreateOpen(false); setName(''); setSlug(''); setAdminName(''); setAdminEmail('');
+      setCreateOpen(false); setName(''); setSlug(''); setAdminName(''); setAdminEmail(''); setErrors({});
       navigate(`/platform/tenants/${t.slug}`);
     } catch (err) {
       const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -216,12 +220,14 @@ export function PlatformTenantsPage() {
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New tenant">
         <form onSubmit={handleCreate} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
-            <Input value={name} onChange={(e) => { setName(e.target.value); if (!slug || slug === name.toLowerCase().replace(/[^a-z0-9]+/g, '-')) setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')); }} placeholder="Acme Consulting" autoFocus />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Name<RequiredMark /></label>
+            <Input error={!!errors.name} value={name} onChange={(e) => { setName(e.target.value); if (errors.name) setErrors((p) => ({ ...p, name: '' })); if (!slug || slug === name.toLowerCase().replace(/[^a-z0-9]+/g, '-')) { setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')); if (errors.slug) setErrors((p) => ({ ...p, slug: '' })); } }} placeholder="Acme Consulting" autoFocus />
+            <FieldError error={errors.name} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Slug</label>
-            <Input value={slug} onChange={(e) => setSlug(e.target.value.toLowerCase())} placeholder="acme-consulting" />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Slug<RequiredMark /></label>
+            <Input error={!!errors.slug} value={slug} onChange={(e) => { setSlug(e.target.value.toLowerCase()); if (errors.slug) setErrors((p) => ({ ...p, slug: '' })); }} placeholder="acme-consulting" />
+            <FieldError error={errors.slug} />
           </div>
           <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-foreground">
             <input type="checkbox" checked={isolated} onChange={(e) => setIsolated(e.target.checked)} className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
@@ -234,12 +240,14 @@ export function PlatformTenantsPage() {
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">First admin (optional)</p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Admin name</label>
-                <Input value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="Jane Doe" />
+                <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Admin name</label>
+                <Input error={!!errors.adminName} value={adminName} onChange={(e) => { setAdminName(e.target.value); if (errors.adminName) setErrors((p) => ({ ...p, adminName: '' })); }} placeholder="Jane Doe" />
+                <FieldError error={errors.adminName} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Admin email</label>
-                <Input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="jane@acme.com" />
+                <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Admin email</label>
+                <Input error={!!errors.adminEmail} type="email" value={adminEmail} onChange={(e) => { setAdminEmail(e.target.value); if (errors.adminEmail) setErrors((p) => ({ ...p, adminEmail: '' })); }} placeholder="jane@acme.com" />
+                <FieldError error={errors.adminEmail} />
               </div>
             </div>
             <p className="mt-1.5 text-[11px] text-muted-foreground">They get an email invite to set their password. You can add admins later from the tenant page.</p>

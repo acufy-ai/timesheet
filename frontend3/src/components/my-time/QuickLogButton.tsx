@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 
-import { Button } from '@/components/ui';
+import { Button, FieldError, RequiredMark, errorBorder } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import { useCreateEntry, useProjects } from '@/hooks/useTime';
 
 function isoFor(offsetDays: number): string {
@@ -24,14 +25,15 @@ export function QuickLogButton({ className }: { className?: string }) {
   const [description, setDescription] = useState('');
   const [day, setDay] = useState<'today' | 'yesterday'>('today');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
   const selectRef = useRef<HTMLSelectElement>(null);
 
   const projectsQ = useProjects();
   const create = useCreateEntry();
 
-  function reset() { setProjectId(''); setHours(''); setDescription(''); setDay('today'); setError(null); }
-  function close() { setOpen(false); setError(null); }
+  function reset() { setProjectId(''); setHours(''); setDescription(''); setDay('today'); setError(null); setErrors({}); }
+  function close() { setOpen(false); setError(null); setErrors({}); }
 
   useEffect(() => {
     if (!open) return;
@@ -45,9 +47,13 @@ export function QuickLogButton({ className }: { className?: string }) {
     setError(null);
     const pid = Number(projectId);
     const h = Number(hours);
-    if (!Number.isInteger(pid) || pid <= 0) { setError('Pick a project.'); return; }
-    if (!Number.isFinite(h) || h <= 0 || h > 24) { setError('Hours must be between 0 and 24.'); return; }
-    if (Math.round(h * 2) !== h * 2) { setError('Hours must be in 0.5 increments.'); return; }
+    const next: Record<string, string> = {};
+    if (!Number.isInteger(pid) || pid <= 0) next.projectId = 'Pick a project.';
+    if (!hours.trim()) next.hours = 'This field is required.';
+    else if (!Number.isFinite(h) || h <= 0 || h > 24) next.hours = 'Hours must be between 0 and 24.';
+    else if (Math.round(h * 2) !== h * 2) next.hours = 'Hours must be in 0.5 increments.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
     try {
       await create.mutateAsync({
         project_id: pid,
@@ -87,11 +93,19 @@ export function QuickLogButton({ className }: { className?: string }) {
               </div>
             </div>
             <div className="space-y-2">
-              <select ref={selectRef} value={projectId} onChange={(e) => setProjectId(e.target.value)} className={inputClass}>
-                <option value="">Pick a project</option>
-                {(projectsQ.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              <input type="number" min={0} max={24} step={0.5} inputMode="decimal" placeholder="Hours (e.g. 1.5)" value={hours} onChange={(e) => setHours(e.target.value)} className={inputClass} />
+              <div>
+                <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Project<RequiredMark /></label>
+                <select ref={selectRef} value={projectId} onChange={(e) => { setProjectId(e.target.value); setErrors((p) => ({ ...p, projectId: '' })); }} className={cn(inputClass, errorBorder(!!errors.projectId))}>
+                  <option value="">Pick a project</option>
+                  {(projectsQ.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <FieldError error={errors.projectId} />
+              </div>
+              <div>
+                <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Hours<RequiredMark /></label>
+                <input type="number" min={0} max={24} step={0.5} inputMode="decimal" placeholder="Hours (e.g. 1.5)" value={hours} onChange={(e) => { setHours(e.target.value); setErrors((p) => ({ ...p, hours: '' })); }} className={cn(inputClass, errorBorder(!!errors.hours))} />
+                <FieldError error={errors.hours} />
+              </div>
               <input type="text" placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void submit(); } }} className={inputClass} />
               {error ? <p className="text-xs text-rose-600 dark:text-rose-300">{error}</p> : null}
               <Button onClick={() => void submit()} disabled={create.isPending} className="w-full justify-center">

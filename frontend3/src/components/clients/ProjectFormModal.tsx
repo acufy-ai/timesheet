@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-import { Button, Input, Modal } from '@/components/ui';
+import { Button, Input, Modal, RequiredMark, FieldError } from '@/components/ui';
 import { useCreateProject, useUpdateProject } from '@/hooks/useAdmin';
 import type { FullProject, ProjectBody } from '@/types/admin';
 
@@ -40,6 +40,7 @@ export function ProjectFormModal({
   const [description, setDescription] = useState('');
   const [active, setActive] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const numStr = (v: string | number | null | undefined) =>
     v == null || v === '' ? '' : String(typeof v === 'string' ? v : v);
@@ -75,12 +76,14 @@ export function ProjectFormModal({
     setDescription(project?.description ?? '');
     setActive(project?.is_active ?? true);
     setError(null);
+    setErrors({});
   }, [open, project]);
 
   // When rate or est. hours change and the user hasn't overridden Budget,
   // keep Budget synced to rate x hours.
   const onRateChange = (v: string) => {
     setRate(v);
+    if (errors.rate) setErrors((p) => ({ ...p, rate: '' }));
     if (!budgetDirty) setBudget(autoBudget(v, estHours));
   };
   const onHoursChange = (v: string) => {
@@ -97,9 +100,13 @@ export function ProjectFormModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) { setError('Project name is required.'); return; }
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
     const rateNum = Number(rate);
-    if (!Number.isFinite(rateNum) || rateNum < 0) { setError('Enter a valid billable rate.'); return; }
+    if (!rate.trim()) next.rate = 'This field is required.';
+    else if (!Number.isFinite(rateNum) || rateNum < 0) next.rate = 'Enter a valid billable rate.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
 
     const body: ProjectBody = {
       name: name.trim(),
@@ -130,16 +137,17 @@ export function ProjectFormModal({
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
+        <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">
             <div>
-              <label className={labelClass}>Name *</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Website redesign" required />
+              <label className={labelClass}>Name<RequiredMark /></label>
+              <Input value={name} onChange={(e) => { setName(e.target.value); if (errors.name) setErrors((p) => ({ ...p, name: '' })); }} placeholder="Website redesign" required error={!!errors.name} />
+              <FieldError error={errors.name} />
             </div>
             <div>
               <label className={labelClass}>Code</label>
@@ -148,8 +156,9 @@ export function ProjectFormModal({
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
-              <label className={labelClass}>Billable rate *</label>
-              <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => onRateChange(e.target.value)} placeholder="150" required />
+              <label className={labelClass}>Billable rate<RequiredMark /></label>
+              <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => onRateChange(e.target.value)} placeholder="150" required error={!!errors.rate} />
+              <FieldError error={errors.rate} />
             </div>
             <div>
               <label className={labelClass}>Budget</label>
@@ -197,7 +206,7 @@ export function ProjectFormModal({
           </label>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button type="submit" size="sm" disabled={saving}>
             {saving ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>) : isEdit ? 'Save changes' : 'Create project'}

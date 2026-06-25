@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Check, Loader2, PauseCircle, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 
-import { Button, Modal, StatusBadge } from '@/components/ui';
+import { Button, FieldError, Modal, StatusBadge, errorBorder } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import {
   useAddLineItem,
   useApproveIngestion,
@@ -64,6 +65,8 @@ export function ReviewPanel({
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Per-field validation errors for the inline line-item draft editor.
+  const [draftErrors, setDraftErrors] = useState<{ work_date?: string; hours?: string }>({});
 
   const d = detailQ.data;
   const decided = d ? d.status === 'approved' || d.status === 'rejected' : false;
@@ -117,18 +120,25 @@ export function ReviewPanel({
       project_code: it.project_code ?? '',
     });
     setAdding(false);
+    setDraftErrors({});
   }
   function startAdd() {
     setAdding(true);
     setEditId(null);
     setDraft({ work_date: d?.period_start ?? '', hours: '', description: '', project_code: '' });
+    setDraftErrors({});
   }
 
   async function saveItem() {
     if (!timesheetId) return;
     setError(null);
     const hours = Number(draft.hours);
-    if (!draft.work_date || !Number.isFinite(hours) || hours <= 0) { setError('A date and positive hours are required.'); return; }
+    const errs: { work_date?: string; hours?: string } = {};
+    if (!draft.work_date) errs.work_date = 'This field is required.';
+    if (!draft.hours.trim()) errs.hours = 'This field is required.';
+    else if (!Number.isFinite(hours) || hours <= 0) errs.hours = 'Enter a positive number.';
+    if (errs.work_date || errs.hours) { setDraftErrors(errs); return; }
+    setDraftErrors({});
     try {
       if (adding) {
         await addItem.mutateAsync({ tid: timesheetId, data: { work_date: draft.work_date, hours, description: draft.description || undefined, project_code: draft.project_code || undefined } });
@@ -255,9 +265,9 @@ export function ReviewPanel({
                   {d.line_items.map((it) =>
                     editId === it.id ? (
                       <tr key={it.id} className="border-b border-border bg-muted/10 last:border-0">
-                        <td className="px-2 py-1.5"><input type="date" value={draft.work_date} onChange={(e) => setDraft({ ...draft, work_date: e.target.value })} className={fieldClass} /></td>
-                        <td className="px-2 py-1.5"><input type="number" step="0.25" min="0" value={draft.hours} onChange={(e) => setDraft({ ...draft, hours: e.target.value })} className={fieldClass + ' text-right'} /></td>
-                        <td className="px-2 py-1.5"><input value={draft.project_code} onChange={(e) => setDraft({ ...draft, project_code: e.target.value })} className={fieldClass} placeholder="code" /></td>
+                        <td className="px-2 py-1.5 align-top"><input type="date" value={draft.work_date} onChange={(e) => { setDraft({ ...draft, work_date: e.target.value }); if (draftErrors.work_date) setDraftErrors((s) => ({ ...s, work_date: undefined })); }} className={cn(fieldClass, errorBorder(!!draftErrors.work_date))} /><FieldError error={draftErrors.work_date} /></td>
+                        <td className="px-2 py-1.5 align-top"><input type="number" step="0.25" min="0" value={draft.hours} onChange={(e) => { setDraft({ ...draft, hours: e.target.value }); if (draftErrors.hours) setDraftErrors((s) => ({ ...s, hours: undefined })); }} className={cn(fieldClass, 'text-right', errorBorder(!!draftErrors.hours))} /><FieldError error={draftErrors.hours} className="text-right" /></td>
+                        <td className="px-2 py-1.5 align-top"><input value={draft.project_code} onChange={(e) => setDraft({ ...draft, project_code: e.target.value })} className={fieldClass} placeholder="code" /></td>
                         <td className="px-2 py-1.5"><input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className={fieldClass} /></td>
                         <td className="px-2 py-1.5 text-right">
                           <div className="inline-flex gap-0.5">
@@ -286,9 +296,9 @@ export function ReviewPanel({
                   )}
                   {adding ? (
                     <tr className="border-b border-border bg-muted/10 last:border-0">
-                      <td className="px-2 py-1.5"><input type="date" value={draft.work_date} onChange={(e) => setDraft({ ...draft, work_date: e.target.value })} className={fieldClass} /></td>
-                      <td className="px-2 py-1.5"><input type="number" step="0.25" min="0" value={draft.hours} onChange={(e) => setDraft({ ...draft, hours: e.target.value })} className={fieldClass + ' text-right'} /></td>
-                      <td className="px-2 py-1.5"><input value={draft.project_code} onChange={(e) => setDraft({ ...draft, project_code: e.target.value })} className={fieldClass} placeholder="code" /></td>
+                      <td className="px-2 py-1.5 align-top"><input type="date" value={draft.work_date} onChange={(e) => { setDraft({ ...draft, work_date: e.target.value }); if (draftErrors.work_date) setDraftErrors((s) => ({ ...s, work_date: undefined })); }} className={cn(fieldClass, errorBorder(!!draftErrors.work_date))} /><FieldError error={draftErrors.work_date} /></td>
+                      <td className="px-2 py-1.5 align-top"><input type="number" step="0.25" min="0" value={draft.hours} onChange={(e) => { setDraft({ ...draft, hours: e.target.value }); if (draftErrors.hours) setDraftErrors((s) => ({ ...s, hours: undefined })); }} className={cn(fieldClass, 'text-right', errorBorder(!!draftErrors.hours))} /><FieldError error={draftErrors.hours} className="text-right" /></td>
+                      <td className="px-2 py-1.5 align-top"><input value={draft.project_code} onChange={(e) => setDraft({ ...draft, project_code: e.target.value })} className={fieldClass} placeholder="code" /></td>
                       <td className="px-2 py-1.5"><input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className={fieldClass} /></td>
                       <td className="px-2 py-1.5 text-right">
                         <div className="inline-flex gap-0.5">

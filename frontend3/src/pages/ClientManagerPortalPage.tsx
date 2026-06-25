@@ -4,7 +4,7 @@ import {
   Briefcase, Check, ChevronRight, Folder, Loader2, Plus, ShieldCheck, UserPlus, Users, X,
 } from 'lucide-react';
 
-import { Button, Card, Empty, TonePill } from '@/components/ui';
+import { Button, Card, Empty, FieldError, RequiredMark, TonePill, errorBorder } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { clientPortalApi } from '@/api/client';
 import { ClientWorkView } from '@/pages/ClientPortalPage';
@@ -119,13 +119,24 @@ function TeamTab({
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [label, setLabel] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [assignFor, setAssignFor] = useState<ClientEmployeeSummary | null>(null);
 
   const invite = useMutation({
     mutationFn: () => clientPortalApi.managerInvite({ full_name: name.trim(), email: email.trim(), label: label.trim() || undefined }).then((r) => r.data),
-    onSuccess: (r) => { setInviting(false); setName(''); setEmail(''); setLabel(''); onChanged(); onFlash('ok', r.message); },
+    onSuccess: (r) => { setInviting(false); setName(''); setEmail(''); setLabel(''); setErrors({}); onChanged(); onFlash('ok', r.message); },
     onError: (e: unknown) => onFlash('err', extractError(e)),
   });
+
+  function submitInvite() {
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
+    if (!email.trim()) next.email = 'This field is required.';
+    else if (!email.includes('@')) next.email = 'Enter a valid email address.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
+    invite.mutate();
+  }
   const removeEmp = useMutation({
     mutationFn: (userId: number) => clientPortalApi.managerRemoveEmployee(userId),
     onSuccess: () => { onChanged(); onFlash('ok', 'Employee removed.'); },
@@ -156,15 +167,26 @@ function TeamTab({
       {inviting ? (
         <Card className="space-y-2.5 p-4">
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name"
-              className="h-9 rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
-            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email"
-              className="h-9 rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
-            <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Role / title (optional)"
-              className="h-9 rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
+            <div>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Full name<RequiredMark /></label>
+              <input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Full name"
+                className={cn('h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20', errorBorder(!!errors.name))} />
+              <FieldError error={errors.name} />
+            </div>
+            <div>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /></label>
+              <input value={email} onChange={(e) => { setEmail(e.target.value); setErrors((p) => ({ ...p, email: '' })); }} placeholder="Email" type="email"
+                className={cn('h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20', errorBorder(!!errors.email))} />
+              <FieldError error={errors.email} />
+            </div>
+            <div>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Role / title</label>
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Role / title (optional)"
+                className="h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
+            </div>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" disabled={!name.trim() || !email.trim() || invite.isPending} onClick={() => invite.mutate()}>
+            <Button size="sm" disabled={invite.isPending} onClick={submitInvite}>
               {invite.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />} Send invite
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setInviting(false)}>Cancel</Button>

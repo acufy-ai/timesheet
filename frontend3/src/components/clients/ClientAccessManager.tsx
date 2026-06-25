@@ -5,7 +5,7 @@ import {
   Trash2, UserPlus, UserRound,
 } from 'lucide-react';
 
-import { Button, Empty, Input, Modal, TonePill } from '@/components/ui';
+import { Button, Empty, FieldError, Input, Modal, RequiredMark, TonePill } from '@/components/ui';
 import { clientPortalApi } from '@/api/client';
 import { useAllProjects, useAllTasks } from '@/hooks/useAdmin';
 import { cn } from '@/lib/cn';
@@ -324,14 +324,20 @@ function InviteClientModal({
   const [selected, setSelected] = useState<SelMap>({});
   const [modes, setModes] = useState<Record<number, Mode>>({});
   const [busy, setBusy] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   function reset() {
     setFullName(''); setEmail(''); setLabel('Project Sponsor'); setPortalRole('manager');
-    setSelected({}); setModes({});
+    setSelected({}); setModes({}); setErrors({});
   }
 
   async function submit() {
-    if (!fullName.trim() || !email.includes('@')) { onError('Name and a valid email are required.'); return; }
+    const next: Record<string, string> = {};
+    if (!fullName.trim()) next.fullName = 'This field is required.';
+    if (!email.trim()) next.email = 'This field is required.';
+    else if (!email.includes('@')) next.email = 'Enter a valid email address.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
     const grants: ClientGrantSpec[] = Object.entries(selected).map(([k, caps]) => {
       if (k.startsWith('p:')) return { scope: 'project', project_id: Number(k.slice(2)), capabilities: caps };
       const [, , tid] = k.split(':');
@@ -357,7 +363,7 @@ function InviteClientModal({
   const sumEmail = email.trim() || 'email@client.com';
 
   return (
-    <Modal open={open} onClose={onClose} title={`Invite client · ${clientName}`} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={`Invite client · ${clientName}`} className="max-w-4xl">
       <div className="flex flex-col gap-4 md:flex-row">
         {/* Left rail — live summary that mirrors the right-side inputs. */}
         <div className="shrink-0 space-y-4 md:w-56">
@@ -395,15 +401,17 @@ function InviteClientModal({
           <div className="space-y-2.5">
             <div className="text-[13px] font-bold">Client details</div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Full name</label>
-              <Input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Dana Whitfield" />
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Full name<RequiredMark /></label>
+              <Input value={fullName} error={!!errors.fullName} onChange={(e) => { setFullName(e.target.value); setErrors((p) => ({ ...p, fullName: '' })); }} placeholder="Dana Whitfield" />
+              <FieldError error={errors.fullName} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Email <span className="font-normal">(an invite link is sent here)</span></label>
-              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="dana@client.com" />
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /> <span className="font-normal">(an invite link is sent here)</span></label>
+              <Input type="email" value={email} error={!!errors.email} onChange={(e) => { setEmail(e.target.value); setErrors((p) => ({ ...p, email: '' })); }} placeholder="dana@client.com" />
+              <FieldError error={errors.email} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Portal access</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Portal access</label>
               <div className="inline-flex rounded-full bg-muted p-0.5">
                 {([['manager', 'Client manager'], ['employee', 'Client employee']] as const).map(([val, lbl]) => (
                   <button key={val} type="button" onClick={() => setPortalRole(val)}
@@ -420,7 +428,7 @@ function InviteClientModal({
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Title <span className="font-normal">(label, e.g. Project Sponsor)</span></label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Title <span className="font-normal">(label, e.g. Project Sponsor)</span></label>
               <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Project Sponsor" />
             </div>
           </div>
@@ -568,7 +576,7 @@ function EditAccessModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Edit access · ${userName}`} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={`Edit access · ${userName}`} className="max-w-4xl">
       <div className="mb-2 text-[13px] font-bold">
         Projects &amp; tasks <span className="text-xs font-normal text-muted-foreground">(choose how much of each project to share)</span>
       </div>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ArrowLeft, Copy, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Input, Modal, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, FieldError, Input, Modal, RequiredMark, StatusBadge, TonePill, WorkspaceHeader } from '@/components/ui';
 import {
   useAddTenantAdmin,
   useCreateServiceToken,
@@ -52,6 +52,7 @@ export function PlatformTenantDetailPage() {
   const [editTz, setEditTz] = useState('');
   const [editMaxMb, setEditMaxMb] = useState('');
   const [editErr, setEditErr] = useState<string | null>(null);
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
   if (tenantsQ.isLoading) {
     return <div className="grid place-items-center py-20 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
@@ -78,13 +79,17 @@ export function PlatformTenantDetailPage() {
     setEditTz(t.timezone ?? '');
     setEditMaxMb(t.max_mailboxes != null ? String(t.max_mailboxes) : '');
     setEditErr(null);
+    setEditErrors({});
     setEditOpen(true);
   }
   async function saveEdit() {
     setEditErr(null);
-    if (!editName.trim()) { setEditErr('Name is required.'); return; }
+    const next: Record<string, string> = {};
+    if (!editName.trim()) next.name = 'This field is required.';
     const mb = editMaxMb.trim() === '' ? undefined : Number(editMaxMb);
-    if (mb !== undefined && (!Number.isInteger(mb) || mb < 0)) { setEditErr('Max mailboxes must be a non-negative whole number.'); return; }
+    if (mb !== undefined && (!Number.isInteger(mb) || mb < 0)) next.maxMb = 'Enter a non-negative whole number.';
+    if (Object.keys(next).length > 0) { setEditErrors(next); return; }
+    setEditErrors({});
     try {
       // Slug intentionally not sent — it's load-bearing for DB routing and is
       // shown read-only.
@@ -202,22 +207,24 @@ export function PlatformTenantDetailPage() {
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title={`Edit · ${t.name}`}>
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
-            <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Tenant name" autoFocus />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Name<RequiredMark /></label>
+            <Input error={!!editErrors.name} value={editName} onChange={(e) => { setEditName(e.target.value); if (editErrors.name) setEditErrors((p) => ({ ...p, name: '' })); }} placeholder="Tenant name" autoFocus />
+            <FieldError error={editErrors.name} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Slug</label>
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Slug</label>
             <Input value={editSlug} disabled className="opacity-70" />
             <p className="mt-1 text-[11px] text-muted-foreground">The slug is fixed — it maps to the tenant's database (acufy_tenant_&lt;slug&gt;). Renaming it is a migration, not an edit.</p>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Timezone</label>
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Timezone</label>
               <Input value={editTz} onChange={(e) => setEditTz(e.target.value)} placeholder="UTC or America/New_York" />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Max mailboxes</label>
-              <Input value={editMaxMb} onChange={(e) => setEditMaxMb(e.target.value)} placeholder="e.g. 3" inputMode="numeric" />
+              <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Max mailboxes</label>
+              <Input error={!!editErrors.maxMb} value={editMaxMb} onChange={(e) => { setEditMaxMb(e.target.value); if (editErrors.maxMb) setEditErrors((p) => ({ ...p, maxMb: '' })); }} placeholder="e.g. 3" inputMode="numeric" />
+              <FieldError error={editErrors.maxMb} />
             </div>
           </div>
           {editErr ? <p className="text-sm text-rose-600 dark:text-rose-300">{editErr}</p> : null}
@@ -258,12 +265,18 @@ function AddAdminCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'o
   const addAdmin = useAddTenantAdmin();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   async function submit() {
-    if (!name.trim() || !email.includes('@')) { onFlash('err', 'Enter a name and a valid email.'); return; }
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
+    if (!email.trim()) next.email = 'This field is required.';
+    else if (!email.includes('@')) next.email = 'Enter a valid email address.';
+    if (Object.keys(next).length > 0) { setErrors(next); return; }
+    setErrors({});
     try {
       const r = await addAdmin.mutateAsync({ id: tenantId, full_name: name.trim(), email: email.trim() });
-      setName(''); setEmail('');
+      setName(''); setEmail(''); setErrors({});
       onFlash('ok', r.invited ? `Admin added — invite emailed to ${r.email}.` : `Admin added (${r.email}). Invite email could not be sent; resend from their account.`);
     } catch (err) {
       const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -277,12 +290,14 @@ function AddAdminCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'o
       <p className="mb-3 text-xs text-muted-foreground">Creates an ADMIN in this workspace and emails them a set-password invite.</p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" />
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Name<RequiredMark /></label>
+          <Input error={!!errors.name} value={name} onChange={(e) => { setName(e.target.value); if (errors.name) setErrors((p) => ({ ...p, name: '' })); }} placeholder="Jane Doe" />
+          <FieldError error={errors.name} />
         </div>
         <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Email</label>
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@acme.com" />
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /></label>
+          <Input error={!!errors.email} type="email" value={email} onChange={(e) => { setEmail(e.target.value); if (errors.email) setErrors((p) => ({ ...p, email: '' })); }} placeholder="jane@acme.com" />
+          <FieldError error={errors.email} />
         </div>
         <Button size="sm" onClick={() => void submit()} disabled={addAdmin.isPending}>
           {addAdmin.isPending ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Adding…</>) : (<><Plus className="h-3.5 w-3.5" /> Add admin</>)}

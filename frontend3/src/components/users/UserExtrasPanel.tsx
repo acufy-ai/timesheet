@@ -80,7 +80,7 @@ export function UserExtrasPanel({ userId, hideClients = false }: { userId: numbe
           external client fields above). */}
       {!hideClients ? (
       <div>
-        <p className="mb-1 text-xs font-semibold text-foreground">Client access</p>
+        <p className="mb-1 text-xs font-semibold text-foreground">Assigned clients</p>
         <p className="mb-2 text-[11px] text-muted-foreground">Clients this user is assigned to (separate from their default client).</p>
         {clientsQ.isLoading ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading" />

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, Eye, EyeOff, Loader2, XCircle } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 
-import { Button, Input } from '@/components/ui';
+import { Button, FieldError, Input, RequiredMark } from '@/components/ui';
 import { authApi } from '@/api/client';
 import { AuthShell } from './ForgotPasswordPage';
 
@@ -25,6 +25,7 @@ export function VerifyAccountPage() {
   const [showTemp, setShowTemp] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -41,10 +42,14 @@ export function VerifyAccountPage() {
   async function submitPassword(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
-    if (!tempPassword || !newPassword || !confirmPassword) { setFormError('All fields are required.'); return; }
-    if (newPassword.length < 10) { setFormError('New password must be at least 10 characters.'); return; }
-    if (newPassword !== confirmPassword) { setFormError('Passwords do not match.'); return; }
-    if (newPassword === tempPassword.trim()) { setFormError('New password must be different from your temporary password.'); return; }
+    const nextErrors: Record<string, string> = {};
+    if (!tempPassword) nextErrors.tempPassword = 'This field is required.';
+    if (!newPassword) nextErrors.newPassword = 'This field is required.';
+    else if (newPassword.length < 10) nextErrors.newPassword = 'New password must be at least 10 characters.';
+    else if (tempPassword && newPassword === tempPassword.trim()) nextErrors.newPassword = 'New password must be different from your temporary password.';
+    if (!confirmPassword) nextErrors.confirmPassword = 'This field is required.';
+    else if (newPassword && newPassword !== confirmPassword) nextErrors.confirmPassword = 'Passwords do not match.';
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); return; }
     setSubmitting(true);
     try {
       await authApi.changePasswordAfterVerification(tempPassword, newPassword, email);
@@ -70,27 +75,30 @@ export function VerifyAccountPage() {
             </p>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Temporary password</label>
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Temporary password<RequiredMark /></label>
             <div className="relative">
-              <Input type={showTemp ? 'text' : 'password'} value={tempPassword} onChange={(e) => setTempPassword(e.target.value)} autoComplete="current-password" placeholder="From your email" />
+              <Input type={showTemp ? 'text' : 'password'} value={tempPassword} onChange={(e) => { setTempPassword(e.target.value); setErrors((er) => ({ ...er, tempPassword: '' })); }} error={!!errors.tempPassword} autoComplete="current-password" placeholder="From your email" />
               <button type="button" onClick={() => setShowTemp((v) => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label={showTemp ? 'Hide' : 'Show'}>
                 {showTemp ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            <FieldError error={errors.tempPassword} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">New password</label>
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">New password<RequiredMark /></label>
             <div className="relative">
-              <Input type={showNew ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" placeholder="At least 10 characters" />
+              <Input type={showNew ? 'text' : 'password'} value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setErrors((er) => ({ ...er, newPassword: '' })); }} error={!!errors.newPassword} autoComplete="new-password" placeholder="At least 10 characters" />
               <button type="button" onClick={() => setShowNew((v) => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label={showNew ? 'Hide' : 'Show'}>
                 {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            <FieldError error={errors.newPassword} />
             <p className="mt-1 text-[11px] text-muted-foreground">At least 10 characters with uppercase, lowercase, number, and special character.</p>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Confirm new password</label>
-            <Input type={showNew ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" placeholder="Re-enter new password" />
+            <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Confirm new password<RequiredMark /></label>
+            <Input type={showNew ? 'text' : 'password'} value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setErrors((er) => ({ ...er, confirmPassword: '' })); }} error={!!errors.confirmPassword} autoComplete="new-password" placeholder="Re-enter new password" />
+            <FieldError error={errors.confirmPassword} />
           </div>
           {formError ? <p className="text-sm text-rose-600 dark:text-rose-300">{formError}</p> : null}
           <Button type="submit" className="w-full" disabled={submitting}>

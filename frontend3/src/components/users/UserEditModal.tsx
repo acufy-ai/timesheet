@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Folder, Loader2, Minus, Plus, Search, Star, X } from 'lucide-react';
 
-import { Button, Input, Modal } from '@/components/ui';
+import { Button, FieldError, Input, Modal, RequiredMark, errorBorder } from '@/components/ui';
 import { useCreateUser, useUpdateUser, useAddAlias, useAssignableUsers, useAllProjects, useAllTasks, useClients, useCreateClient, useUserClients, useAddUserClient, useRemoveUserClient, useDepartments, useApprovalByAssignedManager } from '@/hooks/useAdmin';
 import { UserExtrasPanel } from './UserExtrasPanel';
 import { cn } from '@/lib/cn';
@@ -101,6 +101,16 @@ function extractError(err: unknown): string {
   return (typeof d === 'string' ? d : undefined) ?? e?.message ?? 'Could not save the user.';
 }
 
+// Map a server-side validation message to a specific form field when we can
+// recognize it (username/email already in use). Returns the field name or null
+// (in which case the caller shows the message in the bottom error area).
+function fieldForServerError(msg: string): keyof FormState | null {
+  const m = msg.toLowerCase();
+  if (m.includes('username')) return 'username';
+  if (m.includes('email')) return 'email';
+  return null;
+}
+
 export function UserEditModal({
   open,
   user,
@@ -120,6 +130,9 @@ export function UserEditModal({
   const isEdit = !!user;
   const [form, setForm] = useState<FormState>(blankForm);
   const [error, setError] = useState<string | null>(null);
+  // Per-field validation errors. Keyed by FormState field name; cleared when the
+  // user edits that field so the red state fades as they fix it.
+  const [errors, setErrors] = useState<Record<string, string>>({});
   // Aliases collected at CREATE time (existing users edit them live in the
   // UserExtrasPanel). Posted to the new user id right after it's created.
   const [newAliases, setNewAliases] = useState<string[]>([]);
@@ -150,6 +163,7 @@ export function UserEditModal({
     setNewClientIds([]);
     setDeptOtherMode(false);
     setError(null);
+    setErrors({});
   }, [open, user]);
 
   // Only actual managers can supervise: a user whose active role OR any of their
@@ -180,6 +194,11 @@ export function UserEditModal({
   function patch(p: Partial<FormState>) {
     setForm((f) => ({ ...f, ...p }));
   }
+  // Clear a single field's inline error (called from onChange handlers so the
+  // red state fades as the user fixes the field).
+  function clearError(field: string) {
+    setErrors((e) => (e[field] ? { ...e, [field]: '' } : e));
+  }
   // Access-tree setters: select/clear a whole project (+ its tasks) or one task.
   function setProjectAccess(projectId: number, taskIds: number[], on: boolean) {
     setForm((f) => {
@@ -208,6 +227,7 @@ export function UserEditModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setErrors({});
     // Manager mode: only project access is editable; patch just project_ids.
     if (restrictedToProjectAccess && isEdit && user) {
       try {
@@ -218,22 +238,24 @@ export function UserEditModal({
       }
       return;
     }
+    // Per-field required checks, mirroring the backend's create_user validation:
+    // full name is always required; for internal users MANAGER needs title +
+    // department and EMPLOYEE needs title. External users have no role/
+    // department surface. Collect every error so the user sees them all at once.
+    const fieldErrors: Record<string, string> = {};
     if (!form.full_name.trim()) {
-      setError('Full name is required.');
-      return;
+      fieldErrors.full_name = 'Full name is required.';
     }
-    // Role-conditional required fields, mirroring the backend's create_user
-    // validation: MANAGER needs title + department; EMPLOYEE needs title.
-    // These apply to internal users only — external users have no role/
-    // department surface.
     if (!form.is_external && (form.role === 'MANAGER' || form.role === 'EMPLOYEE')) {
       if (!form.title.trim()) {
-        setError(`A title is required for ${form.role === 'MANAGER' ? 'managers' : 'employees'}.`);
-        return;
+        fieldErrors.title = `A title is required for ${form.role === 'MANAGER' ? 'managers' : 'employees'}.`;
       }
     }
     if (!form.is_external && form.role === 'MANAGER' && !form.department.trim()) {
-      setError('A department is required for managers.');
+      fieldErrors.department = 'A department is required for managers.';
+    }
+    if (Object.keys(fieldErrors).length) {
+      setErrors(fieldErrors);
       return;
     }
     const phones = form.phones.map((p) => p.trim()).filter(Boolean);
@@ -320,13 +342,21 @@ export function UserEditModal({
       }
       onClose();
     } catch (err) {
-      setError(extractError(err));
+      // Route a recognizable server validation error to its field; otherwise
+      // surface it in the bottom error area.
+      const msg = extractError(err);
+      const field = fieldForServerError(msg);
+      if (field) {
+        setErrors((e) => ({ ...e, [field]: msg }));
+      } else {
+        setError(msg);
+      }
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
   const selectClass =
-    'h-9 w-full rounded-full border border-border bg-transparent px-4 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
+    'h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 
   return (
     <Modal
@@ -335,7 +365,7 @@ export function UserEditModal({
       title={restrictedToProjectAccess
         ? `Edit access · ${user?.full_name}`
         : `${isEdit ? 'Edit' : 'Add'} ${form.is_external ? 'external' : 'internal'} user`}
-      className="max-w-3xl"
+      className="max-w-4xl"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {restrictedToProjectAccess ? (
@@ -353,7 +383,7 @@ export function UserEditModal({
               />
             </div>
             {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-            <div className="flex justify-end gap-2 border-t border-border pt-3">
+            <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
               <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
               <Button type="submit" disabled={update.isPending}>
                 {update.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -390,13 +420,15 @@ export function UserEditModal({
           {/* ── Section: Identity ── */}
           <FormSection title="Identity">
             <div>
-              <label className={labelClass}>Full name *</label>
-              <Input value={form.full_name} onChange={(e) => patch({ full_name: e.target.value })} placeholder="Jane Smith" required />
+              <label className={labelClass}>Full name<RequiredMark /></label>
+              <Input value={form.full_name} onChange={(e) => { patch({ full_name: e.target.value }); clearError('full_name'); }} placeholder="Jane Smith" required error={!!errors.full_name} />
+              <FieldError error={errors.full_name} />
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelClass}>Email</label>
-                <Input type="email" value={form.email} onChange={(e) => patch({ email: e.target.value })} placeholder="jane@example.com" />
+                <Input type="email" value={form.email} onChange={(e) => { patch({ email: e.target.value }); clearError('email'); }} placeholder="jane@example.com" error={!!errors.email} />
+                <FieldError error={errors.email} />
               </div>
               <div>
                 <div className="mb-1 flex items-center justify-between">
@@ -440,11 +472,13 @@ export function UserEditModal({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelClass}>Username</label>
-                <Input value={form.username} onChange={(e) => patch({ username: e.target.value })} placeholder="jsmith" />
+                <Input value={form.username} onChange={(e) => { patch({ username: e.target.value }); clearError('username'); }} placeholder="jsmith" error={!!errors.username} />
+                <FieldError error={errors.username} />
               </div>
               <div>
-                <label className={labelClass}>Title{!form.is_external && (form.role === 'EMPLOYEE' || form.role === 'MANAGER') ? ' *' : ''}</label>
-                <Input value={form.title} onChange={(e) => patch({ title: e.target.value })} placeholder="Senior Consultant" />
+                <label className={labelClass}>Title{!form.is_external && (form.role === 'EMPLOYEE' || form.role === 'MANAGER') ? <RequiredMark /> : ''}</label>
+                <Input value={form.title} onChange={(e) => { patch({ title: e.target.value }); clearError('title'); }} placeholder="Senior Consultant" error={!!errors.title} />
+                <FieldError error={errors.title} />
               </div>
             </div>
             {/* Additional emails (aliases). Existing users edit them live via the
@@ -518,7 +552,7 @@ export function UserEditModal({
                     )}
                   </div>
                   <div>
-                    <label className={labelClass}>Department{form.role === 'MANAGER' ? ' *' : ''}</label>
+                    <label className={labelClass}>Department{form.role === 'MANAGER' ? <RequiredMark /> : ''}</label>
                     {/* Bound to the managed Department list (Workforce Setup).
                         "Other" keeps a free-text escape hatch so admins can still
                         enter a new/legacy department without pre-creating it. */}
@@ -532,9 +566,10 @@ export function UserEditModal({
                         } else {
                           setDeptOtherMode(false);
                           patch({ department: v });
+                          clearError('department');
                         }
                       }}
-                      className={selectClass}
+                      className={cn(selectClass, errorBorder(!!errors.department))}
                     >
                       <option value="">No department</option>
                       {departments.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
@@ -544,10 +579,12 @@ export function UserEditModal({
                       <Input
                         className="mt-2"
                         value={form.department}
-                        onChange={(e) => patch({ department: e.target.value })}
+                        onChange={(e) => { patch({ department: e.target.value }); clearError('department'); }}
                         placeholder="New department name"
+                        error={!!errors.department}
                       />
                     ) : null}
+                    <FieldError error={errors.department} />
                   </div>
                   <div>
                     <label className={labelClass}>Default client</label>
@@ -617,7 +654,7 @@ export function UserEditModal({
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button type="submit" size="sm" disabled={saving}>
             {saving ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>) : isEdit ? 'Save changes' : 'Create user'}
@@ -744,7 +781,7 @@ function OtherClientsField({
 
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-muted-foreground">Other clients</label>
+      <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Other clients</label>
       <div className="mb-2 flex flex-wrap gap-2">
         {userId != null ? (
           assigned.length === 0 ? (

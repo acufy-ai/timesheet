@@ -101,7 +101,7 @@ export function PlatformSettingsPage() {
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
   const isDbSource = config?.source === 'database';
 
   return (

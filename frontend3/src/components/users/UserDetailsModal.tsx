@@ -159,7 +159,7 @@ export function UserDetailsModal({
         {/* Footer actions. Both delegate to the parent; this modal stays
             read-only. The parent typically closes this and opens the edit form
             or the timesheet drill-in. */}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button variant="secondary" size="sm" onClick={() => onViewTimesheets(user)}>
             <CalendarClock className="h-3.5 w-3.5" /> Timesheets
           </Button>

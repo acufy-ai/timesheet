@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-import { Button, Input, Modal } from '@/components/ui';
+import { Button, Input, Modal, RequiredMark, FieldError } from '@/components/ui';
 import { useCreateClient, useUpdateClient } from '@/hooks/useAdmin';
 import type { Client, ClientBody } from '@/types/admin';
 
@@ -29,6 +29,7 @@ export function ClientFormModal({
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -39,6 +40,7 @@ export function ClientFormModal({
     setContactEmail(client?.contact_email ?? '');
     setContactPhone(client?.contact_phone ?? '');
     setError(null);
+    setErrors({});
   }, [open, client]);
 
   const saving = create.isPending || update.isPending;
@@ -46,7 +48,10 @@ export function ClientFormModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) { setError('Client name is required.'); return; }
+    const next: Record<string, string> = {};
+    if (!name.trim()) next.name = 'This field is required.';
+    if (Object.keys(next).length) { setErrors(next); return; }
+    setErrors({});
     const body: ClientBody = {
       name: name.trim(),
       client_type: type,
@@ -70,14 +75,15 @@ export function ClientFormModal({
     }
   }
 
-  const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+  const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-md">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-lg">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className={labelClass}>Name *</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Corp" required />
+          <label className={labelClass}>Name<RequiredMark /></label>
+          <Input value={name} onChange={(e) => { setName(e.target.value); if (errors.name) setErrors((p) => ({ ...p, name: '' })); }} placeholder="Acme Corp" required error={!!errors.name} />
+          <FieldError error={errors.name} />
         </div>
         <div>
           <span className={labelClass}>Type</span>
@@ -125,7 +131,7 @@ export function ClientFormModal({
           </div>
         </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button type="submit" size="sm" disabled={saving}>
             {saving ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>) : isEdit ? 'Save changes' : 'Create client'}

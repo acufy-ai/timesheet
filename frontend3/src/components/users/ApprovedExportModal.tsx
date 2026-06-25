@@ -592,11 +592,11 @@ export function ApprovedExportModal({
   ];
 
   return (
-    <Modal open={open} onClose={onClose} title="Export approved timesheets" className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title="Export approved timesheets" className="max-w-3xl">
       <div className="space-y-4">
         {/* Format segmented control */}
         <div>
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">Format</span>
+          <span className="mb-1 block text-[13px] font-medium text-muted-foreground">Format</span>
           <div className="inline-flex w-full overflow-hidden rounded-full border border-border">
             {FORMATS.map((f) => {
               const on = format === f.value;
@@ -694,7 +694,7 @@ export function ApprovedExportModal({
 
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
 
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
