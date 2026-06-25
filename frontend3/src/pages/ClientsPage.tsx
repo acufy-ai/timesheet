@@ -2069,19 +2069,10 @@ function ClientModal({
                 </select>
               </div>
             </div>
-            <div className="border-t border-border pt-3">
-              <p className="mb-2 text-xs font-semibold text-foreground">Client portal</p>
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3 py-2.5">
-                <input type="checkbox" checked={selfManage} onChange={(e) => setSelfManage(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
-                <span className="text-[13px]">
-                  <span className="font-medium text-foreground">Let this client manage their own employees</span>
-                  <span className="mt-0.5 block text-[12px] text-muted-foreground">
-                    When on, this client's manager can invite their own team members in the portal. When off, you add their employees for them.
-                  </span>
-                </span>
-              </label>
-            </div>
+            {/* The "Let this client manage their own employees" toggle is hidden:
+                the client manager/employee two-tier model was retired (everyone
+                is a flat CLIENT now). The selfManage value still round-trips on
+                save so any existing setting is preserved, not wiped. */}
           </div>
 
           {/* Right column: primary contact */}
