@@ -154,10 +154,12 @@ export function ReportingTree({
   const childrenByManager = useMemo(() => {
     const m = new Map<number, ManagedUser[]>();
     directory.forEach((u) => {
-      const mid = managerOf(u);
-      if (mid == null) return;
-      if (!m.has(mid)) m.set(mid, []);
-      m.get(mid)!.push(u);
+      // A report appears under EVERY manager they report to, not just their
+      // primary — so a co-manager sees them in their direct reports too.
+      managersOf(u).forEach((mid) => {
+        if (!m.has(mid)) m.set(mid, []);
+        m.get(mid)!.push(u);
+      });
     });
     // Stable, name-sorted children.
     m.forEach((list) => list.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '')));
@@ -214,7 +216,7 @@ export function ReportingTree({
     <div className="rounded-2xl border border-border bg-card">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Users className="h-4 w-4 text-primary" />
-        <p className="text-sm font-bold text-foreground">Reporting line</p>
+        <p className="text-sm font-bold text-foreground">Reporting tree</p>
       </div>
 
       <div className="space-y-1.5 p-4">
@@ -271,7 +273,7 @@ export function ReportingTree({
               </div>
             ) : (
               <p className="px-1 pb-1 text-[12px] text-muted-foreground">
-                {user.is_external ? 'External user — no internal reporting line.' : 'Top of the reporting line (no manager).'}
+                {user.is_external ? 'External user — no internal reporting tree.' : 'Top of the reporting tree (no manager).'}
               </p>
             )}
             <div className="flex items-start gap-1.5" style={{ paddingLeft: (spineUp.length + (directManagers.length ? 1 : 0)) * 14 }}>

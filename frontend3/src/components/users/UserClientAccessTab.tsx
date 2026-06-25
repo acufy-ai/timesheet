@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Briefcase, Check, ChevronRight, Folder, Loader2, Minus, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Button, Empty, Modal, TonePill } from '@/components/ui';
 import { useAllProjects, useAllTasks, useAssignableUsers, useClients, useClientTeam, useDeleteProject, useDeleteTask, useUpdateUser, useUserClients } from '@/hooks/useAdmin';
+import { clientPortalApi } from '@/api/client';
+import { isClientRole } from '@/lib/clientRole';
 import { cn } from '@/lib/cn';
-import type { ClientTeamMember, FullProject, FullTask, ManagedUser } from '@/types/admin';
+import type { ClientGrant, ClientTeamMember, FullProject, FullTask, ManagedUser } from '@/types/admin';
 import { ProjectModal } from '@/pages/ClientsPage';
 import { TaskFormModal } from '@/components/clients/TaskFormModal';
 import type { Tone } from '@/components/ui';
@@ -39,6 +42,17 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   // Data for the reused Client-Management ProjectModal (PM/team rostering).
   const usersDirQ = useAssignableUsers();
 
+  // For a CLIENT-side user, their project/task access lives in client-portal
+  // GRANTS (ClientAccessGrant), not the internal user_project_access tables this
+  // tab otherwise reads — so fetch those and fold them into the access sets
+  // below. Without this a client account reads as "No client assignments yet".
+  const isClient = isClientRole(user.role as import('@/types/user').UserRole);
+  const grantsQ = useQuery({
+    queryKey: ['client-grants', 'user', user.id],
+    queryFn: () => clientPortalApi.userGrants(user.id).then((r) => r.data),
+    enabled: isClient,
+  });
+
   const [expClient, setExpClient] = useState<Record<number, boolean>>({});
   const [expProject, setExpProject] = useState<Record<number, boolean>>({});
   const [projModal, setProjModal] = useState<{ clientId: number; project: FullProject | null } | null>(null);
@@ -49,8 +63,19 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   const [addClientOpen, setAddClientOpen] = useState(false);
   const [grantClientId, setGrantClientId] = useState<number | null>(null);
 
-  const projectIds = new Set(user.project_ids ?? []);
-  const taskIds = new Set(user.task_ids ?? []);
+  // Effective access = the user's internal project/task access PLUS, for a
+  // client user, the projects/tasks granted to them via client-portal grants.
+  const grants = (grantsQ.data ?? []) as ClientGrant[];
+  const projectIds = useMemo(() => {
+    const s = new Set(user.project_ids ?? []);
+    grants.forEach((g) => { if (g.project_id) s.add(g.project_id); });
+    return s;
+  }, [user.project_ids, grants]);
+  const taskIds = useMemo(() => {
+    const s = new Set(user.task_ids ?? []);
+    grants.forEach((g) => { if (g.task_id) s.add(g.task_id); });
+    return s;
+  }, [user.task_ids, grants]);
   const allProjects = (projectsQ.data ?? []) as unknown as FullProject[];
   const allTasks = (tasksQ.data ?? []) as unknown as FullTask[];
   const tasksByProject = useMemo(() => {
@@ -65,7 +90,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
       if (projectIds.has(p.id)) return true;
       return (tasksByProject.get(p.id) ?? []).some((t) => taskIds.has(t.id));
     });
-  }, [allProjects, tasksByProject, user.project_ids, user.task_ids]);
+  }, [allProjects, tasksByProject, projectIds, taskIds]);
 
   // Tasks of a project the user actually has access to: every task when they
   // have whole-project access, otherwise only their individually-granted tasks.
@@ -106,6 +131,11 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   }, [usersDir]);
   const nameOf = (uid: number): string => userById.get(uid)?.full_name ?? `#${uid}`;
 
+  // Structural/grant edits in THIS tab write internal user_project_access — they
+  // don't apply to a CLIENT user (whose access is client-portal grants, edited
+  // on the Client Management page). So for client users this tab is read-only.
+  const canManage = isAdmin && !isClient;
+
   async function removeProject(p: FullProject) {
     if (!window.confirm(`Delete project "${p.name}" and its tasks?`)) return;
     try { await delProject.mutateAsync(p.id); onFlash('ok', 'Project deleted.'); }
@@ -125,14 +155,19 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
           title="No client assignments yet"
           description={isAdmin ? 'This user is not on any project or task.' : 'Not assigned to any client, project, or task yet.'}
         />
-        {/* Both admins and managers can add a client. The client list and the
-            grant tree are server-scoped to a manager's own PM clients/projects;
-            both can grant whole-project or per-task access. */}
-        <div className="mt-3">
-          <Button onClick={() => setAddClientOpen(true)}>
-            <Plus className="h-4 w-4" /> Add client
-          </Button>
-        </div>
+        {/* Admins/managers can add a client (internal access). Hidden for client
+            users — their access is managed via the client-portal grant flow. */}
+        {canManage ? (
+          <div className="mt-3">
+            <Button onClick={() => setAddClientOpen(true)}>
+              <Plus className="h-4 w-4" /> Add client
+            </Button>
+          </div>
+        ) : isClient ? (
+          <p className="mt-3 text-[12.5px] text-muted-foreground">
+            Manage this client account’s project access from Client Management → the client → Client access.
+          </p>
+        ) : null}
         <AddClientPicker
           open={addClientOpen} clients={clientsQ.data ?? []} existingClientIds={new Set(byClient.keys())}
           onClose={() => setAddClientOpen(false)}
@@ -161,11 +196,17 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
 
   return (
     <div className="space-y-2.5">
-      <div className="flex justify-end">
-        <Button size="sm" onClick={() => setAddClientOpen(true)}>
-          <Plus className="h-3.5 w-3.5" /> Add client
-        </Button>
-      </div>
+      {canManage ? (
+        <div className="flex justify-end">
+          <Button size="sm" onClick={() => setAddClientOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> Add client
+          </Button>
+        </div>
+      ) : isClient ? (
+        <p className="text-right text-[12px] text-muted-foreground">
+          Read-only. Edit access from Client Management → Client access.
+        </p>
+      ) : null}
       {[...byClient.entries()].map(([cid, projs]) => {
         const c = clientById.get(cid);
         const open = expClient[cid] ?? false;
@@ -187,19 +228,18 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
               <div className="border-t border-border bg-background px-3 py-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Projects</span>
-                  {/* Manage access (grant/revoke this client's existing projects
-                      + tasks for the user) is available to admins and managers.
-                      Structural "Add project" (creating a new one) stays admin. */}
-                  <div className="flex items-center gap-1.5">
-                    <Button size="sm" variant="secondary" onClick={() => setGrantClientId(cid)}>
-                      <Plus className="h-3.5 w-3.5" /> Manage access
-                    </Button>
-                    {isAdmin ? (
+                  {/* Manage access / structural CRUD apply only to INTERNAL
+                      access — hidden for client users (read-only here). */}
+                  {canManage ? (
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" variant="secondary" onClick={() => setGrantClientId(cid)}>
+                        <Plus className="h-3.5 w-3.5" /> Manage access
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => setProjModal({ clientId: cid, project: null })}>
                         New project
                       </Button>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                 </div>
                 {projs.map((p) => {
                   const pOpen = expProject[p.id] ?? false;
@@ -215,7 +255,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                           {p.status ? <TonePill tone={PROJ_TONE[p.status] ?? 'neutral'}>{fmtStatus(p.status)}</TonePill> : null}
                           <span className="ml-auto shrink-0 text-[11.5px] text-muted-foreground">{tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}</span>
                         </button>
-                        {isAdmin ? (
+                        {canManage ? (
                           <span className="flex shrink-0 gap-1">
                             <button type="button" className="icon-btn-sm" title="Edit project" onClick={() => setProjModal({ clientId: cid, project: p })}><Pencil className="h-3.5 w-3.5" /></button>
                             <button type="button" className="icon-btn-sm icon-btn-danger" title="Delete project" onClick={() => removeProject(p)}><Trash2 className="h-3.5 w-3.5" /></button>
@@ -226,7 +266,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                         <div className="border-t border-border bg-background px-3 py-2.5">
                           <div className="mb-2 flex items-center justify-between">
                             <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Tasks</span>
-                            {isAdmin ? (
+                            {canManage ? (
                               <Button size="sm" variant="secondary" onClick={() => setTaskModal({ projectId: p.id, task: null })}>
                                 <Plus className="h-3.5 w-3.5" /> Add task
                               </Button>
@@ -238,7 +278,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                             <div key={t.id} className="mb-1.5 flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2">
                               <span className="flex-1 truncate text-[13px] font-semibold">{t.name}</span>
                               {t.status ? <TonePill tone={TASK_TONE[t.status] ?? 'neutral'}>{fmtStatus(t.status)}</TonePill> : null}
-                              {isAdmin ? (
+                              {canManage ? (
                                 <span className="flex shrink-0 gap-1">
                                   <button type="button" className="icon-btn-sm" title="Edit task" onClick={() => setTaskModal({ projectId: p.id, task: t })}><Pencil className="h-3.5 w-3.5" /></button>
                                   <button type="button" className="icon-btn-sm icon-btn-danger" title="Delete task" onClick={() => removeTask(t)}><Trash2 className="h-3.5 w-3.5" /></button>
