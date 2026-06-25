@@ -27,6 +27,7 @@ import { useIngestionTimesheets } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import { EmployeeWidgets } from '@/components/dashboard/EmployeeWidgets';
+import { InfoLabel, infoFor } from '@/components/dashboard/InfoLabel';
 import { QuickLogButton } from '@/components/my-time/QuickLogButton';
 import { AdminOrgStats } from '@/components/dashboard/AdminOrgStats';
 import { ManagerConversation } from '@/components/dashboard/ManagerConversation';
@@ -249,8 +250,8 @@ function ProjectMatrixCard({ data }: { data: TeamProjectMatrix }) {
                   {p.project_name}
                 </th>
               ))}
-              <th className="px-4 py-2 text-right font-semibold">Total</th>
-              <th className="px-4 py-2 text-right font-semibold" title="All-time billed revenue this person generated on these projects (approved billable hours x rate)">Revenue</th>
+              <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Total" /></th>
+              <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Revenue" /></th>
             </tr>
           </thead>
           <tbody>
@@ -445,6 +446,7 @@ export function DashboardPage() {
               tone="primary"
               value={`${onTrack}/${overview?.team_size ?? 0}`}
               label="Team on track"
+              info={infoFor('Team on track')}
               hint="as of today"
             />
             <StatTile
@@ -452,6 +454,7 @@ export function DashboardPage() {
               tone="amber"
               value={pending}
               label="Approvals pending"
+              info={infoFor('Approvals pending')}
               hint={
                 overview?.pending_approvals_oldest_hours != null
                   ? describeAge(overview.pending_approvals_oldest_hours)
@@ -464,6 +467,7 @@ export function DashboardPage() {
               tone="sky"
               value={ptoThisWeek}
               label="PTO this week"
+              info={infoFor('PTO this week')}
               hint={`${overview?.pending_time_off_count ?? 0} requests pending`}
             />
             <StatTile
@@ -471,6 +475,7 @@ export function DashboardPage() {
               tone="emerald"
               value={overview?.rejected_recent_count ?? 0}
               label="Recent rejections"
+              info={infoFor('Recent rejections')}
               hint={overview?.rejected_recent_count ? 'needs follow-up' : 'all clear'}
             />
           </div>
@@ -558,7 +563,7 @@ export function DashboardPage() {
                   ['Budget tracked', fmtMoney(financials.data.summary.total_budget, financials.data.summary.currency)],
                 ].map(([label, val]) => (
                   <div key={label} className="bg-card px-4 py-3">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+                    <InfoLabel label={label} className="text-[10px] uppercase tracking-wider text-muted-foreground" />
                     <p className="mt-0.5 text-[15px] font-bold tabular-nums text-foreground">{val}</p>
                   </div>
                 ))}
@@ -569,10 +574,10 @@ export function DashboardPage() {
                   <thead>
                     <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                       <th className="px-4 py-2 font-semibold">Project</th>
-                      <th className="px-4 py-2 font-semibold">Hours</th>
-                      <th className="px-4 py-2 font-semibold">Revenue</th>
-                      <th className="px-4 py-2 font-semibold">Budget used</th>
-                      <th className="px-4 py-2 font-semibold">Contract used</th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours" /></th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Revenue" /></th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget used" /></th>
+                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Contract used" /></th>
                     </tr>
                   </thead>
                   <tbody>

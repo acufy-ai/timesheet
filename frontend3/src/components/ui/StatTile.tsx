@@ -1,5 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
+import { Info } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { Tooltip } from './Tooltip';
 
 // Card-shaped count tile with a tone-tinted icon block at top, a large
 // tabular-numeral value, a label, and a secondary hint. The 6-tone palette
@@ -29,13 +31,15 @@ interface StatTileProps {
   label: string;
   value: number | string;
   hint?: string;
+  // Optional plain-English explanation shown in a tooltip on the label.
+  info?: string;
   className?: string;
   // When provided, the tile becomes an interactive button (clickable,
   // keyboard-focusable, hover affordance) — e.g. to drill into a list.
   onClick?: () => void;
 }
 
-export function StatTile({ Icon, tone, label, value, hint, className, onClick }: StatTileProps) {
+export function StatTile({ Icon, tone, label, value, hint, info, className, onClick }: StatTileProps) {
   const interactive = typeof onClick === 'function';
   const content = (
     <>
@@ -45,7 +49,15 @@ export function StatTile({ Icon, tone, label, value, hint, className, onClick }:
       <p className="mt-3 text-2xl font-semibold tabular-nums leading-none text-foreground">
         {value}
       </p>
-      <p className="mt-1 text-xs font-medium text-foreground">{label}</p>
+      {info ? (
+        <Tooltip label={info} side="top" maxWidth={260}>
+          <span className="mt-1 inline-flex cursor-help items-center gap-1 text-xs font-medium text-foreground">
+            {label}<Info className="h-3 w-3 opacity-60" aria-hidden="true" />
+          </span>
+        </Tooltip>
+      ) : (
+        <p className="mt-1 text-xs font-medium text-foreground">{label}</p>
+      )}
       {hint ? <p className="text-[11px] text-muted-foreground">{hint}</p> : null}
     </>
   );

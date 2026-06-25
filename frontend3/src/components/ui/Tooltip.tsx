@@ -18,6 +18,9 @@ interface TooltipProps {
   side?: Side;
   /** Gap in px between the trigger and the tooltip. */
   offset?: number;
+  /** When set, the bubble wraps to this max width (px) instead of one line.
+   * Use for multi-sentence help text; omit for short single-line labels. */
+  maxWidth?: number;
   children: React.ReactNode;
 }
 
@@ -61,6 +64,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
   label,
   side = 'right',
   offset = 10,
+  maxWidth,
   children,
 }) => {
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -96,8 +100,11 @@ export const Tooltip: React.FC<TooltipProps> = ({
           <span
             id={tooltipId}
             role="tooltip"
-            style={{ top: coords.top, left: coords.left, transform: coords.transform }}
-            className="pointer-events-none fixed z-[100] whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
+            style={{ top: coords.top, left: coords.left, transform: coords.transform, maxWidth }}
+            className={
+              'pointer-events-none fixed z-[100] rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 ' +
+              (maxWidth ? 'whitespace-normal leading-snug' : 'whitespace-nowrap')
+            }
           >
             {label}
           </span>,
