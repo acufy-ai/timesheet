@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Briefcase, ChevronRight, Folder, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Button, Empty, Modal, TonePill } from '@/components/ui';
-import { useAllProjects, useAllTasks, useClients, useDeleteProject, useDeleteTask } from '@/hooks/useAdmin';
+import { useAllProjects, useAllTasks, useClients, useDeleteProject, useDeleteTask, useUserClients } from '@/hooks/useAdmin';
 import { cn } from '@/lib/cn';
 import type { FullProject, FullTask, ManagedUser } from '@/types/admin';
 import { ProjectFormModal } from '@/components/clients/ProjectFormModal';
@@ -28,6 +28,11 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
   const clientsQ = useClients();
   const projectsQ = useAllProjects();
   const tasksQ = useAllTasks();
+  // Clients this user is directly assigned to (e.g. a manager set as a client's
+  // Project Manager via the Edit-client team picker) — distinct from being on a
+  // specific project/task. Surfaced so a PM-on-a-client doesn't read as "no
+  // assignments" just because they have no per-project access yet.
+  const userClientsQ = useUserClients(user.id);
   const delProject = useDeleteProject();
   const delTask = useDeleteTask();
 
@@ -57,11 +62,20 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
     });
   }, [allProjects, tasksByProject, user.project_ids, user.task_ids]);
 
+  // Clients the user is directly assigned to (PM/member rows). Their ids ensure
+  // the client shows even with zero projects/tasks.
+  const assignedClientIds = useMemo(
+    () => new Set(((userClientsQ.data ?? []) as { client_id: number }[]).map((a) => a.client_id)),
+    [userClientsQ.data],
+  );
+
   const byClient = useMemo(() => {
     const m = new Map<number, FullProject[]>();
     userProjects.forEach((p) => { if (!m.has(p.client_id)) m.set(p.client_id, []); m.get(p.client_id)!.push(p); });
+    // Ensure directly-assigned clients appear even with no project/task access.
+    assignedClientIds.forEach((cid) => { if (!m.has(cid)) m.set(cid, []); });
     return m;
-  }, [userProjects]);
+  }, [userProjects, assignedClientIds]);
 
   const clientById = useMemo(() => {
     const m = new Map<number, { name: string; type: string }>();
@@ -135,6 +149,9 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
               <span className="flex-1 truncate text-sm font-semibold">
                 {c?.name ?? `Client #${cid}`}{' '}
                 <TonePill tone={c?.type === 'internal' ? 'success' : 'neutral'} className="ml-1.5">{c?.type === 'internal' ? 'Internal' : 'External'}</TonePill>
+                {projs.length === 0 && assignedClientIds.has(cid) ? (
+                  <TonePill tone="info" className="ml-1.5">Assigned</TonePill>
+                ) : null}
               </span>
               <span className="shrink-0 text-[11.5px] text-muted-foreground">{projs.length} {projs.length === 1 ? 'project' : 'projects'}</span>
             </button>

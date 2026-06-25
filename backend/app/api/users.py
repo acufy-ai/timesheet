@@ -473,7 +473,14 @@ async def update_my_profile(
 
     update = UserUpdate(**data)
     try:
-        return await update_user(db, current_user, update)
+        # current_user is bound to the auth session, not this request's tenant
+        # `db`. Re-fetch the row within `db` so update_user operates on a
+        # session-attached instance (otherwise flush/refresh fail with
+        # "not persistent within this Session").
+        target = await get_user_by_id(db, current_user.id)
+        if target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return await update_user(db, target, update)
     except IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

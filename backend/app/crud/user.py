@@ -99,6 +99,17 @@ async def _sync_user_assignments(
     manager_ids: Optional[list[int]] = None,
     primary_manager_id: Optional[int] = None,
 ) -> None:
+    # Expunge any of this user's assignment rows already loaded into the session
+    # (e.g. current_user.manager_assignments via get_current_user on a
+    # self-update) BEFORE the bulk delete + re-add, so re-adding the same PK
+    # doesn't collide in the identity map. AsyncSession proxies the real map via
+    # .sync_session.
+    for obj in list(db.sync_session.identity_map.values()):
+        if (isinstance(obj, EmployeeManagerAssignment) and obj.employee_id == user.id) \
+           or (isinstance(obj, UserProjectAccess) and obj.user_id == user.id) \
+           or (isinstance(obj, UserTaskAccess) and obj.user_id == user.id):
+            db.expunge(obj)
+
     await db.execute(delete(UserProjectAccess).where(UserProjectAccess.user_id == user.id))
     await db.execute(delete(UserTaskAccess).where(UserTaskAccess.user_id == user.id))
     await db.execute(delete(EmployeeManagerAssignment).where(EmployeeManagerAssignment.employee_id == user.id))
@@ -947,12 +958,27 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     for field, value in update_data.items():
         setattr(user, field, value)
 
-    db.add(user)
+    # NOTE: no db.add(user) here. `user` is already session-tracked, so setattr
+    # marks it dirty and flush/commit persists it. Calling db.add would cascade
+    # through the `manager_assignments` (cascade="all, delete-orphan") relation
+    # and, on the self-update path where those rows are already loaded, raise an
+    # identity-map collision ("another instance with key ... already present").
     try:
         await db.flush()
-        await _sync_user_assignments(
-            db, user, next_role, manager_id, project_ids or [], task_ids or [],
-            manager_ids=manager_ids, primary_manager_id=primary_manager_id)
+        # Only reconcile assignments when the caller actually touched managers,
+        # projects, tasks, or the role (a role change can invalidate the
+        # supervisor). A pure profile edit (name/title/timezone/username) leaves
+        # assignments untouched — re-syncing them needlessly deletes + re-adds
+        # identical rows, which can collide in the session identity map on a
+        # self-update.
+        assignments_touched = (
+            manager_id_supplied or manager_ids_supplied
+            or project_ids_supplied or task_ids_supplied or "role" in update_data
+        )
+        if assignments_touched:
+            await _sync_user_assignments(
+                db, user, next_role, manager_id, project_ids or [], task_ids or [],
+                manager_ids=manager_ids, primary_manager_id=primary_manager_id)
         await db.commit()
     except ValueError:
         await db.rollback()
@@ -970,8 +996,12 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     # query: on the per-tenant async engine, a new connection checkout right
     # after commit can trip pool pre-ping's do_ping in a non-greenlet context
     # (MissingGreenlet), which left the change committed but the request 500-ing.
-    # refresh() with eager relationship loads gives the same result without a
-    # fresh checkout.
+    #
+    # A full refresh (no attribute_names) reloads ALL scalar columns — commit
+    # expires every attribute, so without this the response serializer lazy-loads
+    # an expired scalar like `updated_at` and crashes (MissingGreenlet). The
+    # second refresh eager-loads the relationships the response/properties read.
+    await db.refresh(user)
     await db.refresh(user, attribute_names=[
         "manager_assignment", "manager_assignments", "project_access", "task_access",
     ])
