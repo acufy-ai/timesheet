@@ -1,10 +1,11 @@
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from app.models.assignments import TaskAssignee, UserProjectAccess
+from app.models.assignments import TaskAssignee, UserTaskAccess
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User, UserRole
@@ -61,18 +62,21 @@ async def set_task_assignees(
     for uid in target - existing:
         db.add(TaskAssignee(task_id=task.id, user_id=uid, tenant_id=task.tenant_id))
 
-    # Auto-add new assignees to the project roster if absent.
+    # Grant each new assignee PER-TASK access (user_task_access) so they can see
+    # and log time on THIS task — without rostering them onto the whole project,
+    # which would expose every task in it. (user_has_project_access /
+    # list_projects_for_user treat per-task access as conferring access to the
+    # task's project.) Only add rows that don't already exist for this task.
     if target:
-        have = (
+        have = set((
             await db.execute(
-                select(UserProjectAccess.user_id).where(
-                    UserProjectAccess.project_id == task.project_id
+                select(UserTaskAccess.user_id).where(
+                    UserTaskAccess.task_id == task.id
                 )
             )
-        ).scalars().all()
-        have_set = set(have)
-        for uid in target - have_set:
-            db.add(UserProjectAccess(user_id=uid, project_id=task.project_id))
+        ).scalars().all())
+        for uid in target - have:
+            db.add(UserTaskAccess(user_id=uid, task_id=task.id, tenant_id=task.tenant_id))
 
     await db.commit()
 
@@ -104,9 +108,22 @@ async def list_tasks_for_user(
     # on a client could not see tasks on that client's projects unless they were
     # also rostered on each project.
     if user.role == UserRole.EMPLOYEE:
+        # Task-aware scoping: an employee sees a task when its PROJECT is in their
+        # project roster (whole-project access) OR the TASK itself is granted
+        # per-task (user_task_access). A per-task grant must NOT expand to every
+        # task in the project, and an employee with no grants at all sees none.
         assigned_project_ids = await get_assigned_project_ids(db, user.id)
-        if assigned_project_ids:
-            query = query.where(Task.project_id.in_(assigned_project_ids))
+        assigned_task_ids = list((await db.execute(
+            select(UserTaskAccess.task_id).where(UserTaskAccess.user_id == user.id)
+        )).scalars().all())
+        # -1 is an impossible id, so an empty list matches nothing (instead of
+        # the old behavior where no project access meant "see every task").
+        query = query.where(
+            or_(
+                Task.project_id.in_(assigned_project_ids or [-1]),
+                Task.id.in_(assigned_task_ids or [-1]),
+            )
+        )
 
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)

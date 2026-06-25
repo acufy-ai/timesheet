@@ -18,9 +18,7 @@ from app.crud.task import (
 from app.crud.project import (
     get_project_by_id,
     get_project_manager_ids,
-    get_project_resource_ids,
     set_project_managers,
-    set_project_roster,
 )
 from app.models.assignments import TaskAssignee
 from app.models.user import User, UserRole
@@ -230,20 +228,17 @@ async def create_task_endpoint(
         await set_task_assignees(db, new_task, payload.assignee_ids)
 
     # Project propagation: when the project has no PM yet and a MANAGER creates a
-    # task on it, auto-assign the acting manager as the project's PM and add the
-    # task's assignees to the project roster (both additive). This lets a manager
-    # staff a project straight from the task modal without a round-trip to the
-    # project form. Admins don't auto-claim PM (they manage on behalf of others).
+    # task on it, auto-assign the acting manager as the project's PM so they can
+    # staff a project straight from the task modal. Admins don't auto-claim PM.
+    # NOTE: we no longer add the task's assignees to the whole-project roster —
+    # set_task_assignees already grants them PER-TASK access (so they can log
+    # time on this task) without exposing every other task in the project.
     existing_pms = await get_project_manager_ids(db, project.id)
     if not existing_pms and current_user.role == UserRole.MANAGER:
         await set_project_managers(db, project.id, [current_user.id], current_user.tenant_id)
         if not project.manager_id:
             project.manager_id = current_user.id
             db.add(project)
-        if payload.assignee_ids:
-            current_roster = set(await get_project_resource_ids(db, project.id))
-            merged = sorted(current_roster | set(payload.assignee_ids))
-            await set_project_roster(db, project.id, merged)
         await db.commit()
 
     if new_task.tenant_id is not None:

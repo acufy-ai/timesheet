@@ -6,8 +6,9 @@ from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from app.models.project import Project
+from app.models.task import Task
 from app.models.user import User, UserRole
-from app.models.assignments import UserProjectAccess, ProjectManager
+from app.models.assignments import UserProjectAccess, UserTaskAccess, ProjectManager
 from app.schemas import ProjectCreate, ProjectUpdate
 from typing import Optional
 
@@ -207,6 +208,19 @@ async def get_assigned_project_ids(db: AsyncSession, user_id: int) -> list[int]:
     return list(result.scalars().all())
 
 
+async def get_task_access_project_ids(db: AsyncSession, user_id: int) -> list[int]:
+    """Projects a user reaches via PER-TASK access (user_task_access → task's
+    project). A task grant must let the user see and log time on that task's
+    project, WITHOUT granting the whole-project roster (which would expose every
+    task in the project). Used alongside get_assigned_project_ids."""
+    result = await db.execute(
+        select(Task.project_id)
+        .join(UserTaskAccess, UserTaskAccess.task_id == Task.id)
+        .where(UserTaskAccess.user_id == user_id)
+    )
+    return list({pid for pid in result.scalars().all()})
+
+
 async def user_has_project_access(db: AsyncSession, user: User, project_id: int) -> bool:
     if user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         return True
@@ -218,8 +232,12 @@ async def user_has_project_access(db: AsyncSession, user: User, project_id: int)
     # read filter in list_projects_for_user, which also scopes EMPLOYEE only).
     # Previously this returned True when the list was empty, which silently let
     # any unassigned employee write time against every project in the tenant.
+    # Per-task access also confers access to the task's project (so a task-only
+    # assignee can log time on that task) without granting the whole roster.
     if user.role == UserRole.EMPLOYEE:
-        return project_id in assigned_project_ids
+        if project_id in assigned_project_ids:
+            return True
+        return project_id in await get_task_access_project_ids(db, user.id)
 
     # Broader roles (MANAGER, VIEWER) are not project-scoped for their own
     # time; an empty assignment list does not restrict them.
@@ -250,9 +268,13 @@ async def list_projects_for_user(
         query = query.where(Project.is_active.is_(True))
 
     if user.role == UserRole.EMPLOYEE:
+        # Roster access OR per-task access (a task grant surfaces its project so
+        # the user can log time on that task). Fail CLOSED: an employee with no
+        # access sees no projects (the impossible -1 id matches nothing).
         assigned_project_ids = await get_assigned_project_ids(db, user.id)
-        if assigned_project_ids:
-            query = query.where(Project.id.in_(assigned_project_ids))
+        task_project_ids = await get_task_access_project_ids(db, user.id)
+        visible = set(assigned_project_ids) | set(task_project_ids)
+        query = query.where(Project.id.in_(visible or {-1}))
 
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
