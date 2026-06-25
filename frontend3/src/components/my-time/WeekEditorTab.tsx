@@ -699,15 +699,19 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
             />
           ) : (
             <div className="scroll-x-visible">
-              <table className="w-full table-fixed text-sm min-w-[900px]">
+              {/* Description is NOT a column here — it renders as its own
+                  full-width row beneath each entry (see EditRow / ViewRow), so
+                  it always gets real width and the top row (7 columns) fits any
+                  screen. The trailing col absorbs leftover width. */}
+              <table className="w-full table-auto text-sm">
                 <colgroup>
                   <col style={{ width: '132px' }} />
                   <col style={{ width: '132px' }} />
                   <col style={{ width: '200px' }} />
-                  <col style={{ width: '150px' }} />
+                  <col />{/* Task — flexes to absorb leftover width */}
                   <col style={{ width: '64px' }} />
                   <col style={{ width: '52px' }} />
-                  <col />
+                  <col style={{ width: 0 }} />{/* Description — hidden, lives in its own row */}
                   <col style={{ width: '70px' }} />
                 </colgroup>
                 <thead>
@@ -718,7 +722,7 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
                     <th className="px-1.5 py-2">Task</th>
                     <th className="px-1.5 py-2 text-right">Hours</th>
                     <th className="px-1.5 py-2 text-center">Bill.</th>
-                    <th className="px-1.5 py-2">Description</th>
+                    <th className="hidden">Description</th>
                     <th className="px-1.5 py-2 text-right">Action</th>
                   </tr>
                 </thead>
@@ -983,6 +987,7 @@ function ViewRow({
   onDelete: () => void;
 }) {
   return (
+    <>
     <tr className="border-b border-border align-top last:border-b-0">
       <td className="whitespace-nowrap px-1.5 py-2 text-muted-foreground">{fmt12h(entry.start_time)}</td>
       <td className="whitespace-nowrap px-1.5 py-2 text-muted-foreground">{fmt12h(entry.end_time)}</td>
@@ -996,7 +1001,7 @@ function ViewRow({
           <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-border text-muted-foreground"><X className="h-3 w-3" /></span>
         )}
       </td>
-      <td className="px-1.5 py-2"><DescriptionCell text={entry.description} /></td>
+      <td className="hidden"><DescriptionCell text={entry.description} /></td>
       <td className="px-1.5 py-2 text-right">
         <div className="inline-flex items-center gap-0.5">
           <button
@@ -1020,6 +1025,16 @@ function ViewRow({
         </div>
       </td>
     </tr>
+    {/* Description on its own full-width row beneath the entry (only when
+        there's a description to show). */}
+    {entry.description ? (
+      <tr className="border-b border-border">
+        <td colSpan={8} className="px-1.5 pb-2 pt-0">
+          <DescriptionCell text={entry.description} />
+        </td>
+      </tr>
+    ) : null}
+    </>
   );
 }
 
@@ -1063,6 +1078,7 @@ function EditRow({
     'w-full rounded-md border border-border bg-background px-1.5 py-1 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 
   return (
+    <>
     <tr className="border-b border-border bg-muted/10 align-top last:border-b-0">
       <td className="px-1.5 py-2">
         <input type="time" value={draft.start_time} onChange={(e) => onTimeChange('start_time', e.target.value)} className={fieldClass + ' tabular-nums'} />
@@ -1114,7 +1130,8 @@ function EditRow({
           className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
         />
       </td>
-      <td className="px-1.5 py-2">
+      {/* Description is rendered in its own full-width row below; this inline cell stays hidden. */}
+      <td className="hidden">
         <textarea
           value={draft.description}
           onChange={(e) => onPatch({ description: e.target.value })}
@@ -1145,5 +1162,19 @@ function EditRow({
         </div>
       </td>
     </tr>
+    {/* Description on its own full-width row (always — keeps the top row fitting). */}
+    <tr className="border-b border-border bg-muted/10">
+      <td colSpan={8} className="px-1.5 pb-2">
+        <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Description</label>
+        <textarea
+          value={draft.description}
+          onChange={(e) => onPatch({ description: e.target.value })}
+          placeholder="What were you working on?"
+          rows={2}
+          className={fieldClass + ' min-h-[36px] resize-y leading-snug'}
+        />
+      </td>
+    </tr>
+    </>
   );
 }
