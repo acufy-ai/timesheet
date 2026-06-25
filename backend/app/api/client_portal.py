@@ -39,7 +39,7 @@ from app.models.user_client_assignment import UserClientAssignment, ClientAssign
 from app.schemas import (
     ClientGrantCreate, ClientGrantUpdate, ClientGrantResponse,
     PortalProject, PortalTask,
-    ClientInviteRequest, ClientInviteResponse, UserCreate, ClientPortalUser,
+    ClientInviteRequest, ClientInviteResponse, ClientUserUpdate, UserCreate, ClientPortalUser,
     PortalTaskUpdate, PortalTaskCreate, PortalProjectUpdate,
     ClientManagerContext, ClientEmployeeSummary, ClientEmployeeInvite,
     ClientEmployeeAssign, ClientReviewItem, ClientReviewAction,
@@ -1278,20 +1278,17 @@ async def list_client_portal_users(
     return out
 
 
-@router.post("/client-grants/user/{user_id}/resend-invite")
-async def resend_client_invite(
-    user_id: int,
-    db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Re-send the client-portal set-password invite to a CLIENT user who hasn't
-    accepted yet. Uses the client-portal email (not the internal one), and the
-    internal resend endpoint rejects external users — so clients need this one."""
+async def _resolve_manageable_client_user(
+    db: AsyncSession, current_user: User, user_id: int
+) -> User:
+    """Load a CLIENT user the caller is allowed to act on: it must exist, be a
+    client-side account in this tenant, have at least one grant, and (for a
+    non-admin PM) the caller must manage a client the user has a grant on.
+    Returns the target User or raises 404/403. Shared by resend / edit."""
     require_client_manager(current_user)
     target = await db.get(User, user_id)
     if target is None or target.tenant_id != current_user.tenant_id or target.role not in _CLIENT_GRANTEE_ROLES:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client user not found.")
-    # The caller must manage at least one client this user has a grant on.
     grants = (await db.execute(
         select(ClientAccessGrant).where(
             ClientAccessGrant.user_id == user_id,
@@ -1312,6 +1309,77 @@ async def resend_client_invite(
                 continue
         if not ok:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't manage this client.")
+    return target
+
+
+@router.patch("/client-grants/user/{user_id}")
+async def update_client_user(
+    user_id: int,
+    payload: ClientUserUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a CLIENT user's profile (name, email, title/label) from the
+    client-management side. Auth mirrors resend-invite: the PM must manage a
+    client the user has a grant on."""
+    from sqlalchemy.exc import IntegrityError
+    from app.crud.user import get_user_by_email, _mirror_user_update_to_shared_db
+    target = await _resolve_manageable_client_user(db, current_user, user_id)
+
+    previous_email = target.email
+    email_changed = False
+    fields = payload.model_dump(exclude_unset=True)
+    if "full_name" in fields and fields["full_name"] is not None:
+        name = fields["full_name"].strip()
+        if not name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full name can't be empty.")
+        target.full_name = name
+    if "title" in fields:
+        title = (fields["title"] or "").strip()
+        target.title = title or None
+    if "email" in fields and fields["email"] is not None:
+        new_email = fields["email"].strip().lower()
+        if not new_email or "@" not in new_email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid email address.")
+        if new_email != (target.email or "").lower():
+            clash = await get_user_by_email(db, new_email)
+            if clash is not None and clash.id != target.id and clash.tenant_id == current_user.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"{new_email} already belongs to another user in this workspace.")
+            target.email = new_email
+            email_changed = True
+
+    try:
+        await db.commit()
+        await db.refresh(target)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That email is already in use in this workspace.")
+
+    # Login resolves email -> tenant via the shared DB, so an email change must
+    # propagate (and clean up the stale row). Failure here doesn't roll back the
+    # per-tenant commit; ops can backfill divergence.
+    if email_changed:
+        try:
+            await _mirror_user_update_to_shared_db(target, previous_email=previous_email)
+        except Exception:  # noqa: BLE001 — mirror is best-effort
+            pass
+    return {"id": target.id, "full_name": target.full_name, "email": target.email, "title": target.title}
+
+
+@router.post("/client-grants/user/{user_id}/resend-invite")
+async def resend_client_invite(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-send the client-portal set-password invite to a CLIENT user who hasn't
+    accepted yet. Uses the client-portal email (not the internal one), and the
+    internal resend endpoint rejects external users — so clients need this one."""
+    target = await _resolve_manageable_client_user(db, current_user, user_id)
 
     from app.services.password_invite import issue_invite_token, build_set_password_url
     from app.services.email_verification import send_client_portal_invitation_email

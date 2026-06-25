@@ -446,10 +446,12 @@ function InviteClientModal({
 // invite, pre-loaded from their current grants. On save we DIFF the new
 // selection against the originals and issue the minimal create/update/delete.
 function EditAccessModal({
-  open, userName, userId, grants, projects, tasksByProject, onClose, onDone, onError,
+  open, userName, userEmail, userTitle, userId, grants, projects, tasksByProject, onClose, onDone, onError,
 }: {
   open: boolean;
   userName: string;
+  userEmail: string;
+  userTitle: string;
   userId: number;
   grants: ClientGrant[];
   projects: FullProject[];
@@ -458,6 +460,19 @@ function EditAccessModal({
   onDone: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
+  // Editable client-profile fields (name, email, title), seeded from the row.
+  const [fullName, setFullName] = useState(userName);
+  const [email, setEmail] = useState(userEmail);
+  const [title, setTitle] = useState(userTitle);
+  const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
+  // Re-seed the profile fields whenever the modal (re)opens for this user.
+  const [detailSeededFor, setDetailSeededFor] = useState<string | null>(null);
+  const detailSig = `${userId}|${userName}|${userEmail}|${userTitle}`;
+  if (open && detailSeededFor !== detailSig) {
+    setFullName(userName); setEmail(userEmail); setTitle(userTitle);
+    setDetailErrors({}); setDetailSeededFor(detailSig);
+  }
+  if (!open && detailSeededFor !== null) setDetailSeededFor(null);
   // Seed selection + modes from existing grants. Task grants carry their own
   // project id (resolved from tasksByProject) so the picker keys correctly.
   const taskProjectOf = useMemo(() => {
@@ -535,10 +550,31 @@ function EditAccessModal({
     // Deletes for scopes that were removed.
     origKeys.forEach((k) => { if (!nextKeys.has(k)) deletes.push(seed.grantIdByKey[k]); });
 
-    if (!creates.length && !updates.length && !deletes.length) { onClose(); return; }
+    // Profile-detail diff (name / email / title).
+    const detailPatch: { full_name?: string; email?: string; title?: string | null } = {};
+    const nextName = fullName.trim();
+    const nextEmail = email.trim();
+    const nextTitle = title.trim();
+    if (nextName !== userName.trim()) detailPatch.full_name = nextName;
+    if (nextEmail.toLowerCase() !== userEmail.trim().toLowerCase()) detailPatch.email = nextEmail;
+    if (nextTitle !== userTitle.trim()) detailPatch.title = nextTitle || null;
+
+    // Validate edited details up-front (inline, like the invite form).
+    const de: Record<string, string> = {};
+    if ('full_name' in detailPatch && !nextName) de.fullName = 'This field is required.';
+    if ('email' in detailPatch) {
+      if (!nextEmail) de.email = 'This field is required.';
+      else if (!nextEmail.includes('@')) de.email = 'Enter a valid email address.';
+    }
+    if (Object.keys(de).length) { setDetailErrors(de); return; }
+    setDetailErrors({});
+
+    const hasDetail = Object.keys(detailPatch).length > 0;
+    if (!creates.length && !updates.length && !deletes.length && !hasDetail) { onClose(); return; }
 
     setBusy(true);
     try {
+      if (hasDetail) await clientPortalApi.updateClientUser(userId, detailPatch);
       await Promise.all([
         ...creates.map((g) => clientPortalApi.createGrant({
           user_id: userId,
@@ -549,7 +585,7 @@ function EditAccessModal({
         ...updates.map((u) => clientPortalApi.updateGrant(u.grantId, u.caps)),
         ...deletes.map((id) => clientPortalApi.revokeGrant(id)),
       ]);
-      onDone('Access updated.');
+      onDone(hasDetail && !creates.length && !updates.length && !deletes.length ? 'Client updated.' : 'Access updated.');
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       onError(typeof d === 'string' ? d : 'Could not update access.');
@@ -557,8 +593,27 @@ function EditAccessModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Edit access · ${userName}`} className="max-w-4xl">
-      <div className="mb-2 text-[13px] font-bold">
+    <Modal open={open} onClose={onClose} title={`Edit client · ${userName}`} className="max-w-4xl">
+      {/* Client details — name, email, title — editable inline. */}
+      <div className="mb-3 text-[13px] font-bold">Client details</div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Full name<RequiredMark /></label>
+          <Input value={fullName} error={!!detailErrors.fullName} onChange={(e) => { setFullName(e.target.value); setDetailErrors((p) => ({ ...p, fullName: '' })); }} placeholder="Dana Whitfield" />
+          <FieldError error={detailErrors.fullName} />
+        </div>
+        <div>
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Email<RequiredMark /></label>
+          <Input type="email" value={email} error={!!detailErrors.email} onChange={(e) => { setEmail(e.target.value); setDetailErrors((p) => ({ ...p, email: '' })); }} placeholder="dana@client.com" />
+          <FieldError error={detailErrors.email} />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Title <span className="font-normal">(label, e.g. Project Sponsor)</span></label>
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Project Sponsor" />
+        </div>
+      </div>
+
+      <div className="mb-2 mt-5 text-[13px] font-bold">
         Projects &amp; tasks <span className="text-xs font-normal text-muted-foreground">(choose how much of each project to share)</span>
       </div>
       <ScopePicker
@@ -670,8 +725,8 @@ function ClientGrantCard({
             {resending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />} Resend
           </Button>
         ) : null}
-        <Button size="sm" variant="ghost" onClick={() => setEditOpen(true)}>
-          <Pencil className="h-3.5 w-3.5" /> Edit access
+        <Button size="sm" variant="ghost" onClick={() => setEditOpen(true)} title="Edit client">
+          <Pencil className="h-3.5 w-3.5" />
         </Button>
         <Button size="sm" variant="ghost" onClick={revokeAll} disabled={revoking || grants.length === 0}
           title="Revoke all of this client's access">
@@ -683,7 +738,7 @@ function ClientGrantCard({
       {expanded ? (
         <div className="space-y-1.5 border-t border-border p-3">
           {grants.length === 0 ? (
-            <p className="text-[12px] text-muted-foreground">No grants on this client yet. Use "Edit access" to share projects or tasks.</p>
+            <p className="text-[12px] text-muted-foreground">No grants on this client yet. Use the edit (pencil) button to share projects or tasks.</p>
           ) : grants.map((g) => {
             const isProject = !!g.project_id;
             const scopeLabel = isProject
@@ -714,6 +769,8 @@ function ClientGrantCard({
       <EditAccessModal
         open={editOpen}
         userName={name}
+        userEmail={email}
+        userTitle={label ?? ''}
         userId={userId}
         grants={grants}
         projects={clientProjects}

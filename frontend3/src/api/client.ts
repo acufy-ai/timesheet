@@ -519,6 +519,9 @@ export const clientPortalApi = {
   // and sends the wrong email).
   resendInvite: (userId: number) =>
     api.post<{ message: string }>(`/client-grants/user/${userId}/resend-invite`),
+  // Update a client user's profile (name, email, title) from client management.
+  updateClientUser: (userId: number, body: { full_name?: string; email?: string; title?: string | null }) =>
+    api.patch<{ id: number; full_name: string; email: string; title: string | null }>(`/client-grants/user/${userId}`, body),
   invite: (body: ClientInviteBody) =>
     api.post<{ user_id: number; email: string; invited: boolean; message: string }>('/client-grants/invite', body),
 };

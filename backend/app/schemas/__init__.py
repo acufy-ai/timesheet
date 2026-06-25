@@ -1661,6 +1661,14 @@ class ClientInviteResponse(BaseModel):
     message: str
 
 
+class ClientUserUpdate(BaseModel):
+    """Edit a CLIENT user's profile from the client-management side. All fields
+    optional; only those supplied are changed."""
+    full_name: Optional[str] = Field(default=None, min_length=1)
+    email: Optional[EmailStr] = None
+    title: Optional[str] = None  # the client-side role label, e.g. "Project Sponsor"
+
+
 # Client-side portal DTOs (what a CLIENT user sees of their granted work).
 class PortalTask(BaseModel):
     id: int
