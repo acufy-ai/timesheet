@@ -3,8 +3,20 @@
 import asyncio
 import random
 import secrets
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+
+
+def _block_for_hours(hours: Decimal) -> tuple[time, time]:
+    """A plausible start/end block for a seeded entry: start at 9:00 AM and run
+    for `hours` (clamped so it never spills past midnight). Demo entries should
+    carry a visible time range, not show up as N/A in the week editor."""
+    h = float(hours)
+    start_h = 9.0
+    end_h = min(start_h + h, 23.99)
+    start = time(int(start_h), int(round((start_h - int(start_h)) * 60)) % 60)
+    end = time(int(end_h), int(round((end_h - int(end_h)) * 60)) % 60)
+    return start, end
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -226,18 +238,23 @@ async def _ensure_recent_time_entries(
     statuses = [TimeEntryStatus.DRAFT,
                 TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
 
+    # Never approve (or submit) the in-progress current week: an incomplete week
+    # shouldn't read as APPROVED in the manager's History tab.
+    this_week_start = today - timedelta(days=today.weekday())
+
     for days_ago in range(1, 21):
         entry_date = today - timedelta(days=days_ago)
         if entry_date.weekday() >= 5:
             continue
 
         hours = Decimal(str(rng.choice([6.0, 7.5, 8.0, 8.5])))
-        status = rng.choice(statuses)
+        status = TimeEntryStatus.DRAFT if entry_date >= this_week_start else rng.choice(statuses)
         approved_by = approver_id if status == TimeEntryStatus.APPROVED else None
         approved_at = datetime.now(
             timezone.utc) if status == TimeEntryStatus.APPROVED else None
         submitted_at = datetime.now(timezone.utc) if status in [
             TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED] else None
+        start_time, end_time = _block_for_hours(hours)
 
         db.add(
             TimeEntry(
@@ -246,6 +263,8 @@ async def _ensure_recent_time_entries(
                 project_id=rng.choice(project_ids),
                 entry_date=entry_date,
                 hours=hours,
+                start_time=start_time,
+                end_time=end_time,
                 description="Seeded senior-manager demo activity",
                 status=status,
                 approved_by=approved_by,
@@ -279,16 +298,20 @@ async def _ensure_year_time_entries(
     statuses = [TimeEntryStatus.DRAFT,
                 TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
 
+    # Don't approve/submit the in-progress current week (see _ensure_recent).
+    this_week_start = today - timedelta(days=today.weekday())
+
     current_day = start_date
     while current_day <= today:
         if current_day.weekday() < 5 and current_day not in existing_dates:
             hours = Decimal(str(rng.choice([6.0, 7.5, 8.0, 8.5])))
-            status = rng.choice(statuses)
+            status = TimeEntryStatus.DRAFT if current_day >= this_week_start else rng.choice(statuses)
             approved_by = approver_id if status == TimeEntryStatus.APPROVED else None
             approved_at = datetime.now(
                 timezone.utc) if status == TimeEntryStatus.APPROVED else None
             submitted_at = datetime.now(timezone.utc) if status in [
                 TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED] else None
+            start_time, end_time = _block_for_hours(hours)
 
             db.add(
                 TimeEntry(
@@ -297,6 +320,8 @@ async def _ensure_year_time_entries(
                     project_id=rng.choice(project_ids),
                     entry_date=current_day,
                     hours=hours,
+                    start_time=start_time,
+                    end_time=end_time,
                     description="Seeded senior-manager yearly activity",
                     status=status,
                     approved_by=approved_by,
@@ -359,6 +384,7 @@ async def _ensure_demo_rejected_entry(
         return
 
     now_utc = datetime.now(timezone.utc)
+    _rej_start, _rej_end = _block_for_hours(hours)
     db.add(
         TimeEntry(
             user_id=user_id,
@@ -366,6 +392,8 @@ async def _ensure_demo_rejected_entry(
             project_id=project_id,
             entry_date=entry_date,
             hours=hours,
+            start_time=_rej_start,
+            end_time=_rej_end,
             description=description,
             status=TimeEntryStatus.REJECTED,
             submitted_at=now_utc - timedelta(hours=2),

@@ -557,7 +557,7 @@ function ApprovalsShell({ tab, weekStartDay }: { tab: Exclude<Tab, 'timeoff'>; w
                 {curEmp.weeks.length > 0 ? (
                   <div className="relative">
                     <button type="button" onClick={() => setDdOpen((v) => !v)} className="flex w-full items-center gap-2 rounded-xl border border-border bg-muted/40 px-3.5 py-2.5 text-[13px] text-foreground transition-colors hover:border-primary/40">
-                      <span>{tab === 'pending' ? 'Pending weeks' : 'Weeks'}</span>
+                      <span>{tab === 'pending' ? 'Select pending weeks' : 'Select weeks'}</span>
                       {cfg.bulkAction ? (
                         <span className="rounded-full bg-primary/[0.18] px-2.5 py-0.5 text-[11px] text-primary">{selWeeks.length ? `${selWeeks.length} selected` : 'none selected'}</span>
                       ) : null}
