@@ -386,15 +386,29 @@ async def get_my_profile(
     )
     direct_reports = list(direct_reports_result.scalars().all())
 
-    manager_name = None
-    manager_user = None
-    if current_user.manager_id is not None:
-        manager_user = await get_user_by_id(db, current_user.manager_id)
-        manager_name = manager_user.full_name if manager_user else None
+    # All immediate managers this user reports to (multi-manager), primary first.
+    managers_result = await db.execute(
+        select(User)
+        .join(EmployeeManagerAssignment, EmployeeManagerAssignment.manager_id == User.id)
+        .where(EmployeeManagerAssignment.employee_id == current_user.id)
+        .order_by(EmployeeManagerAssignment.is_primary.desc(), User.full_name.asc())
+    )
+    managers = list(managers_result.scalars().all())
+
+    # Primary manager drives the back-compat single fields and the chain walk.
+    # The `managers` list above is loaded via a plain select (no eager-loaded
+    # assignments), so we must re-fetch the primary via get_user_by_id before
+    # walking the chain — that accessor needs manager_assignments loaded.
+    primary_manager = next(
+        (m for m in managers if m.id == current_user.manager_id), None
+    ) or (managers[0] if managers else None)
+    manager_name = primary_manager.full_name if primary_manager else None
 
     supervisor_chain: list[User] = []
     seen_user_ids = {current_user.id}
-    next_supervisor = manager_user
+    next_supervisor = (
+        await get_user_by_id(db, primary_manager.id) if primary_manager else None
+    )
     while next_supervisor and next_supervisor.id not in seen_user_ids:
         supervisor_chain.append(next_supervisor)
         seen_user_ids.add(next_supervisor.id)
@@ -411,8 +425,9 @@ async def get_my_profile(
         "department": current_user.department,
         "timezone": current_user.timezone,
         "role": current_user.role,
-        "manager_id": current_user.manager_id,
+        "manager_id": primary_manager.id if primary_manager else None,
         "manager_name": manager_name,
+        "managers": managers,
         "direct_reports": direct_reports,
         "supervisor_chain": supervisor_chain,
     }

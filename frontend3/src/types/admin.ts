@@ -627,8 +627,11 @@ export interface UserProfile {
   department?: string | null;
   timezone?: string | null;
   role: string;
+  // Back-compat single-manager fields (primary). Prefer `managers`.
   manager_id?: number | null;
   manager_name?: string | null;
+  // All immediate managers (primary first). Multi-manager.
+  managers?: OrgPerson[];
   direct_reports: OrgPerson[];
   supervisor_chain: OrgPerson[];
 }

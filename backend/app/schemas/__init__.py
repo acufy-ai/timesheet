@@ -193,8 +193,11 @@ class UserProfileResponse(BaseModel):
     department: Optional[str] = None
     timezone: Optional[str] = None
     role: UserRole
+    # Back-compat single-manager fields (primary manager). Prefer `managers`.
     manager_id: Optional[int] = None
     manager_name: Optional[str] = None
+    # All immediate managers this user reports to (primary first). Multi-manager.
+    managers: List[UserSummaryResponse] = Field(default_factory=list)
     direct_reports: List[UserSummaryResponse] = Field(default_factory=list)
     supervisor_chain: List[UserSummaryResponse] = Field(default_factory=list)
 

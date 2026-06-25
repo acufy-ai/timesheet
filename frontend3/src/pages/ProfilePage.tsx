@@ -89,6 +89,9 @@ export function ProfilePage() {
   }
 
   const profile = profileQ.data;
+  // All immediate managers (primary first). Falls back to the legacy single
+  // manager_name when the list isn't populated.
+  const managerList = profile?.managers ?? [];
   const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
@@ -198,16 +201,29 @@ export function ProfilePage() {
       </Card>
 
       {/* Organization */}
-      {profile && (profile.manager_name || profile.direct_reports.length > 0 || profile.supervisor_chain.length > 0) ? (
+      {profile && (managerList.length > 0 || profile.manager_name || profile.direct_reports.length > 0) ? (
         <Card className="p-6">
           <div className="mb-4 flex items-center gap-2">
             <Users className="h-4 w-4 text-muted-foreground" />
             <p className="text-sm font-semibold text-foreground">Organization</p>
           </div>
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Reports to</p>
-              <p className="mt-1 text-sm text-foreground">{profile.manager_name ?? '—'}</p>
+              {managerList.length === 0 ? (
+                <p className="mt-1 text-sm text-muted-foreground">{profile.manager_name ?? '—'}</p>
+              ) : (
+                <ul className="mt-1 space-y-1">
+                  {managerList.map((m, i) => (
+                    <li key={m.id} className="flex items-center gap-1.5 text-sm text-foreground">
+                      <span>{m.full_name}</span>
+                      {managerList.length > 1 && i === 0 ? (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">primary</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -218,18 +234,6 @@ export function ProfilePage() {
               ) : (
                 <ul className="mt-1 space-y-0.5">
                   {profile.direct_reports.map((p) => (
-                    <li key={p.id} className="text-sm text-foreground">{p.full_name}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Supervisor chain</p>
-              {profile.supervisor_chain.length === 0 ? (
-                <p className="mt-1 text-sm text-muted-foreground">—</p>
-              ) : (
-                <ul className="mt-1 space-y-0.5">
-                  {profile.supervisor_chain.map((p) => (
                     <li key={p.id} className="text-sm text-foreground">{p.full_name}</li>
                   ))}
                 </ul>
