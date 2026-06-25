@@ -137,7 +137,7 @@ export function ClientWorkView({ heading = true }: { heading?: boolean }) {
   );
 }
 
-function ProjectCard({
+export function ProjectCard({
   project, open, onToggle, onFlash, onChanged,
 }: {
   project: PortalProject;

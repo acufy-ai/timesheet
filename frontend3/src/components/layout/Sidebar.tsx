@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ChevronRight,
+  Folder,
   PanelLeftClose,
   PanelLeftOpen,
   PanelTop,
@@ -8,6 +10,8 @@ import {
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { clientPortalApi } from '@/api/client';
+import { isClientUser } from '@/lib/clientRole';
 import { cn } from '@/lib/cn';
 import { Tooltip } from '@/components/ui';
 import {
@@ -46,6 +50,7 @@ export function Sidebar({
   const { user } = useAuth();
   const sections = buildNavigation(user, ingestionEnabled);
   const expanded = !collapsed;
+  const isClient = isClientUser(user);
 
   return (
     <aside
@@ -111,11 +116,14 @@ export function Sidebar({
           : sections.map((section, idx) => (
               <CollapsedSection key={section.title} section={section} showDivider={idx > 0} />
             ))}
+        {/* Client users get their granted projects listed beneath "My Projects". */}
+        {isClient && expanded ? <ClientProjectsNav /> : null}
       </nav>
 
-      {/* Footer: account */}
+      {/* Footer: account. Hidden for client users — they have the account menu
+          in the top nav already, so the sidebar avatar is redundant for them. */}
       <div className={cn('border-t border-border p-2.5', expanded ? '' : 'flex justify-center')}>
-        {expanded ? (
+        {isClient ? null : expanded ? (
           <UserMenu align="left" side="top" />
         ) : canSwitch ? (
           <Tooltip label="Pin sidebar open" side="right">
@@ -133,6 +141,42 @@ export function Sidebar({
         )}
       </div>
     </aside>
+  );
+}
+
+// Client users: the projects they've been granted, listed under "My Projects"
+// and linking to each project's detail page. Shares the portal's query cache so
+// it doesn't double-fetch. Renders nothing until there's at least one project.
+function ClientProjectsNav() {
+  const { pathname } = useLocation();
+  const q = useQuery({
+    queryKey: ['client-portal', 'projects'],
+    queryFn: () => clientPortalApi.myProjects().then((r) => r.data),
+  });
+  const projects = q.data ?? [];
+  if (!projects.length) return null;
+  return (
+    <div className="mt-1 space-y-0.5 pl-3">
+      {projects.map((p) => {
+        const to = `/portal/projects/${p.id}`;
+        const active = pathname === to;
+        return (
+          <NavLink
+            key={p.id}
+            to={to}
+            title={p.name}
+            className={cn(
+              'flex items-center gap-2 rounded-full px-3 py-1.5 text-[13px] transition-colors',
+              active ? 'bg-primary/10 font-semibold text-primary'
+                : 'text-muted-foreground hover:bg-primary/10 hover:text-primary',
+            )}
+          >
+            <Folder className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{p.name}</span>
+          </NavLink>
+        );
+      })}
+    </div>
   );
 }
 

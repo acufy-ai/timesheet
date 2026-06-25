@@ -10,6 +10,7 @@ import { AuditTrailPage } from '@/pages/AuditTrailPage';
 import { CalendarPage } from '@/pages/CalendarPage';
 import { ClientsPage } from '@/pages/ClientsPage';
 import { PortalRouter } from '@/pages/PortalRouter';
+import { ClientProjectDetailPage } from '@/pages/ClientProjectDetailPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { InboxPage } from '@/pages/InboxPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -78,6 +79,7 @@ export default function App() {
               <Route element={<AppShell />}>
                 <Route path="/" element={<LandingRedirect />} />
                 <Route path="/portal" element={<PortalRouter />} />
+                <Route path="/portal/projects/:id" element={<ClientProjectDetailPage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/my-time" element={<MyTimePage />} />
                 <Route path="/my-work" element={<MyWorkPage />} />
