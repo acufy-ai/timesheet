@@ -6,7 +6,7 @@ import { ArrowLeft, Briefcase, Loader2 } from 'lucide-react';
 import { Empty } from '@/components/ui';
 import { clientPortalApi } from '@/api/client';
 import { cn } from '@/lib/cn';
-import { PortalHero, ProjectCard } from './ClientPortalPage';
+import { ProjectCard } from './ClientPortalPage';
 
 // A single client project, opened from the sidebar project list. Reuses the
 // same scoped data (`myProjects`) and the same ProjectCard the overview uses, so
@@ -30,8 +30,6 @@ export function ClientProjectDetailPage() {
 
   return (
     <div className="space-y-5">
-      <PortalHero />
-
       <Link to="/portal" className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-primary">
         <ArrowLeft className="h-4 w-4" /> All projects
       </Link>

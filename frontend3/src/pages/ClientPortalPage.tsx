@@ -23,10 +23,18 @@ const TASK_STATUSES = ['to_do', 'in_progress', 'done'];
 // description; create = add tasks; delete = remove tasks). Mirrors the approved
 // prototype (client-portal-redesign.html).
 export function ClientPortalPage() {
+  // The project list lives in the sidebar now; this landing keeps the identity
+  // hero and points the user at the sidebar to open a project.
   return (
     <div className="space-y-5">
       <PortalHero />
-      <ClientWorkView />
+      <div className="rounded-2xl border border-dashed border-border px-6 py-10 text-center">
+        <Briefcase className="mx-auto mb-2 h-6 w-6 text-muted-foreground" />
+        <p className="text-[14px] font-semibold text-foreground">Select a project to get started</p>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          Your projects are listed in the sidebar. Pick one to view its tasks and your access.
+        </p>
+      </div>
     </div>
   );
 }
