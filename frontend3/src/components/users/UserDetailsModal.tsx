@@ -80,9 +80,9 @@ export function UserDetailsModal({
   const projectCount = user.project_ids?.length ?? 0;
 
   return (
-    <Modal open={open} onClose={onClose} title="User details" className="max-w-lg">
+    <Modal open={open} onClose={onClose} title="User details" className="max-w-3xl">
       <div className="space-y-5">
-        <div className="max-h-[65vh] space-y-5 overflow-y-auto pr-1">
+        <div className="space-y-5">
           {/* Identity header: avatar + name + role/status pills. */}
           <div className="flex items-start gap-3">
             <div

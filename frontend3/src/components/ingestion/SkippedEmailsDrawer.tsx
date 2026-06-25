@@ -32,7 +32,7 @@ export function SkippedEmailsDrawer({ open, onClose, onDone }: { open: boolean; 
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Skipped emails${q.data ? ` (${q.data.count})` : ''}`} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={`Skipped emails${q.data ? ` (${q.data.count})` : ''}`} className="max-w-3xl">
       {q.isLoading ? (
         <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>
       ) : emails.length === 0 ? (

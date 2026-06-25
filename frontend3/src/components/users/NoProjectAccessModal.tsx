@@ -52,7 +52,7 @@ export function NoProjectAccessModal({
       open={open}
       onClose={onClose}
       title="Employees without project access"
-      className="max-w-2xl"
+      className="max-w-3xl"
     >
       <div className="space-y-4">
         <p className="text-xs text-muted-foreground">{subtitle}</p>

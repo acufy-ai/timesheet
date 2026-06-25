@@ -150,7 +150,7 @@ export function ImportUsersModal({ open, onClose, onDone }: { open: boolean; onC
   const overwriteCount = Object.values(resolutions).filter((v) => v === 'overwrite').length;
 
   return (
-    <Modal open={open} onClose={close} title="Import users" className="max-w-2xl">
+    <Modal open={open} onClose={close} title="Import users" className="max-w-3xl">
       {/* ── Upload ── */}
       {step === 'upload' ? (
         <div className="space-y-4">

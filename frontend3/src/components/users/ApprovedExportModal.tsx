@@ -592,7 +592,7 @@ export function ApprovedExportModal({
   ];
 
   return (
-    <Modal open={open} onClose={onClose} title="Export approved timesheets" className="max-w-lg">
+    <Modal open={open} onClose={onClose} title="Export approved timesheets" className="max-w-2xl">
       <div className="space-y-4">
         {/* Format segmented control */}
         <div>

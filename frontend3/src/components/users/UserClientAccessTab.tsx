@@ -266,7 +266,7 @@ function AddClientPicker({
     .filter((c) => !existingClientIds.has(c.id))
     .filter((c) => !q.trim() || c.name.toLowerCase().includes(q.trim().toLowerCase()));
   return (
-    <Modal open={open} onClose={onClose} title="Add the user to a client" className="max-w-md">
+    <Modal open={open} onClose={onClose} title="Add the user to a client" className="max-w-lg">
       <div className="space-y-3">
         <p className="text-[12.5px] text-muted-foreground">
           Pick a client, then create a project to assign this user to it.

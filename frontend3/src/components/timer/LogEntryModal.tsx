@@ -41,9 +41,9 @@ export function LogEntryModal() {
   }
 
   return (
-    <Modal open onClose={discard} title="Log tracked time" className="max-w-md">
-      <div className="space-y-4">
-        <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-center">
+    <Modal open onClose={discard} title="Log tracked time" className="max-w-2xl">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+        <div className="md:col-span-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-center">
           <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{formatElapsed(elapsedMs)}</p>
           <p className="mt-0.5 text-xs text-muted-foreground">{totalHours.toFixed(2)}h · today</p>
           {tooShort ? <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">Under a minute — rounded to {totalHours.toFixed(2)}h.</p> : null}
@@ -65,14 +65,14 @@ export function LogEntryModal() {
           </select>
         </div>
 
-        <div>
+        <div className="md:col-span-2">
           <label className="mb-1 block text-xs font-medium text-muted-foreground">Notes</label>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="What did you work on?" className="w-full rounded-xl border border-border bg-transparent px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
         </div>
 
-        {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
+        {error ? <p className="md:col-span-2 text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
 
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="md:col-span-2 flex justify-end gap-2 border-t border-border pt-3">
           <Button variant="ghost" onClick={discard}>Discard</Button>
           <Button onClick={() => void save()} disabled={create.isPending || !projectId}>
             {create.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save entry'}

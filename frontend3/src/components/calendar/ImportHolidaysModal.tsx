@@ -42,7 +42,7 @@ export function ImportHolidaysModal({ open, onClose, onDone }: { open: boolean; 
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Import public holidays" className="max-w-xl">
+    <Modal open={open} onClose={onClose} title="Import public holidays" className="max-w-2xl">
       <div className="space-y-4">
         <div className="flex flex-wrap items-end gap-2">
           <div>

@@ -2300,10 +2300,11 @@ function ProjectModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-3xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">
+        {/* Wider, two-column layout so everything fits without vertical scroll. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+          <div className="grid grid-cols-[1fr_120px] gap-3 md:col-span-2">
             <div>
               <label className={labelClass}>Name *</label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Website redesign" required />
@@ -2349,40 +2350,36 @@ function ProjectModal({
               Tie this project to a contract (MSA/SOW) to track value burn.
             </p>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div>
-              <label className={labelClass}>Status</label>
-              <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value as ProjectStatus)}>
-                {(Object.keys(PROJECT_STATUS_LABEL) as ProjectStatus[]).map((s) => (
-                  <option key={s} value={s}>
-                    {PROJECT_STATUS_LABEL[s]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass}>Budget ($)</label>
-              <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Client budget" />
-            </div>
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label className={labelClass}>Billable rate ($/h)</label>
-              <Input type="number" step="0.01" min="0" value={billableRate} onChange={(e) => setBillableRate(e.target.value)} placeholder="e.g. 150" />
-            </div>
-            <div>
-              <label className={labelClass}>Due date</label>
-              <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-            </div>
-            <div>
-              <label className={labelClass}>Active</label>
-              <select className={selectClass} value={active ? 'yes' : 'no'} onChange={(e) => setActive(e.target.value === 'yes')}>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </div>
+          <div>
+            <label className={labelClass}>Status</label>
+            <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value as ProjectStatus)}>
+              {(Object.keys(PROJECT_STATUS_LABEL) as ProjectStatus[]).map((s) => (
+                <option key={s} value={s}>
+                  {PROJECT_STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
+            <label className={labelClass}>Active</label>
+            <select className={selectClass} value={active ? 'yes' : 'no'} onChange={(e) => setActive(e.target.value === 'yes')}>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Budget ($)</label>
+            <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Client budget" />
+          </div>
+          <div>
+            <label className={labelClass}>Billable rate ($/h)</label>
+            <Input type="number" step="0.01" min="0" value={billableRate} onChange={(e) => setBillableRate(e.target.value)} placeholder="e.g. 150" />
+          </div>
+          <div>
+            <label className={labelClass}>Due date</label>
+            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          </div>
+          <div className="md:col-span-2">
             <label className={labelClass}>Project managers</label>
             <MultiPicker
               options={pmOptions}
@@ -2393,7 +2390,7 @@ function ProjectModal({
               nameById={nameOf}
             />
           </div>
-          <div>
+          <div className="md:col-span-2">
             <label className={labelClass}>Team members</label>
             <MultiPicker
               options={teamOptions}
@@ -2410,11 +2407,11 @@ function ProjectModal({
               nameById={nameOf}
             />
           </div>
-          <div>
+          <div className="md:col-span-2">
             <label className={labelClass}>Description</label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Scope, goals, key context..." className={textareaClass} />
           </div>
-          {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
+          {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
@@ -2758,13 +2755,15 @@ function TaskModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-3xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Name *</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Build the login form" required />
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Wider, two-column layout so everything fits without vertical scroll.
+            Wide controls (assignee picker, client access, description) span both. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={labelClass}>Name *</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Build the login form" required />
+          </div>
           <div>
             <label className={labelClass}>Priority</label>
             <select className={selectClass} value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>
@@ -2785,38 +2784,40 @@ function TaskModal({
               ))}
             </select>
           </div>
-        </div>
-        <div>
-          <label className={labelClass}>Assign to</label>
-          <MultiPicker
-            options={assigneeOptions}
-            selected={assigneeIds}
-            onChange={setAssigneeIds}
-            nameById={nameOf}
-            placeholder={hasPM || canStaffSelf ? 'Assign team members...' : 'No one available to assign'}
-            emptyText={
-              hasPM
-                ? 'No team members on this client. Add them on the Team tab.'
-                : canStaffSelf
-                  ? 'No reports available.'
-                  : 'You have no reports to assign. Set a project manager on the project first.'
-            }
-          />
-          {canStaffSelf && assigneeIds.length > 0 ? (
-            <p className="mt-1.5 flex items-start gap-1.5 text-[12px] text-muted-foreground">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>This project has no manager yet. Saving will set <b>{actingUserName}</b> as its project manager and add the people you assign to the project roster.</span>
-            </p>
+          <div className="md:col-span-2">
+            <label className={labelClass}>Assign to</label>
+            <MultiPicker
+              options={assigneeOptions}
+              selected={assigneeIds}
+              onChange={setAssigneeIds}
+              nameById={nameOf}
+              placeholder={hasPM || canStaffSelf ? 'Assign team members...' : 'No one available to assign'}
+              emptyText={
+                hasPM
+                  ? 'No team members on this client. Add them on the Team tab.'
+                  : canStaffSelf
+                    ? 'No reports available.'
+                    : 'You have no reports to assign. Set a project manager on the project first.'
+              }
+            />
+            {canStaffSelf && assigneeIds.length > 0 ? (
+              <p className="mt-1.5 flex items-start gap-1.5 text-[12px] text-muted-foreground">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>This project has no manager yet. Saving will set <b>{actingUserName}</b> as its project manager and add the people you assign to the project roster.</span>
+              </p>
+            ) : null}
+          </div>
+          {isEdit && task ? (
+            <div className="md:col-span-2">
+              <ClientTaskAccessSection clientId={project.client_id} projectId={project.id} taskId={task.id} onFlash={onFlash} />
+            </div>
           ) : null}
+          <div className="md:col-span-2">
+            <label className={labelClass}>Description</label>
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Detail, acceptance criteria, or context..." className={textareaClass} />
+          </div>
+          {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        {isEdit && task ? (
-          <ClientTaskAccessSection clientId={project.client_id} projectId={project.id} taskId={task.id} onFlash={onFlash} />
-        ) : null}
-        <div>
-          <label className={labelClass}>Description</label>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Detail, acceptance criteria, or context..." className={textareaClass} />
-        </div>
-        {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
@@ -2924,17 +2925,18 @@ function ContractModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Title *</label>
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="SOW · Website Replatform" required />
-        </div>
-        <div>
-          <label className={labelClass}>Type</label>
-          <Input value={kind} onChange={(e) => setKind(e.target.value)} placeholder="Statement of work" />
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Wider, two-column layout so everything fits without vertical scroll. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={labelClass}>Title *</label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="SOW · Website Replatform" required />
+          </div>
+          <div className="md:col-span-2">
+            <label className={labelClass}>Type</label>
+            <Input value={kind} onChange={(e) => setKind(e.target.value)} placeholder="Statement of work" />
+          </div>
           <div>
             <label className={labelClass}>Start</label>
             <Input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
@@ -2943,8 +2945,6 @@ function ContractModal({
             <label className={labelClass}>End</label>
             <Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
           </div>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className={labelClass}>Value ($)</label>
             <Input type="number" step="0.01" min="0" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 400000" />
@@ -2959,25 +2959,25 @@ function ContractModal({
               ))}
             </select>
           </div>
-        </div>
-        <div>
-          <label className={labelClass}>Signed document {isEdit && contract?.has_document ? '(replace)' : '(optional)'}</label>
-          <input ref={fileRef} type="file" className="hidden"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
-              <Paperclip className="h-3.5 w-3.5" /> {file ? 'Change file' : 'Attach document'}
-            </Button>
-            <span className="truncate text-[12px] text-muted-foreground">
-              {file ? file.name : (isEdit && contract?.has_document ? (contract.document_name || 'Document attached') : 'No file selected')}
-            </span>
-            {file ? (
-              <button type="button" onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ''; }}
-                className="text-[12px] text-muted-foreground hover:text-foreground">Clear</button>
-            ) : null}
+          <div className="md:col-span-2">
+            <label className={labelClass}>Signed document {isEdit && contract?.has_document ? '(replace)' : '(optional)'}</label>
+            <input ref={fileRef} type="file" className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
+                <Paperclip className="h-3.5 w-3.5" /> {file ? 'Change file' : 'Attach document'}
+              </Button>
+              <span className="truncate text-[12px] text-muted-foreground">
+                {file ? file.name : (isEdit && contract?.has_document ? (contract.document_name || 'Document attached') : 'No file selected')}
+              </span>
+              {file ? (
+                <button type="button" onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ''; }}
+                  className="text-[12px] text-muted-foreground hover:text-foreground">Clear</button>
+              ) : null}
+            </div>
           </div>
+          {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
@@ -3061,15 +3061,17 @@ function ContactModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Contact name *</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" required />
-        </div>
-        <div>
-          <label className={labelClass}>Role / title</label>
-          <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Operations Director" />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label className={labelClass}>Contact name *</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" required />
+          </div>
+          <div>
+            <label className={labelClass}>Role / title</label>
+            <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Operations Director" />
+          </div>
         </div>
         {!isEdit ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -3258,13 +3260,14 @@ function RoleModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Role *</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Senior Engineer" required />
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Wider, two-column layout so everything fits without vertical scroll. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={labelClass}>Role *</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Senior Engineer" required />
+          </div>
           <div>
             <label className={labelClass}>Rate ($/hr) *</label>
             <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="295" required />
@@ -3279,12 +3282,12 @@ function RoleModal({
               ))}
             </select>
           </div>
+          <div className="md:col-span-2">
+            <label className={labelClass}>Effective from</label>
+            <Input type="date" value={effective} onChange={(e) => setEffective(e.target.value)} />
+          </div>
+          {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div>
-          <label className={labelClass}>Effective from</label>
-          <Input type="date" value={effective} onChange={(e) => setEffective(e.target.value)} />
-        </div>
-        {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
@@ -3372,7 +3375,7 @@ function NoteModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className={labelClass}>Date</label>

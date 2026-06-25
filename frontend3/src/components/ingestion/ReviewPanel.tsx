@@ -167,7 +167,7 @@ export function ReviewPanel({
   const fieldClass = 'h-8 w-full rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 
   return (
-    <Modal open={timesheetId != null} onClose={onClose} title="Review timesheet" className="max-w-2xl">
+    <Modal open={timesheetId != null} onClose={onClose} title="Review timesheet" className="max-w-3xl">
       {detailQ.isLoading || !d ? (
         <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>
       ) : (

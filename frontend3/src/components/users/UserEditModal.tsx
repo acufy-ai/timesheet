@@ -335,7 +335,7 @@ export function UserEditModal({
       title={restrictedToProjectAccess
         ? `Edit access · ${user?.full_name}`
         : `${isEdit ? 'Edit' : 'Add'} ${form.is_external ? 'external' : 'internal'} user`}
-      className="max-w-2xl"
+      className="max-w-3xl"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {restrictedToProjectAccess ? (
@@ -363,7 +363,7 @@ export function UserEditModal({
           </div>
         ) : (
         <>
-        <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
+        <div className="space-y-4">
           {/* Top row: User type (left) + Active toggle (right) */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -386,6 +386,7 @@ export function UserEditModal({
             </label>
           </div>
 
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:items-start">
           {/* ── Section: Identity ── */}
           <FormSection title="Identity">
             <div>
@@ -611,6 +612,7 @@ export function UserEditModal({
               </>
             )}
           </FormSection>
+          </div>
 
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         </div>
