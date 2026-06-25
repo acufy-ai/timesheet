@@ -505,9 +505,17 @@ async def change_my_password(
     """
     is_auth0_user = bool(current_user.auth0_sub)
 
+    # `current_user` is loaded via get_db (shared session); this endpoint writes
+    # through get_tenant_db (the per-tenant session). Mutate the row IN THIS
+    # session so the hash actually lands in the tenant DB and we don't db.add a
+    # foreign-session instance. (Same fix shape as update_my_profile.)
+    target = await get_user_by_id(db, current_user.id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
     if is_auth0_user:
         try:
-            await auth0_password_grant(current_user.email, payload.current_password)
+            await auth0_password_grant(target.email, payload.current_password)
         except Auth0PasswordError as exc:
             if exc.code == "invalid_grant":
                 raise HTTPException(
@@ -526,7 +534,7 @@ async def change_my_password(
         from app.services.auth0_mgmt import Auth0MgmtError, set_user_password
         try:
             await set_user_password(
-                sub=current_user.auth0_sub,
+                sub=target.auth0_sub,
                 password=payload.new_password,
             )
         except Auth0MgmtError as exc:
@@ -537,9 +545,9 @@ async def change_my_password(
         # Replace local hash with a throwaway so a future Auth0-
         # disabled fallback can never accept the user's old bcrypt.
         import secrets
-        current_user.hashed_password = get_password_hash(secrets.token_urlsafe(48))
+        target.hashed_password = get_password_hash(secrets.token_urlsafe(48))
     else:
-        if not verify_password(payload.current_password, current_user.hashed_password):
+        if not verify_password(payload.current_password, target.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is incorrect",
@@ -550,21 +558,23 @@ async def change_my_password(
                 detail="New password must be different from current password",
             )
         _validate_new_password(payload.new_password)
-        current_user.hashed_password = get_password_hash(payload.new_password)
+        target.hashed_password = get_password_hash(payload.new_password)
 
-    current_user.has_changed_password = True
-    db.add(current_user)
+    target.has_changed_password = True
+    # Snapshot audit scalars before commit (with expire_on_commit=False they'd
+    # survive anyway, but this is explicit and cheap).
+    actor_id, actor_tenant_id, actor_name = target.id, target.tenant_id, target.full_name
     await db.commit()
 
     # Audit: password changed
     await record_activity_events(db, [build_activity_event(
         activity_type="PASSWORD_CHANGED",
         visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-        tenant_id=current_user.tenant_id,
-        actor_user=current_user,
+        tenant_id=actor_tenant_id,
+        actor_user=target,
         entity_type="user",
-        entity_id=current_user.id,
-        summary=f"{current_user.full_name} changed their password.",
+        entity_id=actor_id,
+        summary=f"{actor_name} changed their password.",
         route="/users/me/password",
     )])
 
