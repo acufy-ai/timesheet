@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from app.models.assignments import TaskAssignee, UserTaskAccess
+from app.models.assignments import TaskAssignee, UserProjectAccess, UserTaskAccess
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User, UserRole
@@ -62,21 +62,23 @@ async def set_task_assignees(
     for uid in target - existing:
         db.add(TaskAssignee(task_id=task.id, user_id=uid, tenant_id=task.tenant_id))
 
-    # Grant each new assignee PER-TASK access (user_task_access) so they can see
-    # and log time on THIS task — without rostering them onto the whole project,
-    # which would expose every task in it. (user_has_project_access /
-    # list_projects_for_user treat per-task access as conferring access to the
-    # task's project.) Only add rows that don't already exist for this task.
+    # Assigning an INTERNAL teammate to a task makes them part of the project:
+    # auto-add each new assignee to the project roster (user_project_access) so
+    # they appear in the project's Team members and get whole-project access.
+    # (This is the Client-Management task editor's "Assign to". Granular per-task
+    # CLIENT grants go through a different path — _sync_user_assignments — which
+    # stays task-scoped, so a single client task grant never expands to all
+    # tasks.) Only add roster rows that don't already exist.
     if target:
-        have = set((
+        rostered = set((
             await db.execute(
-                select(UserTaskAccess.user_id).where(
-                    UserTaskAccess.task_id == task.id
+                select(UserProjectAccess.user_id).where(
+                    UserProjectAccess.project_id == task.project_id
                 )
             )
         ).scalars().all())
-        for uid in target - have:
-            db.add(UserTaskAccess(user_id=uid, task_id=task.id, tenant_id=task.tenant_id))
+        for uid in target - rostered:
+            db.add(UserProjectAccess(user_id=uid, project_id=task.project_id))
 
     await db.commit()
 

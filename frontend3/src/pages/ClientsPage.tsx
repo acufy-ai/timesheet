@@ -2667,6 +2667,7 @@ function TaskModal({
   onFlash: (tone: 'ok' | 'err', text: string) => void;
 }) {
   const isEdit = !!task;
+  const { user: actingUser } = useAuth();
   const create = useCreateTask();
   const update = useUpdateTask();
   const allowCrossTeam = useCrossTeamStaffing();
@@ -2697,16 +2698,56 @@ function TaskModal({
   }, [project.manager_ids, project.manager_id]);
   const hasPM = projectPmIds.length > 0;
 
-  // Subtree guard. A MANAGER must not be able to assign someone ABOVE them in
-  // the org chain (e.g. their own manager). For a manager we restrict the pool
-  // to their subtree (myTeam = themselves + transitive reports). Admins /
-  // viewers / platform-admins manage the whole tenant, so no restriction — a
-  // null set means "allow everyone".
+  // Subtree guard for a MANAGER (admins/viewers/PAs manage the whole tenant, so
+  // null = allow everyone). The acting manager may assign:
+  //   • their own subtree (themselves + transitive reports), AND
+  //   • when they are a PM on THIS project, the subtrees of the CO-PMs too
+  //     (co-PMs share a project's assignable pool), and the co-PMs themselves.
+  // But NEVER a supervisor above the acting manager (no assigning upward).
   const restrictToSubtree = actingUserRole === 'MANAGER';
-  const allowedIds = useMemo(
-    () => (restrictToSubtree ? new Set(myTeam.map((u) => u.id)) : null),
-    [restrictToSubtree, myTeam],
-  );
+  const allowedIds = useMemo(() => {
+    if (!restrictToSubtree || !actingUser) return null;
+    // subtree(rootId) = root + everyone who reports (transitively, any manager)
+    // to root.
+    const subtreeOf = (rootId: number): Set<number> => {
+      const ids = new Set<number>([rootId]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        users.forEach((u) => {
+          if (!ids.has(u.id) && managersOfUser(u).some((mid) => ids.has(mid))) {
+            ids.add(u.id); grew = true;
+          }
+        });
+      }
+      return ids;
+    };
+    const allowed = new Set<number>(myTeam.map((u) => u.id));
+    // Co-PM expansion: only when the acting manager is a PM on this project.
+    if (projectPmIds.includes(actingUser.id)) {
+      projectPmIds.forEach((pmId) => {
+        if (pmId === actingUser.id) return;
+        allowed.add(pmId);                       // the co-PM
+        subtreeOf(pmId).forEach((id) => allowed.add(id)); // and their reports
+      });
+    }
+    // Never allow assigning a supervisor of the acting manager (walk up).
+    const ancestors = new Set<number>();
+    const byId = new Map(users.map((u) => [u.id, u]));
+    let frontier = managersOfUser(actingUser);
+    while (frontier.length) {
+      const next: number[] = [];
+      frontier.forEach((mid) => {
+        if (ancestors.has(mid)) return;
+        ancestors.add(mid);
+        const m = byId.get(mid);
+        if (m) next.push(...managersOfUser(m));
+      });
+      frontier = next;
+    }
+    ancestors.forEach((id) => allowed.delete(id));
+    return allowed;
+  }, [restrictToSubtree, actingUser, myTeam, users, projectPmIds]);
 
   // Assignee pool. The backend auto-adds any chosen assignee to the project
   // roster, so this only governs what the picker OFFERS:
