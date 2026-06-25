@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  AtSign, Briefcase, Check, CheckCircle2, Globe, IdCard, Mail, MinusCircle,
-  Pencil, ShieldCheck, User as UserIcon, XCircle,
+  AtSign, Briefcase, Check, Globe, IdCard, Mail,
+  Pencil, ShieldCheck, User as UserIcon,
 } from 'lucide-react';
 
-import { Button, Card, RoleBadge, TonePill } from '@/components/ui';
-import { useDepartments, useAssignableUsers, useUpdateUser } from '@/hooks/useAdmin';
+import { Button, Card, FieldError, RequiredMark, RoleBadge, TonePill, errorBorder } from '@/components/ui';
+import { useDepartments, useAssignableUsers, useUpdateUser, useAllProjects, useAllTasks, useUserClients } from '@/hooks/useAdmin';
+import type { FullProject, FullTask } from '@/types/admin';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import type { ManagedUser } from '@/types/admin';
 import { UserActionMenu } from './UserActionMenu';
 import { UserClientAccessTab } from './UserClientAccessTab';
+import { ReportingTree } from './ReportingTree';
 
 const ROLE_LABEL: Record<string, string> = {
   EMPLOYEE: 'Employee', MANAGER: 'Manager', VIEWER: 'Viewer', ADMIN: 'Admin', PLATFORM_ADMIN: 'Platform Admin',
@@ -31,39 +33,44 @@ type Props = {
   onUnlock: (u: ManagedUser) => void;
   onViewTimesheets: (u: ManagedUser) => void;
   onFlash: (tone: 'ok' | 'err', text: string) => void;
+  // Jump the detail pane to another user (used by the reporting tree to walk
+  // up/down the chain). Optional so other callers don't have to wire it.
+  onSelectUser?: (id: number) => void;
 };
 
-// Stat-strip cell. value tone keys map to the soft theme-blended palette.
-function Stat({ label, ok, warn, text }: { label: string; ok?: boolean; warn?: boolean; text: string }) {
-  // Neutral state (neither ok nor warn) shows a muted dash, not a red cross,
-  // so "None" / "No" reads as informational rather than an error.
-  const Icon = ok ? CheckCircle2 : warn ? XCircle : MinusCircle;
-  return (
-    <div className="flex min-w-0 flex-col gap-1 bg-primary/[0.04] px-4 py-2.5">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className={cn(
-        'flex items-center gap-1.5 truncate text-[13px] font-semibold',
-        ok ? 'text-emerald-600 dark:text-emerald-400' : warn ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
-      )}>
-        <Icon className="h-3.5 w-3.5 shrink-0" /> {text}
-      </span>
-    </div>
-  );
-}
-
 export function UserDetail(props: Props) {
-  const { user, isAdmin, nameById, clientNameById } = props;
+  const { user, isAdmin, clientNameById } = props;
   const [tab, setTab] = useState<DetailTab>('details');
   const [editCard, setEditCard] = useState<null | 'identity' | 'access'>(null);
 
   // Reset tab + edit state when the selected user changes.
   useEffect(() => { setTab('details'); setEditCard(null); }, [user.id]);
 
-  // Resolve the manager's display name; if the id is set but the name isn't in
-  // the directory yet, fall back to "#id" rather than implying "no manager".
-  const managerDisplay = user.manager_id
-    ? (nameById.get(user.manager_id) ?? `#${user.manager_id}`)
-    : null;
+  // Distinct count of clients the user is assigned to, for the tab badge. Must
+  // match what the Assigned-clients tab actually lists: the clients owning the
+  // user's accessible projects (project access OR a task in that project), plus
+  // any client they're directly assigned to (PM/member). These hooks share the
+  // tab's query keys, so TanStack Query dedupes — no extra requests.
+  const projectsForCount = useAllProjects();
+  const tasksForCount = useAllTasks();
+  const userClientsForCount = useUserClients(user.id);
+  const assignedClientCount = useMemo(() => {
+    const projIds = new Set(user.project_ids ?? []);
+    const taskIds = new Set(user.task_ids ?? []);
+    const all = (projectsForCount.data ?? []) as unknown as FullProject[];
+    // Project ids that own at least one task the user can access.
+    const projWithUserTask = new Set<number>();
+    ((tasksForCount.data ?? []) as unknown as FullTask[]).forEach((t) => {
+      if (taskIds.has(t.id)) projWithUserTask.add(t.project_id);
+    });
+    const clientIds = new Set<number>();
+    for (const p of all) {
+      if (projIds.has(p.id) || projWithUserTask.has(p.id)) clientIds.add(p.client_id);
+    }
+    ((userClientsForCount.data ?? []) as { client_id: number }[]).forEach((a) => clientIds.add(a.client_id));
+    return clientIds.size;
+  }, [projectsForCount.data, tasksForCount.data, userClientsForCount.data, user.project_ids, user.task_ids]);
+
   const defClientName = user.default_client_id ? clientNameById.get(user.default_client_id) : undefined;
   const meta = [user.title, user.department, defClientName].filter(Boolean).join('  ·  ');
 
@@ -105,27 +112,14 @@ export function UserDetail(props: Props) {
                   onViewTimesheets={() => props.onViewTimesheets(user)}
                 />
               </>
-            ) : (
-              <Button variant="secondary" size="sm" onClick={() => (window.location.href = '/client-management')}>
-                <Briefcase className="h-4 w-4" /> Manage in Client Management
-              </Button>
-            )}
+            ) : null}
           </div>
-        </div>
-        {/* Stat strip */}
-        <div className="grid grid-cols-2 gap-px border-t border-border bg-border md:grid-cols-3 xl:grid-cols-6">
-          <Stat label="Status" ok={user.is_active} warn={!user.is_active} text={user.is_active ? 'Active' : 'Inactive'} />
-          <Stat label="Email" ok={user.email_verified} warn={!user.email_verified} text={user.email_verified ? 'Verified' : 'Unverified'} />
-          <Stat label="Manager" ok={!!managerDisplay} text={managerDisplay ?? 'None'} />
-          <Stat label="Reviewer" ok={!!user.can_review} text={user.can_review ? 'Yes' : 'No'} />
-          <Stat label="Project access" ok={(user.project_ids?.length ?? 0) > 0} text={(user.project_ids?.length ?? 0) > 0 ? `${user.project_ids!.length} projects` : 'No access'} />
-          <Stat label="Can sign in" ok={user.is_active} text={user.is_active ? 'Yes' : 'No'} />
         </div>
       </div>
 
       {/* ── Tabs ── */}
       <div className="mb-4 mt-5 flex gap-1 border-b border-border">
-        {([['details', 'User details', IdCard], ['clients', 'Client access', Briefcase]] as const).map(([key, label, Icon]) => (
+        {([['details', 'User details', IdCard], ['clients', 'Assigned clients', Briefcase]] as const).map(([key, label, Icon]) => (
           <button
             key={key}
             type="button"
@@ -136,9 +130,9 @@ export function UserDetail(props: Props) {
             )}
           >
             <Icon className="h-4 w-4" /> {label}
-            {key === 'clients' && (user.project_ids?.length || user.task_ids?.length) ? (
+            {key === 'clients' && assignedClientCount > 0 ? (
               <span className="ml-0.5 rounded-full bg-primary/12 px-1.5 text-[11px] font-bold text-primary">
-                {(user.project_ids?.length ?? 0)}
+                {assignedClientCount}
               </span>
             ) : null}
           </button>
@@ -146,9 +140,13 @@ export function UserDetail(props: Props) {
       </div>
 
       {tab === 'details' ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          <IdentityCard {...props} editing={editCard === 'identity'} onEdit={() => setEditCard('identity')} onClose={() => setEditCard(null)} />
-          <AccessCard {...props} editing={editCard === 'access'} onEdit={() => setEditCard('access')} onClose={() => setEditCard(null)} />
+        // Tiles stack in the left column; the reporting tree fills the right.
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <div className="space-y-4">
+            <IdentityCard {...props} editing={editCard === 'identity'} onEdit={() => setEditCard('identity')} onClose={() => setEditCard(null)} />
+            <AccessCard {...props} editing={editCard === 'access'} onEdit={() => setEditCard('access')} onClose={() => setEditCard(null)} />
+          </div>
+          <ReportingTree user={user} onSelectUser={props.onSelectUser} />
         </div>
       ) : (
         <UserClientAccessTab user={user} isAdmin={isAdmin} onFlash={props.onFlash} />
@@ -204,14 +202,16 @@ function IdentityCard({ user, isAdmin, onFlash, editing, onEdit, onClose }: Prop
   const [department, setDepartment] = useState(user.department ?? '');
   const [timezone, setTimezone] = useState(user.timezone ?? '');
   const [username, setUsername] = useState(user.username ?? '');
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setFullName(user.full_name); setTitle(user.title ?? ''); setDepartment(user.department ?? '');
-    setTimezone(user.timezone ?? ''); setUsername(user.username ?? '');
+    setTimezone(user.timezone ?? ''); setUsername(user.username ?? ''); setErrors({});
   }, [user.id, editing]);
 
   async function save() {
-    if (!fullName.trim()) { onFlash('err', 'Full name is required.'); return; }
+    if (!fullName.trim()) { setErrors({ fullName: 'This field is required.' }); return; }
+    setErrors({});
     try {
       await update.mutateAsync({ id: user.id, data: {
         full_name: fullName.trim(), title: title.trim() || null, department: department || null,
@@ -225,7 +225,7 @@ function IdentityCard({ user, isAdmin, onFlash, editing, onEdit, onClose }: Prop
     return (
       <CardShell title="Identity" Icon={UserIcon} readonly={readonly} editing onEdit={onEdit} onSave={save} onCancel={onClose}>
         <div className="flex flex-col gap-3">
-          <label className="block"><DT>Full name</DT><input className={inputCls()} value={fullName} onChange={(e) => setFullName(e.target.value)} /></label>
+          <label className="block"><DT>Full name<RequiredMark /></DT><input className={cn(inputCls(), errorBorder(!!errors.fullName))} value={fullName} onChange={(e) => { setFullName(e.target.value); if (errors.fullName) setErrors((s) => ({ ...s, fullName: '' })); }} /><FieldError error={errors.fullName} /></label>
           <label className="block"><DT>Title</DT><input className={inputCls()} value={title} onChange={(e) => setTitle(e.target.value)} /></label>
           <label className="block"><DT>Department</DT>
             <select className={inputCls()} value={department} onChange={(e) => setDepartment(e.target.value)}>
@@ -374,6 +374,8 @@ function AccessCard({ user, isAdmin, nameById, onFlash, editing, onEdit, onClose
             : <Muted>No manager</Muted>
         }</DD>
         <DT>Reviewer access</DT><DD>{user.can_review ? <TonePill tone="info">Can review ingestion queue</TonePill> : <Muted>No</Muted>}</DD>
+        <DT>Project access</DT><DD>{(user.project_ids?.length ?? 0) > 0 ? <TonePill tone="info">{user.project_ids!.length} {user.project_ids!.length === 1 ? 'project' : 'projects'}</TonePill> : <Muted>No access</Muted>}</DD>
+        <DT>Email</DT><DD>{user.email_verified ? <TonePill tone="success">Verified</TonePill> : <TonePill tone="warning">Unverified</TonePill>}</DD>
         <DT>Active</DT><DD>{user.is_active ? <TonePill tone="success">Can sign in</TonePill> : <TonePill tone="neutral">Disabled</TonePill>}</DD>
       </div>
     </CardShell>

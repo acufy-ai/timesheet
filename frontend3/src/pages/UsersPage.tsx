@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Download, FolderX, Network, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
+import { Download, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
 
 import { Button, Card, Empty, Input, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -54,7 +54,9 @@ export function UsersPage() {
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [noAccessOpen, setNoAccessOpen] = useState(false);
-  const [orgChartOpen, setOrgChartOpen] = useState(false);
+  // Org chart trigger hidden for now; keep the value as a const so the (dormant)
+  // OrgChart render block still compiles and re-enabling is a one-line change.
+  const orgChartOpen = false;
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const flashAndFade = (tone: 'ok' | 'err', text: string) => {
@@ -151,10 +153,15 @@ export function UsersPage() {
     unverified: scoped.filter((u) => !u.email_verified && !u.is_external).length,
   }), [scoped]);
 
-  // Selected user object for the detail pane (prefer the paged row; fall back to full roster).
+  // Selected user object for the detail pane: prefer the paged row, then the
+  // full roster (admin-only), then the tenant directory (so a manager can walk
+  // the reporting tree to someone outside their current page).
   const activeUser = useMemo(
-    () => pageUsers.find((u) => u.id === activeId) ?? all.find((u) => u.id === activeId) ?? null,
-    [pageUsers, all, activeId],
+    () => pageUsers.find((u) => u.id === activeId)
+      ?? all.find((u) => u.id === activeId)
+      ?? (assignableQ.data ?? []).find((u) => u.id === activeId)
+      ?? null,
+    [pageUsers, all, assignableQ.data, activeId],
   );
   // Auto-select the first user when nothing is selected.
   useEffect(() => {
@@ -247,11 +254,37 @@ export function UsersPage() {
       />
 
       {isAdmin ? (
-        <div className="flex items-center gap-1.5 border-b border-border pb-3">
-          {([['users', 'Users'], ['timesheets', 'Approved Timesheets'], ['workforce', 'Workforce Setup']] as const).map(([key, label]) => (
-            <button key={key} type="button" onClick={() => setAdminTab(key)}
-              className={cn('pill text-sm', adminTab === key ? 'pill-active' : 'pill-idle')}>{label}</button>
-          ))}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border pb-3">
+          <div className="flex items-center gap-1.5">
+            {([['users', 'Users'], ['timesheets', 'Approved Timesheets'], ['workforce', 'Workforce Setup']] as const).map(([key, label]) => (
+              <button key={key} type="button" onClick={() => setAdminTab(key)}
+                className={cn('pill text-sm', adminTab === key ? 'pill-active' : 'pill-idle')}>{label}</button>
+            ))}
+          </div>
+          {/* Filters live here (right of the tabs) on the Users tab, so the list
+              view doesn't need a separate full-width filter row. */}
+          {adminTab === 'users' ? (
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              <FilterSelect value={roleFilter} onChange={setRoleFilter}>
+                <option value="all">All</option>
+                {ROLE_FILTERS.filter((r) => r !== 'all').map((r) => (
+                  <option key={r} value={r}>{r.charAt(0) + r.slice(1).toLowerCase()} ({roleCounts[r] ?? 0})</option>
+                ))}
+              </FilterSelect>
+              <FilterSelect value={statusFilter} onChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+                <option value="all">Any status</option><option value="active">Active</option><option value="inactive">Inactive</option>
+              </FilterSelect>
+              <FilterSelect value={audienceFilter} onChange={(v) => setAudienceFilter(v as typeof audienceFilter)}>
+                <option value="all">Any type</option><option value="internal">Internal</option><option value="external">External</option><option value="client">Clients</option>
+              </FilterSelect>
+              <Chip active={attentionFilter === 'no_manager'} onClick={() => setAttentionFilter(attentionFilter === 'no_manager' ? 'all' : 'no_manager')}>
+                No manager{attentionCounts.noManager ? <span className="rounded-full bg-primary/15 px-1.5 text-[10.5px]">{attentionCounts.noManager}</span> : null}
+              </Chip>
+              <Chip active={attentionFilter === 'unverified'} onClick={() => setAttentionFilter(attentionFilter === 'unverified' ? 'all' : 'unverified')}>
+                Unverified{attentionCounts.unverified ? <span className="rounded-full bg-primary/15 px-1.5 text-[10.5px]">{attentionCounts.unverified}</span> : null}
+              </Chip>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -268,75 +301,43 @@ export function UsersPage() {
             </div>
           ) : null}
 
-          {/* Command toolbar: search + filters + actions */}
-          <Card className="flex flex-wrap items-center gap-2.5 p-3">
-            <div className="relative min-w-[220px] flex-1 max-w-[420px]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-[30px] rounded-full pl-9" placeholder="Search people..." value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                onFocus={() => setSearchFocused(true)}
-                onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)} />
-              {/* Typeahead: live matches from the current page; click to jump. */}
-              {searchFocused && search.trim() && pageUsers.length ? (
-                <div className="absolute left-0 right-0 top-[34px] z-20 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-card shadow-lg">
-                  {pageUsers.slice(0, 8).map((u) => (
-                    <button key={u.id} type="button"
-                      onMouseDown={(e) => { e.preventDefault(); setActiveId(u.id); setSearchFocused(false); }}
-                      className="flex w-full items-center gap-2 border-b border-border/40 px-3 py-2 text-left last:border-0 hover:bg-primary/[0.05]">
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium">{u.full_name}</span>
-                        <span className="block truncate text-[11.5px] text-muted-foreground">{u.email}</span>
-                      </span>
-                      <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{u.role}</span>
-                    </button>
-                  ))}
-                  {total > pageUsers.slice(0, 8).length ? (
-                    <div className="px-3 py-1.5 text-[11px] text-muted-foreground">Showing top matches — refine to narrow.</div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            {isAdmin ? (
-              <>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <FilterSelect value={roleFilter} onChange={setRoleFilter}>
-                    <option value="all">All</option>
-                    {ROLE_FILTERS.filter((r) => r !== 'all').map((r) => (
-                      <option key={r} value={r}>{r.charAt(0) + r.slice(1).toLowerCase()} ({roleCounts[r] ?? 0})</option>
-                    ))}
-                  </FilterSelect>
-                  <FilterSelect value={statusFilter} onChange={(v) => setStatusFilter(v as typeof statusFilter)}>
-                    <option value="all">Any status</option><option value="active">Active</option><option value="inactive">Inactive</option>
-                  </FilterSelect>
-                  <FilterSelect value={audienceFilter} onChange={(v) => setAudienceFilter(v as typeof audienceFilter)}>
-                    <option value="all">Any type</option><option value="internal">Internal</option><option value="external">External</option><option value="client">Clients</option>
-                  </FilterSelect>
-                  <Chip active={attentionFilter === 'no_manager'} onClick={() => setAttentionFilter(attentionFilter === 'no_manager' ? 'all' : 'no_manager')}>
-                    No manager{attentionCounts.noManager ? <span className="rounded-full bg-primary/15 px-1.5 text-[10.5px]">{attentionCounts.noManager}</span> : null}
-                  </Chip>
-                  <Chip active={attentionFilter === 'unverified'} onClick={() => setAttentionFilter(attentionFilter === 'unverified' ? 'all' : 'unverified')}>
-                    Unverified{attentionCounts.unverified ? <span className="rounded-full bg-primary/15 px-1.5 text-[10.5px]">{attentionCounts.unverified}</span> : null}
-                  </Chip>
-                </div>
-                <div className="ml-auto flex items-center gap-1.5">
-                  <span className="h-5 w-px bg-border" />
-                  <Button variant="secondary" size="sm" onClick={() => setOrgChartOpen((v) => !v)}><Network className="h-4 w-4" /> {orgChartOpen ? 'List view' : 'Org chart'}</Button>
-                  <Button variant="secondary" size="sm" onClick={() => setNoAccessOpen(true)}><FolderX className="h-4 w-4" /> No project access</Button>
-                </div>
-              </>
-            ) : null}
-          </Card>
-
           {isAdmin && orgChartOpen ? (
             <Card className="p-4"><OrgChart users={scoped} currentUserId={user?.id} /></Card>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[340px_1fr] gap-5">
               {/* Left rail */}
               <Card className="flex min-h-0 flex-col overflow-hidden p-0">
-                <div className="px-4 pb-2 pt-4">
+                <div className="space-y-2.5 px-4 pb-2.5 pt-4">
                   <div className="flex items-center gap-2">
                     <h2 className="text-[15px] font-bold uppercase tracking-wide text-muted-foreground">{isAdmin ? 'Users' : 'My Team'}</h2>
                     <span className="rounded-full bg-primary/12 px-2 text-[11px] font-bold text-primary">{total.toLocaleString()}</span>
+                  </div>
+                  {/* Search lives inside the list header now. */}
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input className="h-[32px] rounded-full pl-9" placeholder="Search people..." value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      onFocus={() => setSearchFocused(true)}
+                      onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)} />
+                    {/* Typeahead: live matches from the current page; click to jump. */}
+                    {searchFocused && search.trim() && pageUsers.length ? (
+                      <div className="absolute left-0 right-0 top-[36px] z-20 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-card shadow-lg">
+                        {pageUsers.slice(0, 8).map((u) => (
+                          <button key={u.id} type="button"
+                            onMouseDown={(e) => { e.preventDefault(); setActiveId(u.id); setSearchFocused(false); }}
+                            className="flex w-full items-center gap-2 border-b border-border/40 px-3 py-2 text-left last:border-0 hover:bg-primary/[0.05]">
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-[13px] font-medium">{u.full_name}</span>
+                              <span className="block truncate text-[11.5px] text-muted-foreground">{u.email}</span>
+                            </span>
+                            <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{u.role}</span>
+                          </button>
+                        ))}
+                        {total > pageUsers.slice(0, 8).length ? (
+                          <div className="px-3 py-1.5 text-[11px] text-muted-foreground">Showing top matches — refine to narrow.</div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <UserRail
@@ -378,6 +379,7 @@ export function UsersPage() {
                     onUnlock={unlockTimesheet}
                     onViewTimesheets={(u) => navigate(`/user-management/${u.id}/timesheets`)}
                     onFlash={flashAndFade}
+                    onSelectUser={(id) => setActiveId(id)}
                   />
                 ) : (
                   <Empty Icon={UsersIcon} title="No user selected" description="Pick someone from the list to view their profile, access, and clients." />
