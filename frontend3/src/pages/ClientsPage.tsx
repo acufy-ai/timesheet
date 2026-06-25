@@ -2815,8 +2815,11 @@ function TaskModal({
     } else {
       pool = myTeam;
     }
-    // Subtree guard: never offer someone the acting manager can't manage.
+    // Project/task assignees are INTERNAL teammates; external users (clients /
+    // contractors) get access via the client-portal grant flow. Also intersect
+    // with allowedIds so a manager can only reach their own subtree.
     return pool
+      .filter((u) => !u.is_external)
       .filter((u) => allowedIds == null || allowedIds.has(u.id))
       .map((u) => ({ id: u.id, name: u.full_name, sub: u.role }));
   }, [allowCrossTeam, users, clientPmIds, hasPM, projectPmIds, myTeam, allowedIds]);

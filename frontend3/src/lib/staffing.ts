@@ -21,6 +21,10 @@ export function staffingPool(
   const eligibleManagerIds = new Set(allowCrossTeam ? clientPmIds : pmIds);
   if (eligibleManagerIds.size === 0) return [];
   return users
+    // Project team members are INTERNAL teammates. External users (contractors /
+    // client-side people) get access via the client-portal grant flow, not the
+    // project roster — exclude them (matches the My Team scoping).
+    .filter((u) => !u.is_external)
     .filter((u) => {
       // An employee can report to MULTIPLE managers. They're eligible when the
       // PM is ANY of their managers (not just the primary), so consult the full

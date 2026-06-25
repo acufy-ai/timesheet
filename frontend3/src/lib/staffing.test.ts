@@ -53,4 +53,11 @@ describe('staffingPool', () => {
     const pool = staffingPool([sophia, other], { pmIds: [], clientPmIds: [7], allowCrossTeam: true });
     expect(pool.map((x) => x.id)).toEqual([1]);
   });
+
+  it('excludes EXTERNAL reports (they get access via client-portal grants, not the project roster)', () => {
+    const internal = u({ id: 1, full_name: 'Internal', manager_id: 7, manager_ids: [7], is_external: false });
+    const external = u({ id: 2, full_name: 'External', manager_id: 7, manager_ids: [7], is_external: true });
+    const pool = staffingPool([internal, external], { pmIds: [7], clientPmIds: [], allowCrossTeam: false });
+    expect(pool.map((x) => x.id)).toEqual([1]); // external (id 2) excluded
+  });
 });
