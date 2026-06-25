@@ -22,7 +22,7 @@ Access is governed by the grant alone, plus one tenant-wide kill switch:
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_tenant_db
@@ -1368,6 +1368,63 @@ async def update_client_user(
         except Exception:  # noqa: BLE001 — mirror is best-effort
             pass
     return {"id": target.id, "full_name": target.full_name, "email": target.email, "title": target.title}
+
+
+@router.delete("/client-grants/user/{user_id}")
+async def delete_client_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a CLIENT account entirely (its grants + the user). Works even with
+    zero grants (e.g. an invited-but-unused account). Auth: admins may delete any
+    client user; a PM may delete a client user they manage — by a grant's client
+    if any grants exist, else by the user's default_client_id."""
+    require_client_manager(current_user)
+    target = await db.get(User, user_id)
+    if target is None or target.tenant_id != current_user.tenant_id or target.role not in _CLIENT_GRANTEE_ROLES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client user not found.")
+
+    grants = (await db.execute(
+        select(ClientAccessGrant).where(
+            ClientAccessGrant.user_id == user_id,
+            ClientAccessGrant.tenant_id == current_user.tenant_id,
+        )
+    )).scalars().all()
+
+    # A non-admin PM must manage the client this account belongs to.
+    allowed = await visible_client_ids(db, current_user)
+    if allowed is not None:
+        ok = False
+        for g in grants:
+            try:
+                await _assert_grant_project_access(db, current_user, project_id=g.project_id, task_id=g.task_id)
+                ok = True
+                break
+            except HTTPException:
+                continue
+        # No grants to check access by → fall back to the durable client link.
+        if not ok and not grants and target.default_client_id in (allowed or set()):
+            ok = True
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't manage this client.")
+
+    # Clean up client-specific references, then delete the user (delete_user
+    # handles the remaining FK children + the shared-DB login mirror).
+    for g in grants:
+        await db.delete(g)
+    await db.execute(delete(ClientEmployeeLink).where(
+        (ClientEmployeeLink.employee_user_id == user_id) | (ClientEmployeeLink.manager_user_id == user_id)))
+    await db.execute(delete(ClientTaskReview).where(
+        (ClientTaskReview.employee_user_id == user_id) | (ClientTaskReview.manager_user_id == user_id)))
+    await db.execute(delete(UserClientAssignment).where(UserClientAssignment.user_id == user_id))
+    await db.flush()
+
+    from app.crud.user import delete_user
+    deleted = await delete_user(db, user_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client user not found.")
+    return {"deleted": True, "user_id": user_id}
 
 
 @router.post("/client-grants/user/{user_id}/resend-invite")

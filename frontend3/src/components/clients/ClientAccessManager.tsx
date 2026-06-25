@@ -676,16 +676,17 @@ function ClientGrantCard({
     }
   };
 
-  const revokeAll = async () => {
-    if (!grants.length) return;
-    if (!window.confirm(`Revoke all access for ${name}? Their grants will be removed; the account itself is kept.`)) return;
+  // Delete the client account entirely (its grants + the user). Works even when
+  // the account has 0 scopes (e.g. an invited-but-unused account).
+  const deleteAccount = async () => {
+    if (!window.confirm(`Delete ${name}'s client account? This removes the account and all its access. This can't be undone.`)) return;
     setRevoking(true);
     try {
-      await Promise.all(grants.map((g) => clientPortalApi.revokeGrant(g.id)));
-      onFlash('ok', `Revoked all access for ${name}.`);
+      await clientPortalApi.deleteClientUser(userId);
+      onFlash('ok', `Deleted ${name}'s client account.`);
       onChanged();
     } catch {
-      onFlash('err', 'Could not revoke access.');
+      onFlash('err', 'Could not delete the client account.');
     } finally {
       setRevoking(false);
     }
@@ -737,8 +738,8 @@ function ClientGrantCard({
         <Button size="sm" variant="ghost" onClick={() => setEditOpen(true)} title="Edit client">
           <Pencil className="h-3.5 w-3.5" />
         </Button>
-        <Button size="sm" variant="ghost" onClick={revokeAll} disabled={revoking || grants.length === 0}
-          title="Revoke all of this client's access">
+        <Button size="sm" variant="ghost" onClick={deleteAccount} disabled={revoking}
+          title="Delete this client account">
           {revoking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </Button>
       </div>

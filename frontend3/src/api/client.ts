@@ -516,6 +516,8 @@ export const clientPortalApi = {
   updateGrant: (grantId: number, capabilities: ClientCapability[]) =>
     api.put<ClientGrant>(`/client-grants/${grantId}`, { capabilities }),
   revokeGrant: (grantId: number) => api.delete(`/client-grants/${grantId}`),
+  // Delete a client account entirely (its grants + the user). Works at 0 scopes.
+  deleteClientUser: (userId: number) => api.delete(`/client-grants/user/${userId}`),
   // Re-send the client-portal set-password invite to a client user who hasn't
   // accepted yet. Dedicated client endpoint (the internal one rejects externals
   // and sends the wrong email).
