@@ -2021,75 +2021,81 @@ function ClientModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-3xl">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
-          <div>
-            <label className={labelClass}>Name *</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Corp" required />
-          </div>
-          <div>
-            <label className={labelClass}>Legal / company name</label>
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Corporation LLC" />
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Wider, two-column layout so everything fits without vertical scroll. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
+          {/* Left column: identity */}
+          <div className="space-y-4">
             <div>
-              <label className={labelClass}>Type</label>
-              <select className={selectClass} value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="external">External</option>
-                <option value="internal">Internal</option>
-              </select>
+              <label className={labelClass}>Name *</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Corp" required />
             </div>
             <div>
-              <label className={labelClass}>Status</label>
-              <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value as ClientStatus)}>
-                {(Object.keys(CLIENT_STATUS_LABEL) as ClientStatus[]).map((s) => (
-                  <option key={s} value={s}>
-                    {CLIENT_STATUS_LABEL[s]}
-                  </option>
-                ))}
-              </select>
+              <label className={labelClass}>Legal / company name</label>
+              <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Corporation LLC" />
             </div>
-          </div>
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-xs font-semibold text-foreground">Primary contact</p>
-            <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={labelClass}>Name (optional)</label>
-                <Input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Jane Doe" />
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <label className={labelClass}>Email</label>
-                  <Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="jane@acme.com" />
-                </div>
-                <div>
-                  <label className={labelClass}>Phone</label>
-                  <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+1 (555) 000-0000" />
-                </div>
+                <label className={labelClass}>Type</label>
+                <select className={selectClass} value={type} onChange={(e) => setType(e.target.value)}>
+                  <option value="external">External</option>
+                  <option value="internal">Internal</option>
+                </select>
               </div>
               <div>
-                <label className={labelClass}>Client since</label>
-                <Input type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+                <label className={labelClass}>Status</label>
+                <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value as ClientStatus)}>
+                  {(Object.keys(CLIENT_STATUS_LABEL) as ClientStatus[]).map((s) => (
+                    <option key={s} value={s}>
+                      {CLIENT_STATUS_LABEL[s]}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
-          </div>
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-xs font-semibold text-foreground">Client portal</p>
-            <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3 py-2.5">
-              <input type="checkbox" checked={selfManage} onChange={(e) => setSelfManage(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
-              <span className="text-[13px]">
-                <span className="font-medium text-foreground">Let this client manage their own employees</span>
-                <span className="mt-0.5 block text-[12px] text-muted-foreground">
-                  When on, this client's manager can invite their own team members in the portal. When off, you add their employees for them.
+            <div className="border-t border-border pt-3">
+              <p className="mb-2 text-xs font-semibold text-foreground">Client portal</p>
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3 py-2.5">
+                <input type="checkbox" checked={selfManage} onChange={(e) => setSelfManage(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
+                <span className="text-[13px]">
+                  <span className="font-medium text-foreground">Let this client manage their own employees</span>
+                  <span className="mt-0.5 block text-[12px] text-muted-foreground">
+                    When on, this client's manager can invite their own team members in the portal. When off, you add their employees for them.
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            </div>
           </div>
-          <div className="border-t border-border pt-3">
+
+          {/* Right column: primary contact */}
+          <div className="space-y-3 md:border-l md:border-border md:pl-6">
+            <p className="text-xs font-semibold text-foreground">Primary contact</p>
+            <div>
+              <label className={labelClass}>Name (optional)</label>
+              <Input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Jane Doe" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>Email</label>
+                <Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="jane@acme.com" />
+              </div>
+              <div>
+                <label className={labelClass}>Phone</label>
+                <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+1 (555) 000-0000" />
+              </div>
+            </div>
+            <div>
+              <label className={labelClass}>Client since</label>
+              <Input type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+            </div>
+          </div>
+
+          {/* Team spans full width below */}
+          <div className="border-t border-border pt-3 md:col-span-2">
             <p className="mb-2 text-xs font-semibold text-foreground">Team</p>
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelClass}>Project managers</label>
                 <MultiPicker
@@ -2112,7 +2118,7 @@ function ClientModal({
               </div>
             </div>
           </div>
-          {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
+          {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
