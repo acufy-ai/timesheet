@@ -67,6 +67,15 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
     });
   }, [allProjects, tasksByProject, user.project_ids, user.task_ids]);
 
+  // Tasks of a project the user actually has access to: every task when they
+  // have whole-project access, otherwise only their individually-granted tasks.
+  // (This is an "assigned" view, so it must not list tasks the user can't see.)
+  function accessibleTasksFor(p: FullProject): FullTask[] {
+    const all = tasksByProject.get(p.id) ?? [];
+    if (projectIds.has(p.id)) return all;
+    return all.filter((t) => taskIds.has(t.id));
+  }
+
   // Clients the user is directly assigned to (PM/member rows). Their ids ensure
   // the client shows even with zero projects/tasks.
   const assignedClientIds = useMemo(
@@ -194,7 +203,7 @@ export function UserClientAccessTab({ user, isAdmin, onFlash }: {
                 </div>
                 {projs.map((p) => {
                   const pOpen = expProject[p.id] ?? false;
-                  const tasks = (tasksByProject.get(p.id) ?? []);
+                  const tasks = accessibleTasksFor(p);
                   return (
                     <div key={p.id} className="mb-2 overflow-hidden rounded-lg border border-border bg-card">
                       <div className="flex items-center gap-2.5 px-3 py-2.5">
