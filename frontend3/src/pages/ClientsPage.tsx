@@ -122,6 +122,14 @@ const num = (v: string | number | null | undefined): number =>
   v == null || v === '' ? 0 : typeof v === 'string' ? parseFloat(v) || 0 : v;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// All managers a user reports to (multi-manager aware), falling back to the
+// legacy single manager_id. Used so org-tree walks include co-managed reports,
+// not just those under a person's primary manager.
+function managersOfUser(u: { manager_id?: number | null; manager_ids?: number[] }): number[] {
+  if (u.manager_ids && u.manager_ids.length) return u.manager_ids;
+  return u.manager_id != null ? [u.manager_id] : [];
+}
+
 function fmtDate(iso?: string | null): string {
   if (!iso) return '';
   const [y, m, d] = iso.split('-').map(Number);
@@ -299,7 +307,9 @@ export function ClientsPage() {
     while (grew) {
       grew = false;
       users.forEach((u) => {
-        if (u.manager_id != null && ids.has(u.manager_id) && !ids.has(u.id)) {
+        // A report is in the subtree if ANY of their managers is already in it
+        // (co-managed reports count under every manager, not just the primary).
+        if (!ids.has(u.id) && managersOfUser(u).some((mid) => ids.has(mid))) {
           ids.add(u.id); grew = true;
         }
       });
@@ -2711,19 +2721,22 @@ function TaskModal({
     if (allowCrossTeam) {
       pool = staffingPool(users, { pmIds: clientPmIds, clientPmIds, allowCrossTeam: true });
     } else if (hasPM) {
-      // The project PMs + everyone who reports (transitively) to one of them.
+      // The project PMs + everyone who reports (transitively) to ANY of them
+      // (co-managed reports included, not just those under a primary manager).
       const pmSet = new Set(projectPmIds);
       const ids = new Set<number>(projectPmIds);
       let grew = true;
       while (grew) {
         grew = false;
         users.forEach((u) => {
-          if (u.manager_id != null && ids.has(u.manager_id) && !ids.has(u.id)) {
+          if (!ids.has(u.id) && managersOfUser(u).some((mid) => ids.has(mid))) {
             ids.add(u.id); grew = true;
           }
         });
       }
-      pool = users.filter((u) => ids.has(u.id) && (pmSet.has(u.id) || u.manager_id != null));
+      // Offer the PMs themselves AND anyone who has a manager (i.e. is a report
+      // somewhere) — so both managers and employees in the subtree can be picked.
+      pool = users.filter((u) => ids.has(u.id) && (pmSet.has(u.id) || managersOfUser(u).length > 0));
     } else {
       pool = myTeam;
     }
@@ -2809,7 +2822,7 @@ function TaskModal({
               placeholder={hasPM || canStaffSelf ? 'Assign team members...' : 'No one available to assign'}
               emptyText={
                 hasPM
-                  ? 'No team members on this client. Add them on the Team tab.'
+                  ? 'No more people to assign. This picker offers the project managers and their reports.'
                   : canStaffSelf
                     ? 'No reports available.'
                     : 'You have no reports to assign. Set a project manager on the project first.'
