@@ -34,7 +34,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { contractsApi, clientPortalApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Button, Card, Empty, Input, Modal, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, Input, Modal, TonePill, WorkspaceHeader, RequiredMark, FieldError, errorBorder } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
 import {
@@ -1906,7 +1906,7 @@ function NotesTab({
 //  Modals
 // ════════════════════════════════════════════════════════════════════════
 
-const labelClass = 'mb-1 block text-xs font-medium text-muted-foreground';
+const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 const selectClass =
   'h-9 w-full rounded-full border border-border bg-transparent px-3 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 const textareaClass =
@@ -1944,6 +1944,7 @@ function ClientModal({
   const [memberIds, setMemberIds] = useState<number[]>([]);
   const [selfManage, setSelfManage] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -1959,6 +1960,7 @@ function ClientModal({
     setPmIds([]);
     setMemberIds([]);
     setError(null);
+    setErrors({});
   }, [open, client]);
 
   // Pre-fill the pickers from the fetched roster on edit.
@@ -1987,8 +1989,10 @@ function ClientModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) {
-      setError('Client name is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!name.trim()) nextErrors.name = 'Client name is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const body: ClientBody = {
@@ -2021,15 +2025,16 @@ function ClientModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-4xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           {/* Left column: identity */}
           <div className="space-y-4">
             <div>
-              <label className={labelClass}>Name *</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Corp" required />
+              <label className={labelClass}>Name<RequiredMark /></label>
+              <Input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Acme Corp" required error={!!errors.name} />
+              <FieldError error={errors.name} />
             </div>
             <div>
               <label className={labelClass}>Legal / company name</label>
@@ -2120,7 +2125,7 @@ function ClientModal({
           </div>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -2141,7 +2146,7 @@ function ClientModal({
   );
 }
 
-function ProjectModal({
+export function ProjectModal({
   open,
   clientId,
   clients,
@@ -2194,6 +2199,7 @@ function ProjectModal({
   const [projectClientId, setProjectClientId] = useState<number>(clientId);
   const [contractId, setContractId] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   // Two-step roster removal: the first save with a conflict warns; the second
   // proceeds and also strips the removed members from the conflicting tasks.
   const [proceedRemoval, setProceedRemoval] = useState(false);
@@ -2214,6 +2220,7 @@ function ProjectModal({
     setContractId(project?.contract_id ?? '');
     setProceedRemoval(false);
     setError(null);
+    setErrors({});
   }, [open, project, clientId]);
 
   // Prefill the auto code on a NEW project once it arrives. Editable: only fill
@@ -2242,8 +2249,10 @@ function ProjectModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) {
-      setError('Project name is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!name.trim()) nextErrors.name = 'Project name is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     // Roster-removal conflict guard: warn once before removing someone who is
@@ -2300,14 +2309,15 @@ function ProjectModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-4xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           <div className="grid grid-cols-[1fr_120px] gap-3 md:col-span-2">
             <div>
-              <label className={labelClass}>Name *</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Website redesign" required />
+              <label className={labelClass}>Name<RequiredMark /></label>
+              <Input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Website redesign" required error={!!errors.name} />
+              <FieldError error={errors.name} />
             </div>
             <div>
               <label className={labelClass}>Code</label>
@@ -2413,7 +2423,7 @@ function ProjectModal({
           </div>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -2657,6 +2667,7 @@ function TaskModal({
   const [status, setStatus] = useState<TaskStatus>('to_do');
   const [assigneeIds, setAssigneeIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -2666,6 +2677,7 @@ function TaskModal({
     setStatus(task?.status ?? (task && !task.is_active ? 'done' : 'to_do'));
     setAssigneeIds(task?.assignee_ids ?? []);
     setError(null);
+    setErrors({});
   }, [open, task]);
 
   const projectPmIds = useMemo<number[]>(() => {
@@ -2727,8 +2739,10 @@ function TaskModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) {
-      setError('Task name is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!name.trim()) nextErrors.name = 'Task name is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const body: TaskBody = {
@@ -2755,14 +2769,15 @@ function TaskModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-4xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll.
             Wide controls (assignee picker, client access, description) span both. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           <div className="md:col-span-2">
-            <label className={labelClass}>Name *</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Build the login form" required />
+            <label className={labelClass}>Name<RequiredMark /></label>
+            <Input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Build the login form" required error={!!errors.name} />
+            <FieldError error={errors.name} />
           </div>
           <div>
             <label className={labelClass}>Priority</label>
@@ -2818,7 +2833,7 @@ function TaskModal({
           </div>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -2866,6 +2881,7 @@ function ContractModal({
   const [file, setFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -2877,6 +2893,7 @@ function ContractModal({
     setStatus(contract?.status ?? 'draft');
     setFile(null);
     setError(null);
+    setErrors({});
   }, [open, contract]);
 
   const saving = create.isPending || update.isPending || uploadDoc.isPending;
@@ -2884,8 +2901,10 @@ function ContractModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!title.trim()) {
-      setError('Title is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!title.trim()) nextErrors.title = 'Title is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const body: ContractBody = {
@@ -2925,13 +2944,14 @@ function ContractModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-3xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           <div className="md:col-span-2">
-            <label className={labelClass}>Title *</label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="SOW · Website Replatform" required />
+            <label className={labelClass}>Title<RequiredMark /></label>
+            <Input value={title} onChange={(e) => { setTitle(e.target.value); setErrors((p) => ({ ...p, title: '' })); }} placeholder="SOW · Website Replatform" required error={!!errors.title} />
+            <FieldError error={errors.title} />
           </div>
           <div className="md:col-span-2">
             <label className={labelClass}>Type</label>
@@ -2978,7 +2998,7 @@ function ContractModal({
           </div>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -3021,6 +3041,7 @@ function ContactModal({
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -3031,6 +3052,7 @@ function ContactModal({
     setEmail('');
     setPhone('');
     setError(null);
+    setErrors({});
   }, [open, contact]);
 
   const saving = create.isPending || update.isPending;
@@ -3038,8 +3060,10 @@ function ContactModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) {
-      setError('Contact name is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!name.trim()) nextErrors.name = 'Contact name is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     try {
@@ -3061,12 +3085,13 @@ function ContactModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
-            <label className={labelClass}>Contact name *</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Doe" required />
+            <label className={labelClass}>Contact name<RequiredMark /></label>
+            <Input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Jane Doe" required error={!!errors.name} />
+            <FieldError error={errors.name} />
           </div>
           <div>
             <label className={labelClass}>Role / title</label>
@@ -3088,7 +3113,7 @@ function ContactModal({
           <p className="text-[10.5px] text-muted-foreground">Manage emails and phones from the contact row after saving.</p>
         )}
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -3131,19 +3156,23 @@ function ChannelModal({
   const [label, setLabel] = useState('');
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
     setLabel(channel?.label ?? '');
     setValue((isEmail ? channel?.address : channel?.number) ?? '');
     setError(null);
+    setErrors({});
   }, [open, channel, isEmail]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!value.trim()) {
-      setError(isEmail ? 'Email address is required.' : 'Phone number is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!value.trim()) nextErrors.value = isEmail ? 'Email address is required.' : 'Phone number is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const payload: ContactChannel = isEmail
@@ -3161,17 +3190,19 @@ function ChannelModal({
           <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={isEmail ? 'Work' : 'Mobile'} />
         </div>
         <div>
-          <label className={labelClass}>{isEmail ? 'Email address *' : 'Phone number *'}</label>
+          <label className={labelClass}>{isEmail ? 'Email address' : 'Phone number'}<RequiredMark /></label>
           <Input
             type={isEmail ? 'email' : 'tel'}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => { setValue(e.target.value); setErrors((p) => ({ ...p, value: '' })); }}
             placeholder={isEmail ? 'jane@acme.com' : '+1 (555) 000-0000'}
             required
+            error={!!errors.value}
           />
+          <FieldError error={errors.value} />
         </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -3216,6 +3247,7 @@ function RoleModal({
   const [currency, setCurrency] = useState('USD');
   const [effective, setEffective] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -3224,6 +3256,7 @@ function RoleModal({
     setCurrency(role?.currency ?? 'USD');
     setEffective(role?.effective_date ?? '');
     setError(null);
+    setErrors({});
   }, [open, role]);
 
   const saving = create.isPending || update.isPending;
@@ -3231,12 +3264,11 @@ function RoleModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) {
-      setError('Role is required.');
-      return;
-    }
-    if (num(rate) <= 0) {
-      setError('Enter a rate greater than 0.');
+    const nextErrors: Record<string, string> = {};
+    if (!name.trim()) nextErrors.name = 'Role is required.';
+    if (num(rate) <= 0) nextErrors.rate = 'Enter a rate greater than 0.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const body: ClientRoleRateBody = {
@@ -3260,17 +3292,19 @@ function RoleModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-3xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           <div className="md:col-span-2">
-            <label className={labelClass}>Role *</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Senior Engineer" required />
+            <label className={labelClass}>Role<RequiredMark /></label>
+            <Input value={name} onChange={(e) => { setName(e.target.value); setErrors((p) => ({ ...p, name: '' })); }} placeholder="Senior Engineer" required error={!!errors.name} />
+            <FieldError error={errors.name} />
           </div>
           <div>
-            <label className={labelClass}>Rate ($/hr) *</label>
-            <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="295" required />
+            <label className={labelClass}>Rate ($/hr)<RequiredMark /></label>
+            <Input type="number" step="0.01" min="0" value={rate} onChange={(e) => { setRate(e.target.value); setErrors((p) => ({ ...p, rate: '' })); }} placeholder="295" required error={!!errors.rate} />
+            <FieldError error={errors.rate} />
           </div>
           <div>
             <label className={labelClass}>Currency</label>
@@ -3288,7 +3322,7 @@ function RoleModal({
           </div>
           {error ? <p className="text-sm text-rose-600 dark:text-rose-300 md:col-span-2">{error}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -3331,6 +3365,7 @@ function NoteModal({
   const [date, setDate] = useState('');
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -3345,6 +3380,7 @@ function NoteModal({
     setDate(note?.note_date ?? today);
     setBody(note?.body ?? '');
     setError(null);
+    setErrors({});
   }, [open, note]);
 
   const saving = create.isPending || update.isPending;
@@ -3352,8 +3388,10 @@ function NoteModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!body.trim()) {
-      setError('Note body is required.');
+    const nextErrors: Record<string, string> = {};
+    if (!body.trim()) nextErrors.body = 'Note body is required.';
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
       return;
     }
     const data: ClientNoteBody = {
@@ -3375,7 +3413,7 @@ function NoteModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className={labelClass}>Date</label>
@@ -3383,11 +3421,12 @@ function NoteModal({
           <p className="mt-1 text-[11px] text-muted-foreground">The note is recorded under your name automatically.</p>
         </div>
         <div>
-          <label className={labelClass}>Note *</label>
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={4} placeholder="Write your note..." className={textareaClass} required />
+          <label className={labelClass}>Note<RequiredMark /></label>
+          <textarea value={body} onChange={(e) => { setBody(e.target.value); setErrors((p) => ({ ...p, body: '' })); }} rows={4} placeholder="Write your note..." className={cn(textareaClass, errorBorder(!!errors.body))} required />
+          <FieldError error={errors.body} />
         </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -3418,6 +3457,15 @@ interface PickerOption {
   sub?: string;
 }
 
+// Shared open-coordinator so only ONE MultiPicker is open at a time. Opening a
+// picker closes every other one synchronously — so clicking an adjacent picker
+// (e.g. Team members while Project managers is open) opens it in a single click
+// instead of the first click just dismissing the other.
+const multiPickerClosers = new Set<() => void>();
+function closeOtherMultiPickers(except: () => void) {
+  multiPickerClosers.forEach((close) => { if (close !== except) close(); });
+}
+
 // Chip-style multi-select. Selected ids that fall outside the option list are
 // pruned (so changing the PM set narrows the member pool cleanly).
 function MultiPicker({
@@ -3440,7 +3488,32 @@ function MultiPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // When there isn't room below the trigger, the panel opens upward.
+  const [flipUp, setFlipUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Register this picker's closer in the shared coordinator so opening any other
+  // picker closes this one (and vice versa) — see openSelf below.
+  useEffect(() => {
+    const close = () => setOpen(false);
+    multiPickerClosers.add(close);
+    return () => { multiPickerClosers.delete(close); };
+  }, []);
+
+  // Open this picker: close any other open picker first, then decide whether to
+  // drop the panel up or down based on the room beneath the trigger.
+  const PANEL_MAX = 260; // ~max-h-60 (240) + the search row's headroom
+  const openSelf = () => {
+    closeOtherMultiPickers(() => setOpen(false));
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect) {
+      const below = window.innerHeight - rect.bottom;
+      setFlipUp(below < PANEL_MAX && rect.top > below);
+    }
+    setQuery('');
+    setOpen(true);
+  };
+  const toggleOpen = () => (open ? setOpen(false) : openSelf());
 
   // Prune selected ids no longer available as options (e.g. narrowing the PM
   // set drops their reports from the member picker). Skip pruning while the
@@ -3476,7 +3549,7 @@ function MultiPicker({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
         className="flex min-h-9 w-full flex-wrap items-center gap-1.5 rounded-2xl border border-border bg-transparent px-2 py-1.5 text-sm focus-within:border-primary"
       >
         {selected.length === 0 ? (
@@ -3508,7 +3581,10 @@ function MultiPicker({
       </div>
 
       {open ? (
-        <div className="absolute z-50 mt-1.5 max-h-60 w-full overflow-y-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+        <div className={cn(
+          'absolute z-50 max-h-60 w-full overflow-y-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl',
+          flipUp ? 'bottom-full mb-1.5' : 'mt-1.5',
+        )}>
           {options.length === 0 ? (
             <p className="px-2 py-2 text-xs text-muted-foreground">{emptyText}</p>
           ) : (

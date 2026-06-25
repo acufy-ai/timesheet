@@ -8,7 +8,7 @@ from app.models.project import Project
 from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.time_off_request import TimeOffRequest
-from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess, UserTaskAccess
+from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess, UserTaskAccess, TaskAssignee
 from app.schemas import UserCreate, UserUpdate
 from app.core.security import get_password_hash
 from typing import Optional
@@ -107,8 +107,17 @@ async def _sync_user_assignments(
     for obj in list(db.sync_session.identity_map.values()):
         if (isinstance(obj, EmployeeManagerAssignment) and obj.employee_id == user.id) \
            or (isinstance(obj, UserProjectAccess) and obj.user_id == user.id) \
-           or (isinstance(obj, UserTaskAccess) and obj.user_id == user.id):
+           or (isinstance(obj, UserTaskAccess) and obj.user_id == user.id) \
+           or (isinstance(obj, TaskAssignee) and obj.user_id == user.id):
             db.expunge(obj)
+
+    # Snapshot the user's existing per-user task access BEFORE deleting it. The
+    # task_assignees mirror below removes ONLY the assignee rows that this
+    # User-Management grant previously owned, so it never clobbers task
+    # assignments made independently in Client Management.
+    prior_task_access_ids = set((await db.execute(
+        select(UserTaskAccess.task_id).where(UserTaskAccess.user_id == user.id)
+    )).scalars().all())
 
     await db.execute(delete(UserProjectAccess).where(UserProjectAccess.user_id == user.id))
     await db.execute(delete(UserTaskAccess).where(UserTaskAccess.user_id == user.id))
@@ -167,6 +176,24 @@ async def _sync_user_assignments(
 
     # Per-user task access (mirror of project access, validated to the tenant).
     unique_task_ids = sorted(set(task_ids or []))
+
+    # Mirror these grants into `task_assignees` so a user granted task access
+    # from User Management also shows up as that task's assignee in Client
+    # Management (the two are distinct tables). Reconcile ONLY the assignee rows
+    # this User-Management grant owns: remove the user from tasks they previously
+    # had via user_task_access but no longer do, and add them to newly granted
+    # tasks. Task assignments made independently in Client Management (which
+    # write task_assignees but not user_task_access) are left untouched.
+    new_task_set = set(unique_task_ids)
+    removed_assignee_task_ids = prior_task_access_ids - new_task_set
+    if removed_assignee_task_ids:
+        await db.execute(
+            delete(TaskAssignee).where(
+                TaskAssignee.user_id == user.id,
+                TaskAssignee.task_id.in_(removed_assignee_task_ids),
+            )
+        )
+
     if not unique_task_ids:
         return
     tquery = select(Task.id).where(Task.id.in_(unique_task_ids))
@@ -180,6 +207,19 @@ async def _sync_user_assignments(
     db.add_all(
         [UserTaskAccess(user_id=user.id, task_id=task_id, tenant_id=user.tenant_id)
          for task_id in unique_task_ids]
+    )
+    # Add task_assignees for the granted tasks the user isn't already an
+    # assignee of (avoid duplicate-PK inserts when a Client-Management
+    # assignment already exists for the same task).
+    existing_assignee_ids = set((await db.execute(
+        select(TaskAssignee.task_id).where(
+            TaskAssignee.user_id == user.id,
+            TaskAssignee.task_id.in_(unique_task_ids),
+        )
+    )).scalars().all())
+    db.add_all(
+        [TaskAssignee(user_id=user.id, task_id=task_id, tenant_id=user.tenant_id)
+         for task_id in unique_task_ids if task_id not in existing_assignee_ids]
     )
 
 
