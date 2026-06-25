@@ -21,6 +21,14 @@ export function staffingPool(
   const eligibleManagerIds = new Set(allowCrossTeam ? clientPmIds : pmIds);
   if (eligibleManagerIds.size === 0) return [];
   return users
-    .filter((u) => u.manager_id != null && eligibleManagerIds.has(u.manager_id))
+    .filter((u) => {
+      // An employee can report to MULTIPLE managers. They're eligible when the
+      // PM is ANY of their managers (not just the primary), so consult the full
+      // manager_ids set; fall back to the legacy single manager_id when absent.
+      const managerIds = (u.manager_ids && u.manager_ids.length)
+        ? u.manager_ids
+        : (u.manager_id != null ? [u.manager_id] : []);
+      return managerIds.some((m) => eligibleManagerIds.has(m));
+    })
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
 }
