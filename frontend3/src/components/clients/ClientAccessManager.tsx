@@ -307,7 +307,7 @@ function ScopePicker({
 }
 
 function InviteClientModal({
-  open, clientName, projects, tasksByProject, onClose, onDone, onError,
+  open, clientName, projects, tasksByProject, onClose, onDone,
 }: {
   open: boolean;
   clientName: string;
@@ -315,7 +315,8 @@ function InviteClientModal({
   tasksByProject: Map<number, FullTask[]>;
   onClose: () => void;
   onDone: (msg: string) => void;
-  onError: (msg: string) => void;
+  // Errors now render inside the modal; onError kept optional for the caller.
+  onError?: (msg: string) => void;
 }) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -324,10 +325,12 @@ function InviteClientModal({
   const [modes, setModes] = useState<Record<number, Mode>>({});
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Form-level error shown INSIDE the modal (not a page flash hidden behind it).
+  const [formError, setFormError] = useState<string | null>(null);
 
   function reset() {
     setFullName(''); setEmail(''); setLabel('Project Sponsor');
-    setSelected({}); setModes({}); setErrors({});
+    setSelected({}); setModes({}); setErrors({}); setFormError(null);
   }
 
   async function submit() {
@@ -336,13 +339,13 @@ function InviteClientModal({
     if (!email.trim()) next.email = 'This field is required.';
     else if (!email.includes('@')) next.email = 'Enter a valid email address.';
     if (Object.keys(next).length) { setErrors(next); return; }
-    setErrors({});
+    setErrors({}); setFormError(null);
     const grants: ClientGrantSpec[] = Object.entries(selected).map(([k, caps]) => {
       if (k.startsWith('p:')) return { scope: 'project', project_id: Number(k.slice(2)), capabilities: caps };
       const [, , tid] = k.split(':');
       return { scope: 'task', task_id: Number(tid), capabilities: caps };
     });
-    if (!grants.length) { onError('Select at least one project or task to share.'); return; }
+    if (!grants.length) { setFormError('Select at least one project or task to share.'); return; }
     setBusy(true);
     try {
       const res = await clientPortalApi.invite({
@@ -353,7 +356,7 @@ function InviteClientModal({
       onDone(res.data.message || `Invite sent to ${email}.`);
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onError(typeof d === 'string' ? d : 'Could not invite the client.');
+      setFormError(typeof d === 'string' ? d : 'Could not invite the client.');
     } finally { setBusy(false); }
   }
 
@@ -420,12 +423,18 @@ function InviteClientModal({
             </div>
             <ScopePicker
               projects={projects} tasksByProject={tasksByProject}
-              selected={selected} setSelected={setSelected}
+              selected={selected} setSelected={(v) => { setSelected(v); setFormError(null); }}
               modes={modes} setModes={setModes}
             />
           </div>
         </div>
       </div>
+
+      {formError ? (
+        <div className="mt-4 flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[13px] text-rose-700 dark:text-rose-300">
+          <Info className="h-4 w-4 shrink-0" /> {formError}
+        </div>
+      ) : null}
 
       <div className="mt-4 flex items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
         <Info className="h-4 w-4 shrink-0" />

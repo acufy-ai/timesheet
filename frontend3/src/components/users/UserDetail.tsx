@@ -36,6 +36,9 @@ type Props = {
   // Jump the detail pane to another user (used by the reporting tree to walk
   // up/down the chain). Optional so other callers don't have to wire it.
   onSelectUser?: (id: number) => void;
+  // Ids the viewer may open from the reporting tree. null = anyone (admin);
+  // a Set restricts a manager to their own scope (no clicking outside it).
+  openableIds?: Set<number> | null;
 };
 
 export function UserDetail(props: Props) {
@@ -146,7 +149,7 @@ export function UserDetail(props: Props) {
             <IdentityCard {...props} editing={editCard === 'identity'} onEdit={() => setEditCard('identity')} onClose={() => setEditCard(null)} />
             <AccessCard {...props} editing={editCard === 'access'} onEdit={() => setEditCard('access')} onClose={() => setEditCard(null)} />
           </div>
-          <ReportingTree user={user} onSelectUser={props.onSelectUser} />
+          <ReportingTree user={user} onSelectUser={props.onSelectUser} openableIds={props.openableIds} />
         </div>
       ) : (
         <UserClientAccessTab user={user} isAdmin={isAdmin} onFlash={props.onFlash} />

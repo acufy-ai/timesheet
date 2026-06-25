@@ -153,15 +153,18 @@ export function UsersPage() {
     unverified: scoped.filter((u) => !u.email_verified && !u.is_external).length,
   }), [scoped]);
 
-  // Selected user object for the detail pane: prefer the paged row, then the
-  // full roster (admin-only), then the tenant directory (so a manager can walk
-  // the reporting tree to someone outside their current page).
+  // Selected user object for the detail pane. SECURITY: a non-admin must only
+  // ever open someone in their OWN scope (their paged team), never an arbitrary
+  // user from the tenant directory — resolving from `assignableQ.data` here
+  // would let a manager click a co-manager in the reporting tree and view that
+  // person's full detail + org. Admins may resolve from the full roster.
   const activeUser = useMemo(
-    () => pageUsers.find((u) => u.id === activeId)
-      ?? all.find((u) => u.id === activeId)
-      ?? (assignableQ.data ?? []).find((u) => u.id === activeId)
+    () =>
+      pageUsers.find((u) => u.id === activeId)
+      ?? (isAdmin ? (all.find((u) => u.id === activeId)
+        ?? (assignableQ.data ?? []).find((u) => u.id === activeId)) : undefined)
       ?? null,
-    [pageUsers, all, assignableQ.data, activeId],
+    [pageUsers, all, assignableQ.data, activeId, isAdmin],
   );
   // Auto-select the first user when nothing is selected.
   useEffect(() => {
@@ -380,6 +383,10 @@ export function UsersPage() {
                     onViewTimesheets={(u) => navigate(`/user-management/${u.id}/timesheets`)}
                     onFlash={flashAndFade}
                     onSelectUser={(id) => setActiveId(id)}
+                    // Admins can open anyone in the reporting tree; a manager
+                    // may only open people in their own scope (their team), so
+                    // clicking a co-manager/superior is a no-op (no data leak).
+                    openableIds={isAdmin ? null : new Set(pageUsers.map((u) => u.id))}
                   />
                 ) : (
                   <Empty Icon={UsersIcon} title="No user selected" description="Pick someone from the list to view their profile, access, and clients." />

@@ -80,12 +80,13 @@ function ReportLine({
 // One report node (compact single line), expandable to its own reports. The
 // nested reports-of-reports start collapsed to keep the list short.
 function ReportNode({
-  user, childrenByManager, depth, onSelectUser,
+  user, childrenByManager, depth, clickFor,
 }: {
   user: ManagedUser;
   childrenByManager: Map<number, ManagedUser[]>;
   depth: number;
-  onSelectUser?: (id: number) => void;
+  // Returns an onClick only for openable ids (gates the data-leak fix).
+  clickFor: (id: number) => (() => void) | undefined;
 }) {
   const kids = childrenByManager.get(user.id) ?? [];
   const [open, setOpen] = useState(false);
@@ -114,7 +115,7 @@ function ReportNode({
         <div className="min-w-0 flex-1">
           <ReportLine
             user={user}
-            onClick={onSelectUser ? () => onSelectUser(user.id) : undefined}
+            onClick={clickFor(user.id)}
             trailing={kids.length ? (
               <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
                 {descendantCount}
@@ -126,7 +127,7 @@ function ReportNode({
       {open && kids.length ? (
         <div className="ml-2.5 mt-0.5 space-y-0.5 border-l border-border pl-2">
           {kids.map((k) => (
-            <ReportNode key={k.id} user={k} childrenByManager={childrenByManager} depth={depth + 1} onSelectUser={onSelectUser} />
+            <ReportNode key={k.id} user={k} childrenByManager={childrenByManager} depth={depth + 1} clickFor={clickFor} />
           ))}
         </div>
       ) : null}
@@ -135,14 +136,21 @@ function ReportNode({
 }
 
 export function ReportingTree({
-  user, onSelectUser,
+  user, onSelectUser, openableIds = null,
 }: {
   user: ManagedUser;
   // Optional: jump the detail pane to another person when their row is clicked.
   onSelectUser?: (id: number) => void;
+  // Ids the viewer may open. null = anyone (admin). A Set restricts clicks to
+  // those ids (a manager's own scope) — clicking anyone else is a no-op, so the
+  // tree can SHOW the org context without leaking access to it.
+  openableIds?: Set<number> | null;
 }) {
   const dirQ = useAssignableUsers();
   const directory = (dirQ.data ?? []) as ManagedUser[];
+  // Returns an onClick only when the target id is openable by the viewer.
+  const clickFor = (id: number): (() => void) | undefined =>
+    onSelectUser && (openableIds === null || openableIds.has(id)) ? () => onSelectUser(id) : undefined;
 
   const byId = useMemo(() => {
     const m = new Map<number, ManagedUser>();
@@ -237,7 +245,7 @@ export function ReportingTree({
                   <ReportLine
                     key={m.id}
                     user={m}
-                    onClick={onSelectUser ? () => onSelectUser(m.id) : undefined}
+                    onClick={clickFor(m.id)}
                     trailing={isPrimary ? (
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
                         <Star className="h-3 w-3 fill-current" /> Primary
@@ -260,7 +268,7 @@ export function ReportingTree({
               <div key={m.id} className="flex items-center gap-1.5" style={{ paddingLeft: i * 14 }}>
                 {i > 0 ? <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <span className="h-3.5 w-3.5 shrink-0" />}
                 <div className="min-w-0 flex-1">
-                  <ReportLine user={m} onClick={onSelectUser ? () => onSelectUser(m.id) : undefined} />
+                  <ReportLine user={m} onClick={clickFor(m.id)} />
                 </div>
               </div>
             ))}
@@ -268,7 +276,7 @@ export function ReportingTree({
               <div className="flex items-center gap-1.5" style={{ paddingLeft: spineUp.length * 14 }}>
                 <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <ReportLine user={directManagers[0]} onClick={onSelectUser ? () => onSelectUser(directManagers[0].id) : undefined} />
+                  <ReportLine user={directManagers[0]} onClick={clickFor(directManagers[0].id)} />
                 </div>
               </div>
             ) : (
@@ -320,7 +328,7 @@ export function ReportingTree({
           ) : (
             <div className="space-y-0.5">
               {pagedReports.map((r) => (
-                <ReportNode key={r.id} user={r} childrenByManager={childrenByManager} depth={0} onSelectUser={onSelectUser} />
+                <ReportNode key={r.id} user={r} childrenByManager={childrenByManager} depth={0} clickFor={clickFor} />
               ))}
             </div>
           )}
