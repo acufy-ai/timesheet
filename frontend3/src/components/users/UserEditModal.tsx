@@ -399,6 +399,7 @@ export function UserEditModal({
         ? `Edit access · ${user?.full_name}`
         : `${isEdit ? 'Edit' : 'Add'} ${form.is_external ? 'external' : 'internal'} user`}
       className="max-w-4xl"
+      flushBottom
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {restrictedToProjectAccess ? (

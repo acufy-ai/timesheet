@@ -280,8 +280,8 @@ async def delete_project_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Cannot delete this project: it has {protected} submitted, "
-                "approved, or rejected time entries. Archive it instead, or "
-                "reassign those entries first."
+                "approved, or rejected time entries. Archive it instead to hide "
+                "it and stop new time, or reassign those entries first."
             ),
         )
 
@@ -327,3 +327,63 @@ async def delete_project_endpoint(
             changed_by_name=current_user.full_name,
             session=db,
         )
+
+
+async def _set_project_active(
+    project_id: int, active: bool, db: AsyncSession, current_user: User,
+) -> dict:
+    """Shared archive/unarchive. Archiving sets is_active=False, which already
+    hides the project from active lists and the loggable-projects picker (so no
+    new time can be logged) while keeping all history. Reversible. Manager who
+    PMs the client, or admin."""
+    require_client_manager(current_user)
+    project = await get_project_by_id(db, project_id, tenant_id=current_user.tenant_id)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    await assert_client_access(db, current_user, project.client_id)
+
+    if project.is_active != active:
+        project.is_active = active
+        await db.commit()
+        await db.refresh(project)
+        if project.tenant_id is not None:
+            verb = "unarchived" if active else "archived"
+            await record_activity_events(
+                db,
+                [
+                    build_activity_event(
+                        activity_type="PROJECT_ARCHIVED" if not active else "PROJECT_UNARCHIVED",
+                        visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                        tenant_id=project.tenant_id,
+                        actor_user=current_user,
+                        entity_type="project",
+                        entity_id=project.id,
+                        summary=f"{current_user.full_name} {verb} project {project.name}.",
+                        route="/client-management",
+                        metadata={"project_name": project.name},
+                        severity="info",
+                    )
+                ],
+            )
+    return await _attach_roster(db, project)
+
+
+@router.post("/{project_id}/archive", response_model=ProjectWithClient)
+async def archive_project_endpoint(
+    project_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Archive a project: hide it from active lists + stop new time logging,
+    keep its history. Reversible via unarchive."""
+    return await _set_project_active(project_id, False, db, current_user)
+
+
+@router.post("/{project_id}/unarchive", response_model=ProjectWithClient)
+async def unarchive_project_endpoint(
+    project_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Restore an archived project to active."""
+    return await _set_project_active(project_id, True, db, current_user)

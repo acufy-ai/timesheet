@@ -80,7 +80,7 @@ export function UserDetailsModal({
   const projectCount = user.project_ids?.length ?? 0;
 
   return (
-    <Modal open={open} onClose={onClose} title="User details" className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title="User details" className="max-w-3xl" flushBottom>
       <div className="space-y-5">
         <div className="space-y-5">
           {/* Identity header: avatar + name + role/status pills. */}

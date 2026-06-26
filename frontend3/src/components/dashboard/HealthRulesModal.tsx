@@ -51,7 +51,7 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
   const hasOverride = !!q.data?.override;
 
   return (
-    <Modal open={open} onClose={onClose} title="Project health rules" className="max-w-lg">
+    <Modal open={open} onClose={onClose} title="Project health rules" className="max-w-lg" flushBottom>
       <div className="space-y-4 pb-4">
         <p className="text-xs text-muted-foreground">
           Decide how projects are flagged <span className="font-medium text-rose-600 dark:text-rose-400">needs attention</span>,{' '}

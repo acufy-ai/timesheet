@@ -87,7 +87,7 @@ export function ImportClientsModal({
   const hasBlockingErrors = (preview?.errors.length ?? 0) > 0;
 
   return (
-    <Modal open={open} onClose={close} title="Import clients" className="max-w-3xl">
+    <Modal open={open} onClose={close} title="Import clients" className="max-w-3xl" flushBottom>
       <div className="space-y-4">
         {/* ── Upload ── */}
         {step === 'upload' ? (

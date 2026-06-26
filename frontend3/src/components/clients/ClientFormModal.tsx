@@ -78,7 +78,7 @@ export function ClientFormModal({
   const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-lg" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className={labelClass}>Name<RequiredMark /></label>

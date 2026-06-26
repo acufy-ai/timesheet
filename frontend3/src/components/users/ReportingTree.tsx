@@ -69,10 +69,17 @@ function ReportLine({
       <span className={cn('grid h-6 w-6 shrink-0 place-items-center rounded-full text-[9px] font-semibold', avatarTone(name))}>
         {initials(name)}
       </span>
-      <span className="truncate text-[13px] font-semibold text-foreground">{name}</span>
-      <RoleBadge role={user.role} />
-      {user.title ? <span className="truncate text-[11.5px] text-muted-foreground">{user.title}</span> : null}
-      {trailing ? <span className="ml-auto shrink-0">{trailing}</span> : null}
+      {/* Name + badge on the first line (name truncates last, title only); title
+          drops to its own line so the manager's name is never crushed to "Al…"
+          when the panel is narrow. */}
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate text-[13px] font-semibold text-foreground">{name}</span>
+          <RoleBadge role={user.role} className="shrink-0" />
+        </span>
+        {user.title ? <span className="block truncate text-[11.5px] text-muted-foreground">{user.title}</span> : null}
+      </span>
+      {trailing ? <span className="shrink-0">{trailing}</span> : null}
     </button>
   );
 }

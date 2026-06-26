@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Eye, EyeOff, Loader2, Mail } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { Button, Card, Empty, Input, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, Input, Toast, TonePill, WorkspaceHeader } from '@/components/ui';
 import { platformApi } from '@/api/client';
 import { usePlatformSmtp } from '@/hooks/usePlatform';
 
@@ -109,17 +109,7 @@ export function PlatformSettingsPage() {
       <WorkspaceHeader title="Platform settings" description="Default outbound email for the whole fleet." />
 
       {flash ? (
-        <div
-          role="alert"
-          className={
-            'rounded-xl border px-3 py-2 text-sm ' +
-            (flash.tone === 'ok'
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')
-          }
-        >
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {q.isLoading ? (

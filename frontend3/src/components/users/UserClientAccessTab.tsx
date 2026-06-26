@@ -520,7 +520,7 @@ function GrantClientAccessModal({
   const loading = projectsQ.isLoading || tasksQ.isLoading;
 
   return (
-    <Modal open onClose={onClose} title={`Grant access · ${clientName}`} className="max-w-2xl">
+    <Modal open onClose={onClose} title={`Grant access · ${clientName}`} className="max-w-2xl" flushBottom>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-[12.5px] text-muted-foreground">

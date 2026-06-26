@@ -3,9 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Briefcase, Loader2 } from 'lucide-react';
 
-import { Empty } from '@/components/ui';
+import { Empty, Toast } from '@/components/ui';
 import { clientPortalApi } from '@/api/client';
-import { cn } from '@/lib/cn';
 import { ProjectCard } from './ClientPortalPage';
 
 // A single client project, opened from the sidebar project list. Reuses the
@@ -35,11 +34,7 @@ export function ClientProjectDetailPage() {
       </Link>
 
       {flash ? (
-        <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm',
-          flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-            : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {projectsQ.isLoading ? (

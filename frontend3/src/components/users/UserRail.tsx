@@ -1,6 +1,6 @@
 import { Check, ChevronLeft, ChevronRight, Mail, Trash2, UserX, X } from 'lucide-react';
 
-import { RoleBadge } from '@/components/ui';
+import { ListSkeleton, RoleBadge } from '@/components/ui';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import type { ManagedUser } from '@/types/admin';
@@ -80,8 +80,10 @@ export function UserRail({
       ) : null}
 
       {/* Scrolling rows */}
-      <div className={cn('min-h-0 flex-1 overflow-y-auto px-2.5 py-1', loading && 'opacity-60')}>
-        {users.length === 0 ? (
+      <div className={cn('min-h-0 flex-1 overflow-y-auto px-2.5 py-1', loading && users.length > 0 && 'opacity-60')}>
+        {loading && users.length === 0 ? (
+          <ListSkeleton rows={8} className="px-0" />
+        ) : users.length === 0 ? (
           <div className="px-3 py-10 text-center text-sm text-muted-foreground">No users match.</div>
         ) : (
           users.map((u) => {

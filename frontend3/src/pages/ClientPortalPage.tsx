@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Briefcase, Check, ChevronRight, Folder, Loader2, Lock, Pencil, Plus, Trash2, UserRound } from 'lucide-react';
 
-import { Button, Card, Empty, TonePill } from '@/components/ui';
+import { Button, Card, Empty, Toast, TonePill } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { clientPortalApi } from '@/api/client';
 import { avatarTone, initials } from '@/lib/avatar';
@@ -110,11 +110,7 @@ export function ClientWorkView({ heading = true }: { heading?: boolean }) {
   return (
     <div className="space-y-5">
       {flash ? (
-        <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm',
-          flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-            : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {heading ? (
