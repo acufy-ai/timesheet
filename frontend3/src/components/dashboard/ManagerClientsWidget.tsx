@@ -79,7 +79,7 @@ export function ManagerClientsWidget() {
                         <li key={p.project_id}>
                           <button
                             type="button"
-                            onClick={() => navigate(`/insights/project/${p.project_id}?from=dashboard`)}
+                            onClick={() => navigate(`/client-management?client=${c.client_id}&tab=projects&project=${p.project_id}`)}
                             className="block w-full truncate rounded px-2 py-1 text-left text-[13px] text-muted-foreground hover:bg-foreground/[0.04] hover:text-primary"
                             title={p.project_name}
                           >
