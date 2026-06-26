@@ -40,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 text-center">
           <h1 className="text-lg font-semibold text-foreground">Something went wrong</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This page hit an unexpected error. Your data is safe. Try again, or reload if it persists.
+            This page hit an unexpected error. Try again, or reload if it persists.
           </p>
           <div className="mt-5 flex justify-center gap-3">
             <button
