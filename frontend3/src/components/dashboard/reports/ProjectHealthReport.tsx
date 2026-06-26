@@ -49,7 +49,7 @@ export function ProjectHealthReport({ data }: { data: ManagerProjectHealth }) {
   };
 
   const exportCsv = () => {
-    const headers = ['Project', 'Client', 'Hours this week', 'Budget used %', 'Budget hours remaining', 'Days until end', 'Health'];
+    const headers = ['Project', 'Client', 'Hours this week', 'Budget burn %', 'Budget hours remaining', 'Days until end', 'Health'];
     const lines = sorted.map((r) => [
       r.project_name, r.client_name,
       Math.round(Number(r.hours_this_week)),
@@ -103,7 +103,7 @@ export function ProjectHealthReport({ data }: { data: ManagerProjectHealth }) {
               <SortHead label="Project" k="project" />
               <SortHead label="Client" k="client" />
               <SortHead label="Hours this week" k="hours" align="right" />
-              <SortHead label="Budget used" k="budget" align="right" />
+              <SortHead label="Budget burn" k="budget" align="right" />
               <SortHead label="Budget hrs left" k="budget" align="right" />
               <SortHead label="Ends in" k="ends" align="right" />
               <SortHead label="Health" k="health" />

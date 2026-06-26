@@ -146,6 +146,16 @@ export function useRevenueRecognition(enabled = true) {
   });
 }
 
+// Task-level "why" breakdown for a single project (project report).
+export function useProjectTaskBreakdown(projectId: number, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'project-task-breakdown', projectId],
+    queryFn: () => dashboardApi.projectTaskBreakdown(projectId).then((r) => r.data),
+    enabled: enabled && Number.isFinite(projectId),
+    staleTime: 60_000,
+  });
+}
+
 // The manager's clients + the projects they run (dashboard widget).
 export function useManagerClients(enabled = true) {
   return useQuery({

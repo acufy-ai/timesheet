@@ -1263,6 +1263,46 @@ class HealthConfigResponse(BaseModel):
     can_edit_workspace: bool = False
 
 
+# ── Project report: task-level "why" breakdown (existing data only) ─────────
+class TaskBreakdownTask(BaseModel):
+    task_id: int
+    name: str
+    status: str                       # to_do | in_progress | done
+    hours: Decimal = Decimal("0")     # approved hours logged
+    cost: Decimal = Decimal("0")      # approved cost (hours × cost rate)
+    revenue: Decimal = Decimal("0")   # approved billable revenue
+    pct_of_hours: int = 0             # share of the project's logged hours
+    assignees: list[str] = []         # names, for "who's carrying it"
+
+
+class TaskBreakdownPerson(BaseModel):
+    user_id: int
+    full_name: str
+    hours: Decimal = Decimal("0")
+    pct_of_hours: int = 0
+
+
+class ProjectTaskBreakdownResponse(BaseModel):
+    project_id: int
+    project_name: str
+    total_tasks: int = 0
+    done_tasks: int = 0
+    open_tasks: int = 0               # not done (to_do + in_progress)
+    total_hours: Decimal = Decimal("0")
+    is_overdue: bool = False
+    days_overdue: int = 0
+    # Where the effort/money went — top tasks by hours (each carries cost too).
+    top_tasks: list[TaskBreakdownTask] = []
+    # Open work while the project is at/past its end date — what's holding completion.
+    unfinished_at_deadline: list[TaskBreakdownTask] = []
+    # to_do with zero logged hours — not started / candidate blockers.
+    stalled_tasks: list[TaskBreakdownTask] = []
+    # Who's carrying the project.
+    by_person: list[TaskBreakdownPerson] = []
+    # Plain-language headline lines summarising the cause (data-derived, no fabrication).
+    notes: list[str] = []
+
+
 # ── Manager dashboard: clients + their projects ─────────────────────────────
 class ManagerClientProject(BaseModel):
     project_id: int

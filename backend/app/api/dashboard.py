@@ -59,6 +59,9 @@ from app.schemas import (
     ManagerClientsResponse,
     ManagerClientRow,
     ManagerClientProject,
+    ProjectTaskBreakdownResponse,
+    TaskBreakdownTask,
+    TaskBreakdownPerson,
     TeamDailyOverviewResponse,
     TeamRejectionReason,
     TeamRejectionRow,
@@ -2392,6 +2395,155 @@ async def get_manager_clients(
         ))
     rows.sort(key=lambda r: r.client_name.lower())
     return ManagerClientsResponse(client_count=len(rows), rows=rows)
+
+
+@router.get("/project/{project_id}/task-breakdown", response_model=ProjectTaskBreakdownResponse)
+async def get_project_task_breakdown(
+    project_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Task-level "why" for a single project, computed from EXISTING data only
+    (approved time per task, task status, project dates) — no fabricated causes.
+    Surfaces where the hours/cost went, what's unfinished at the deadline, what's
+    stalled (to_do with zero hours), and who's carrying the work. Powers the
+    project report's health detail. Manager/viewer only; the project must be in
+    the caller's scope."""
+    from app.models.task import Task, TaskStatus
+    from app.models.assignments import TaskAssignee
+    from app.services.billing_rates import entry_billed_amount, entry_cost_amount
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id, Project.tenant_id == current_user.tenant_id)
+    )).scalars().first()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Scope check for managers: must own the project (manager_id or a PM row).
+    if current_user.role == UserRole.MANAGER:
+        from app.models.assignments import ProjectManager
+        owns = project.manager_id == current_user.id or (await db.execute(
+            select(ProjectManager.project_id).where(
+                ProjectManager.project_id == project_id,
+                ProjectManager.user_id == current_user.id,
+            )
+        )).first() is not None
+        if not owns:
+            raise HTTPException(status_code=403, detail="Project is not in your scope")
+
+    today = date.today()
+
+    tasks = (await db.execute(
+        select(Task).where(Task.project_id == project_id, Task.is_active.is_(True))
+    )).scalars().all()
+    tasks_by_id = {t.id: t for t in tasks}
+
+    # Assignee names per task.
+    assignee_names: dict[int, list[str]] = {}
+    if tasks:
+        rows = (await db.execute(
+            select(TaskAssignee.task_id, User.full_name)
+            .join(User, User.id == TaskAssignee.user_id)
+            .where(TaskAssignee.task_id.in_([t.id for t in tasks]))
+        )).all()
+        for tid, name in rows:
+            assignee_names.setdefault(tid, []).append(name)
+
+    # Approved time aggregated per task and per person.
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.project_id == project_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+    )).scalars().all()
+
+    per_task: dict[int, dict] = {}
+    per_person: dict[int, Decimal] = {}
+    total_hours = Decimal("0")
+    for e in entries:
+        hrs = e.hours or Decimal("0")
+        total_hours += hrs
+        per_person[e.user_id] = per_person.get(e.user_id, Decimal("0")) + hrs
+        if e.task_id is not None:
+            d = per_task.setdefault(e.task_id, {"hours": Decimal("0"), "cost": Decimal("0"), "revenue": Decimal("0")})
+            d["hours"] += hrs
+            d["cost"] += entry_cost_amount(e)
+            if e.is_billable:
+                d["revenue"] += entry_billed_amount(e, project)
+
+    def pct(part: Decimal) -> int:
+        return int(round(part / total_hours * 100)) if total_hours > 0 else 0
+
+    def task_row(t: "Task") -> TaskBreakdownTask:
+        agg = per_task.get(t.id, {"hours": Decimal("0"), "cost": Decimal("0"), "revenue": Decimal("0")})
+        return TaskBreakdownTask(
+            task_id=t.id, name=t.name,
+            status=t.status.value if hasattr(t.status, "value") else str(t.status),
+            hours=agg["hours"], cost=agg["cost"], revenue=agg["revenue"],
+            pct_of_hours=pct(agg["hours"]),
+            assignees=assignee_names.get(t.id, []),
+        )
+
+    done = [t for t in tasks if (t.status.value if hasattr(t.status, "value") else t.status) == "done"]
+    open_tasks = [t for t in tasks if t not in done]
+
+    # Top tasks by hours (where the effort/budget went).
+    ranked = sorted(tasks, key=lambda t: per_task.get(t.id, {}).get("hours", Decimal("0")), reverse=True)
+    top_tasks = [task_row(t) for t in ranked if per_task.get(t.id, {}).get("hours", Decimal("0")) > 0][:6]
+
+    days_overdue = (today - project.end_date).days if project.end_date and project.end_date < today else 0
+    is_overdue = days_overdue > 0
+    # Open work while the project is at/past its end date (holding completion).
+    near_or_past = project.end_date is not None and (project.end_date - today).days <= 7
+    unfinished = [task_row(t) for t in open_tasks] if near_or_past else []
+    unfinished.sort(key=lambda r: r.hours, reverse=True)
+
+    # Stalled: to_do with zero approved hours (not started / candidate blockers).
+    stalled = [
+        task_row(t) for t in tasks
+        if (t.status.value if hasattr(t.status, "value") else t.status) == "to_do"
+        and per_task.get(t.id, {}).get("hours", Decimal("0")) == 0
+    ]
+
+    name_by_user = {uid: n for uid, n in (await db.execute(
+        select(User.id, User.full_name).where(User.id.in_(list(per_person.keys()) or [-1]))
+    )).all()}
+    by_person = sorted(
+        [TaskBreakdownPerson(user_id=uid, full_name=name_by_user.get(uid, "—"), hours=h, pct_of_hours=pct(h))
+         for uid, h in per_person.items()],
+        key=lambda p: p.hours, reverse=True,
+    )[:8]
+
+    # Data-derived headline notes (no invented causes).
+    notes: list[str] = []
+    if top_tasks:
+        t0 = top_tasks[0]
+        t1 = top_tasks[1] if len(top_tasks) > 1 else None
+        # Only call out ONE task as the driver when it clearly dominates the
+        # next one (>=1.5x its hours). When the top tasks are tied/close, that
+        # framing is misleading — describe the concentration across them instead.
+        dominates = t1 is None or float(t0.hours) >= 1.5 * float(t1.hours)
+        if t0.pct_of_hours >= 40 and dominates:
+            notes.append(f"“{t0.name}” took the most time — {t0.pct_of_hours}% of logged hours ({int(round(float(t0.hours)))}h).")
+        elif t1 is not None and (t0.pct_of_hours + t1.pct_of_hours) >= 70:
+            notes.append(f"Most of the hours went to “{t0.name}” and “{t1.name}” ({t0.pct_of_hours + t1.pct_of_hours}% combined).")
+    if is_overdue and len(open_tasks) > 0:
+        notes.append(f"{len(open_tasks)} of {len(tasks)} tasks are still open {days_overdue} days past the end date.")
+    elif near_or_past and len(open_tasks) > 0:
+        notes.append(f"{len(open_tasks)} of {len(tasks)} tasks are still open as the deadline approaches.")
+    if stalled:
+        notes.append(f"{len(stalled)} task{'s' if len(stalled) != 1 else ''} not started (no time logged yet).")
+
+    return ProjectTaskBreakdownResponse(
+        project_id=project.id, project_name=project.name,
+        total_tasks=len(tasks), done_tasks=len(done), open_tasks=len(open_tasks),
+        total_hours=total_hours, is_overdue=is_overdue, days_overdue=days_overdue,
+        top_tasks=top_tasks, unfinished_at_deadline=unfinished[:6],
+        stalled_tasks=stalled[:6], by_person=by_person, notes=notes,
+    )
 
 
 @router.get("/evm", response_model=EvmResponse)

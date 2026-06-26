@@ -17,8 +17,6 @@ import { Card, Pager, StatTile, TonePill, WorkspaceHeader } from '@/components/u
 import { useClientPagination } from '@/hooks/useClientPagination';
 import { fmtMoney } from '@/lib/format';
 import { ProjectMatrixReport } from '@/components/dashboard/reports/ProjectMatrixReport';
-import { ProjectHealthReport } from '@/components/dashboard/reports/ProjectHealthReport';
-import { FinancialsReport } from '@/components/dashboard/reports/FinancialsReport';
 import { ReportModal } from '@/components/dashboard/reports/ReportModal';
 import { ManagerDashboardCustomizer } from '@/components/dashboard/ManagerDashboardCustomizer';
 import { ManagerClientsWidget } from '@/components/dashboard/ManagerClientsWidget';
@@ -37,7 +35,7 @@ import { useIngestionTimesheets } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import { EmployeeWidgets } from '@/components/dashboard/EmployeeWidgets';
-import { InfoLabel, infoFor } from '@/components/dashboard/InfoLabel';
+import { InfoLabel, HealthInfoLabel, infoTextFor } from '@/components/dashboard/InfoLabel';
 import { QuickLogButton } from '@/components/my-time/QuickLogButton';
 import { AdminOrgStats } from '@/components/dashboard/AdminOrgStats';
 import { ManagerConversation } from '@/components/dashboard/ManagerConversation';
@@ -377,8 +375,6 @@ export function DashboardPage() {
   const [rosterOpen, setRosterOpen] = useState(true);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   // Drill-down report modals for the inline tiles (matrix owns its own).
-  const [healthReportOpen, setHealthReportOpen] = useState(false);
-  const [financialsReportOpen, setFinancialsReportOpen] = useState(false);
   // Per-user tile customization (show/hide, order, columns). Persisted server-side.
   const dashPrefs = useManagerDashboardPrefs();
   // Ingestion review is available to can_review non-admins; surfaces the inbox
@@ -496,7 +492,7 @@ export function DashboardPage() {
               tone="primary"
               value={`${onTrack}/${overview?.team_size ?? 0}`}
               label="Team on track"
-              info={infoFor('Team on track')}
+              info={infoTextFor('Team on track')}
               hint="as of today"
             />
             <StatTile
@@ -504,7 +500,7 @@ export function DashboardPage() {
               tone="amber"
               value={pending}
               label="Approvals pending"
-              info={infoFor('Approvals pending')}
+              info={infoTextFor('Approvals pending')}
               hint={
                 overview?.pending_approvals_oldest_hours != null
                   ? describeAge(overview.pending_approvals_oldest_hours)
@@ -517,7 +513,7 @@ export function DashboardPage() {
               tone="sky"
               value={ptoThisWeek}
               label="PTO this week"
-              info={infoFor('PTO this week')}
+              info={infoTextFor('PTO this week')}
               hint={`${overview?.pending_time_off_count ?? 0} requests pending`}
             />
             <StatTile
@@ -525,7 +521,7 @@ export function DashboardPage() {
               tone="emerald"
               value={overview?.rejected_recent_count ?? 0}
               label="Recent rejections"
-              info={infoFor('Recent rejections')}
+              info={infoTextFor('Recent rejections')}
               hint={overview?.rejected_recent_count ? 'needs follow-up' : 'all clear'}
             />
           </div>
@@ -545,7 +541,7 @@ export function DashboardPage() {
                 {projects.data && projects.data.rows.length > 0 ? (
                   <button
                     type="button"
-                    onClick={() => setHealthReportOpen(true)}
+                    onClick={() => navigate('/insights?tab=portfolio')}
                     className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
                   >
                     View report <ChevronRight className="h-3.5 w-3.5" />
@@ -564,14 +560,17 @@ export function DashboardPage() {
               </div>
             ) : (
               <div className="overflow-x-auto">
+                {(() => {
+                  const showCol = (c: string) => !dashPrefs.isColumnHidden('project-health', c);
+                  return (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                       <th className="px-4 py-2 font-semibold">Project</th>
-                      <th className="px-4 py-2 font-semibold">Client</th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours this week" /></th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget" /></th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Health" /></th>
+                      {showCol('client') ? <th className="px-4 py-2 font-semibold">Client</th> : null}
+                      {showCol('hours_this_week') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours this week" /></th> : null}
+                      {showCol('budget') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget burn" /></th> : null}
+                      <th className="px-4 py-2 font-semibold"><HealthInfoLabel /></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -585,15 +584,21 @@ export function DashboardPage() {
                           <td className="px-4 py-3 font-medium text-foreground">
                             {row.project_name}
                           </td>
+                          {showCol('client') ? (
                           <td className="px-4 py-3 text-muted-foreground">
                             {row.client_name}
                           </td>
+                          ) : null}
+                          {showCol('hours_this_week') ? (
                           <td className="px-4 py-3 tabular-nums text-foreground">
                             {Math.round(Number(row.hours_this_week))}h
                           </td>
+                          ) : null}
+                          {showCol('budget') ? (
                           <td className="px-4 py-3 text-muted-foreground">
                             {row.budget_pct != null ? `${row.budget_pct}%` : 'N/A'}
                           </td>
+                          ) : null}
                           <td className="px-4 py-3">
                             <TonePill tone={meta.tone}>{meta.label}</TonePill>
                           </td>
@@ -602,6 +607,8 @@ export function DashboardPage() {
                     })}
                   </tbody>
                 </table>
+                  );
+                })()}
               </div>
             )}
           </Card>
@@ -621,7 +628,7 @@ export function DashboardPage() {
                   <p className="hidden text-xs text-muted-foreground sm:block">Approved time × rate · revenue, budget &amp; contract burn</p>
                   <button
                     type="button"
-                    onClick={() => setFinancialsReportOpen(true)}
+                    onClick={() => navigate('/insights?tab=financials')}
                     className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
                   >
                     View report <ChevronRight className="h-3.5 w-3.5" />
@@ -644,15 +651,18 @@ export function DashboardPage() {
               </div>
               {/* Per-project rows */}
               <div className="overflow-x-auto">
+                {(() => {
+                  const showCol = (c: string) => !dashPrefs.isColumnHidden('financials', c);
+                  return (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                       <th className="px-4 py-2 font-semibold">Project</th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours" /></th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Revenue" /></th>
+                      {showCol('hours') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Hours" /></th> : null}
+                      {showCol('revenue') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Revenue" /></th> : null}
                       <th className="px-4 py-2 font-semibold"><InfoLabel label="Margin" /></th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget used" /></th>
-                      <th className="px-4 py-2 font-semibold"><InfoLabel label="Contract used" /></th>
+                      {showCol('budget_used') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Budget burn" /></th> : null}
+                      {showCol('contract_used') ? <th className="px-4 py-2 font-semibold"><InfoLabel label="Contract billed" /></th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -662,13 +672,14 @@ export function DashboardPage() {
                           <div className="font-medium text-foreground">{row.project_name}</div>
                           <div className="text-[11px] text-muted-foreground">{row.client_name}</div>
                         </td>
-                        <td className="px-4 py-3 tabular-nums text-foreground">{Math.round(Number(row.approved_hours))}h</td>
-                        <td className="px-4 py-3 tabular-nums font-semibold text-foreground">{fmtMoney(row.revenue, row.currency)}</td>
+                        {showCol('hours') ? <td className="px-4 py-3 tabular-nums text-foreground">{Math.round(Number(row.approved_hours))}h</td> : null}
+                        {showCol('revenue') ? <td className="px-4 py-3 tabular-nums font-semibold text-foreground">{fmtMoney(row.revenue, row.currency)}</td> : null}
                         <td className="px-4 py-3 tabular-nums">
                           {row.margin_pct != null ? (
                             <span className={cn('font-semibold', marginTone(row.margin_pct))}>{row.margin_pct}%</span>
                           ) : <span className="text-muted-foreground">N/A</span>}
                         </td>
+                        {showCol('budget_used') ? (
                         <td className="px-4 py-3">
                           {row.budget_used_pct != null ? (
                             <span className="inline-flex items-center gap-1.5">
@@ -677,6 +688,8 @@ export function DashboardPage() {
                             </span>
                           ) : <span className="text-muted-foreground">N/A</span>}
                         </td>
+                        ) : null}
+                        {showCol('contract_used') ? (
                         <td className="px-4 py-3">
                           {row.contract_used_pct != null ? (
                             <span className="inline-flex items-center gap-1.5" title={row.contract_title ?? undefined}>
@@ -685,10 +698,13 @@ export function DashboardPage() {
                             </span>
                           ) : <span className="text-muted-foreground">—</span>}
                         </td>
+                        ) : null}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                  );
+                })()}
               </div>
             </Card>
           ) : null;
@@ -794,16 +810,6 @@ export function DashboardPage() {
       )}
 
       <ManagerDashboardCustomizer open={customizeOpen} onClose={() => setCustomizeOpen(false)} />
-      {projects.data ? (
-        <ReportModal open={healthReportOpen} onClose={() => setHealthReportOpen(false)} title="Project health">
-          <ProjectHealthReport data={projects.data} />
-        </ReportModal>
-      ) : null}
-      {financials.data ? (
-        <ReportModal open={financialsReportOpen} onClose={() => setFinancialsReportOpen(false)} title="Financials">
-          <FinancialsReport data={financials.data} />
-        </ReportModal>
-      ) : null}
     </div>
   );
 }
