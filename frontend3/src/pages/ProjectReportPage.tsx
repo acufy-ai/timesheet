@@ -326,7 +326,7 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
       <div className="grid gap-px bg-border md:grid-cols-2">
         {/* Where the hours/$ went */}
         <div className="bg-card px-4 py-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Where the time went</p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top tasks by hours</p>
           {data.top_tasks.length ? (
             <ul className="space-y-2">
               {data.top_tasks.map((t) => (
@@ -351,7 +351,7 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
           {hasUnfinished ? (
             <div>
               <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Still open {data.is_overdue ? 'past the deadline' : 'near the deadline'}
+                Unfinished tasks {data.is_overdue ? '· past the deadline' : '· near the deadline'}
               </p>
               <ul className="space-y-1">
                 {data.unfinished_at_deadline.map((t) => (
@@ -366,7 +366,7 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
 
           {hasStalled ? (
             <div>
-              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Not started</p>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Tasks not started yet</p>
               <p className="text-sm text-muted-foreground">
                 {data.stalled_tasks.map((t) => t.name).join(', ')}
               </p>
