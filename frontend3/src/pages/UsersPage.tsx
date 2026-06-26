@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, Download, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
+import { Download, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
 
-import { Button, Card, Empty, Input, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, Input, Toast, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   useAssignableUsers,
@@ -322,9 +321,13 @@ export function UsersPage() {
           {isAdmin && orgChartOpen ? (
             <Card className="p-4"><OrgChart users={scoped} currentUserId={user?.id} /></Card>
           ) : (
-            <div className="grid min-h-0 flex-1 grid-cols-[340px_1fr] gap-5">
+            // Single column on narrow screens (list stacks above detail, page
+            // scrolls); the fixed-height two-pane layout with internal scroll
+            // kicks in at lg. Below lg the rail caps its height so the detail
+            // pane is reachable without a long scroll past every person.
+            <div className="grid grid-cols-1 gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]">
               {/* Left rail */}
-              <Card className="flex min-h-0 flex-col overflow-hidden p-0">
+              <Card className="flex max-h-[70vh] flex-col overflow-hidden p-0 lg:max-h-none lg:min-h-0">
                 <div className="space-y-2.5 px-4 pb-2.5 pt-4">
                   <div className="flex items-center gap-2">
                     <h2 className="text-[15px] font-bold uppercase tracking-wide text-muted-foreground">{isAdmin ? 'Users' : 'My Team'}</h2>
@@ -381,8 +384,8 @@ export function UsersPage() {
                 />
               </Card>
 
-              {/* Detail pane */}
-              <div className="min-h-0 overflow-y-auto">
+              {/* Detail pane — flows with the page on mobile; scrolls internally at lg. */}
+              <div className="lg:min-h-0 lg:overflow-y-auto">
                 {activeUser ? (
                   <UserDetail
                     user={activeUser}
@@ -420,32 +423,8 @@ export function UsersPage() {
         </>
       ) : null}
 
-      {/* Transient toast, bottom-right. Portaled so it floats over content and
-          never shifts the page (the new-user detail stays visible behind it).
-          Auto-dismisses via flashAndFade's timer; click to dismiss early. */}
-      {flash
-        ? createPortal(
-            <div className="pointer-events-none fixed bottom-5 right-5 z-[120] flex max-w-sm flex-col items-end gap-2">
-              <button
-                type="button"
-                onClick={() => setFlash(null)}
-                role="status"
-                className={cn(
-                  'pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm shadow-lg backdrop-blur-sm animate-in fade-in-0 slide-in-from-bottom-2',
-                  flash.tone === 'ok'
-                    ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                    : 'border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300',
-                )}
-              >
-                {flash.tone === 'ok'
-                  ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                  : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                <span className="text-left">{flash.text}</span>
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
+      {/* Transient bottom-right toast (auto-dismisses via flashAndFade). */}
+      {flash ? <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} /> : null}
     </div>
   );
 }

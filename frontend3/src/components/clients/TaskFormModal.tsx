@@ -75,7 +75,7 @@ export function TaskFormModal({
   const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-lg">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-lg" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">
           <div>

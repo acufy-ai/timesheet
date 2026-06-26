@@ -13,12 +13,17 @@ export function Modal({
   title,
   children,
   className,
+  flushBottom = false,
 }: {
   open: boolean;
   onClose: () => void;
   title?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** Set when the modal's content ends in its OWN sticky bottom-0 footer (which
+   * supplies pb-4 and seals the bottom). Those modals want a flush body so the
+   * footer reaches the edge. Everything else gets symmetric bottom padding. */
+  flushBottom?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -64,9 +69,10 @@ export function Modal({
             </button>
           </div>
         ) : null}
-        {/* No bottom padding: a sticky form footer supplies its own pb-4 and
-            seals the bottom, so scrolled content can't peek beneath it. */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-0 pt-4">{children}</div>
+        {/* Symmetric padding by default (pt-4/pb-4). flushBottom=true switches
+            to pb-0 for modals that end in their own sticky footer, which supplies
+            pb-4 and seals the bottom so scrolled content can't peek beneath it. */}
+        <div className={cn('min-h-0 flex-1 overflow-y-auto px-4 pt-4', flushBottom ? 'pb-0' : 'pb-4')}>{children}</div>
       </div>
     </div>
   );

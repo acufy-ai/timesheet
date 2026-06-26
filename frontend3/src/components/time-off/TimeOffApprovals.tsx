@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 
-import { Button, Card, Empty, Modal, StatusBadge } from '@/components/ui';
+import { Button, Card, Empty, Modal, StatusBadge, Toast } from '@/components/ui';
 import {
   useApproveTimeOff,
   useLeaveTypes,
@@ -61,9 +61,7 @@ export function TimeOffApprovals({ enabled = true }: { enabled?: boolean }) {
   return (
     <div className="space-y-4">
       {flash ? (
-        <div role="alert" className={'rounded-xl border px-3 py-2 text-sm ' + (flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       <Card>

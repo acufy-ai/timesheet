@@ -197,7 +197,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
     'h-10 w-full rounded-full border border-border bg-transparent px-4 text-[15px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20';
 
   return (
-    <Modal open={open} onClose={onClose} title="Export data" className="max-w-4xl">
+    <Modal open={open} onClose={onClose} title="Export data" className="max-w-4xl" flushBottom>
       <div className="space-y-5">
         <div className="space-y-5">
           {/* What to export */}

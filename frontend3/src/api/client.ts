@@ -435,6 +435,8 @@ export const projectsApi = {
   create: (data: ProjectBody) => api.post<FullProject>('/projects', data),
   update: (id: number, data: ProjectBody) => api.put<FullProject>(`/projects/${id}`, data),
   remove: (id: number) => api.delete(`/projects/${id}`),
+  archive: (id: number) => api.post<FullProject>(`/projects/${id}/archive`),
+  unarchive: (id: number) => api.post<FullProject>(`/projects/${id}/unarchive`),
 };
 
 export const tasksApi = {

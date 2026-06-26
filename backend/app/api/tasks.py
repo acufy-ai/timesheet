@@ -21,10 +21,24 @@ from app.crud.project import (
     set_project_managers,
 )
 from app.models.assignments import TaskAssignee
+from app.models.task import Task
 from app.models.user import User, UserRole
 from app.api._client_access import require_client_manager, assert_client_access, visible_client_ids
 from app.api.users import _get_descendant_user_ids
-from app.schemas import TaskCreate, TaskProgressUpdate, TaskResponse, TaskUpdate, TaskWithProject
+from app.schemas import (
+    TaskCreate,
+    TaskDependencyCreate,
+    TaskDependencyResponse,
+    TaskProgressUpdate,
+    TaskResponse,
+    TaskUpdate,
+    TaskWithProject,
+)
+from app.crud.task_dependency import (
+    create_dependency,
+    delete_dependency,
+    list_dependencies_for_project,
+)
 from sqlalchemy.future import select
 from sqlalchemy import or_
 
@@ -223,6 +237,10 @@ async def create_task_endpoint(
         is_active=payload.is_active,
         priority=payload.priority,
         status=payload.status,
+        estimated_hours=payload.estimated_hours,
+        start_date=payload.start_date,
+        due_date=payload.due_date,
+        blocked_reason=payload.blocked_reason,
     )
     if payload.assignee_ids is not None:
         await set_task_assignees(db, new_task, payload.assignee_ids)
@@ -307,6 +325,15 @@ async def update_task_endpoint(
                     detail="You can only assign people you manage (yourself or your reports).",
                 )
 
+    # Phase 2 nullable fields: only forward a field when the client explicitly
+    # sent it, so an omitted field is left untouched while an explicit null
+    # clears it (handled via the _UNSET sentinel in update_task).
+    sent = payload.model_fields_set
+    phase2 = {
+        k: getattr(payload, k)
+        for k in ("estimated_hours", "start_date", "due_date", "blocked_reason")
+        if k in sent
+    }
     updated_task = await update_task(
         db,
         task,
@@ -317,6 +344,7 @@ async def update_task_endpoint(
         project_id=payload.project_id,
         priority=payload.priority,
         status=payload.status,
+        **phase2,
     )
     if payload.assignee_ids is not None:
         await set_task_assignees(db, updated_task, payload.assignee_ids)
@@ -373,12 +401,19 @@ async def update_task_progress(
             detail="You can only update tasks assigned to you.",
         )
 
+    sent = payload.model_fields_set
     if payload.status is not None:
         try:
             task.status = TaskStatus(payload.status)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid status")
+        # Moving OFF blocked clears the now-stale reason (unless the same request
+        # also explicitly sets one, handled below).
+        if task.status != TaskStatus.blocked and "blocked_reason" not in sent:
+            task.blocked_reason = None
+    if "blocked_reason" in sent:
+        task.blocked_reason = (payload.blocked_reason or "").strip() or None
     if payload.description is not None:
         task.description = payload.description.strip() or None
     db.add(task)
@@ -406,6 +441,7 @@ async def update_task_progress(
         "id": task.id,
         "status": task.status.value if hasattr(task.status, "value") else (str(task.status) if task.status else None),
         "description": task.description,
+        "blocked_reason": task.blocked_reason,
     }
 
 
@@ -448,3 +484,101 @@ async def delete_task_endpoint(
                 )
             ],
         )
+
+
+# ── Task dependencies (Phase 2, part 4) ──────────────────────────────────────
+async def _dependency_to_response(db: AsyncSession, dep) -> TaskDependencyResponse:
+    """Attach task names for display. One small query over the two endpoints."""
+    names = {
+        tid: name
+        for tid, name in (await db.execute(
+            select(Task.id, Task.name).where(
+                Task.id.in_([dep.task_id, dep.depends_on_task_id])
+            )
+        )).all()
+    }
+    return TaskDependencyResponse(
+        id=dep.id,
+        task_id=dep.task_id,
+        depends_on_task_id=dep.depends_on_task_id,
+        reason=dep.reason,
+        task_name=names.get(dep.task_id),
+        depends_on_task_name=names.get(dep.depends_on_task_id),
+    )
+
+
+@router.get("/dependencies/project/{project_id}", response_model=list[TaskDependencyResponse])
+async def list_task_dependencies(
+    project_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """All dependency edges for a project's tasks. Manager scope: caller must
+    have client access to the project (mirrors the task list)."""
+    project = await get_project_by_id(db, project_id, tenant_id=current_user.tenant_id)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+        await assert_client_access(db, current_user, project.client_id)
+
+    deps = await list_dependencies_for_project(db, project_id, current_user.tenant_id)
+    if not deps:
+        return []
+    # Resolve all names in one query rather than per-edge.
+    ids = {d.task_id for d in deps} | {d.depends_on_task_id for d in deps}
+    names = {
+        tid: name
+        for tid, name in (await db.execute(
+            select(Task.id, Task.name).where(Task.id.in_(list(ids)))
+        )).all()
+    }
+    return [
+        TaskDependencyResponse(
+            id=d.id, task_id=d.task_id, depends_on_task_id=d.depends_on_task_id,
+            reason=d.reason, task_name=names.get(d.task_id),
+            depends_on_task_name=names.get(d.depends_on_task_id),
+        )
+        for d in deps
+    ]
+
+
+@router.post("/dependencies", response_model=TaskDependencyResponse, status_code=status.HTTP_201_CREATED)
+async def create_task_dependency(
+    payload: TaskDependencyCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create an edge: ``task_id`` depends on ``depends_on_task_id``. Manager-only
+    (mirrors task edit). Both tasks must be in the same project and the caller
+    must have client access to it. Self-edges, duplicates and cycles are 400."""
+    require_client_manager(current_user)
+    task = await get_task_by_id(db, payload.task_id, tenant_id=current_user.tenant_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    project = await get_project_by_id(db, task.project_id, tenant_id=current_user.tenant_id)
+    if project:
+        await assert_client_access(db, current_user, project.client_id)
+
+    try:
+        dep = await create_dependency(
+            db,
+            tenant_id=current_user.tenant_id,
+            task_id=payload.task_id,
+            depends_on_task_id=payload.depends_on_task_id,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _dependency_to_response(db, dep)
+
+
+@router.delete("/dependencies/{dependency_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task_dependency(
+    dependency_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_client_manager(current_user)
+    ok = await delete_dependency(db, dependency_id, current_user.tenant_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dependency not found")

@@ -6,14 +6,13 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
-  Loader2,
   SlidersHorizontal,
   TreePalm,
   Users,
 } from 'lucide-react';
 import { Navigate, useNavigate } from 'react-router-dom';
 
-import { Card, Pager, StatTile, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Card, Pager, Skeleton, StatTile, TableSkeleton, TonePill, WorkspaceHeader } from '@/components/ui';
 import { useClientPagination } from '@/hooks/useClientPagination';
 import { fmtMoney } from '@/lib/format';
 import { ProjectMatrixReport } from '@/components/dashboard/reports/ProjectMatrixReport';
@@ -477,8 +476,16 @@ export function DashboardPage() {
 
       {/* Manager stat tiles + project health + roster (team view only). */}
       {noTeamAccess || managerView === 'mine' ? null : loading ? (
-        <div className="grid place-items-center rounded-2xl border border-border bg-card py-16 text-muted-foreground">
-          <Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" />
+        <div className="space-y-5" role="status" aria-label="Loading dashboard">
+          {/* Mirror the real layout: a row of stat tiles over the project table. */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-24 rounded-2xl" />
+            ))}
+          </div>
+          <Card className="overflow-hidden p-0">
+            <TableSkeleton rows={5} cols={5} />
+          </Card>
         </div>
       ) : hardError ? (
         <Card className="px-4 py-6 text-sm text-rose-600 dark:text-rose-300">
@@ -550,9 +557,7 @@ export function DashboardPage() {
               </div>
             </div>
             {projects.isLoading ? (
-              <div className="grid place-items-center py-10 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" />
-              </div>
+              <TableSkeleton rows={5} cols={5} />
             ) : !projects.data || projects.data.rows.length === 0 ? (
               <div className="flex flex-col items-center gap-2 py-10 text-center">
                 <AlertTriangle className="h-5 w-5 text-muted-foreground" />

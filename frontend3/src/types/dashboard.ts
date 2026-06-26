@@ -205,12 +205,28 @@ export interface TaskBreakdownTask {
   revenue: string | number;
   pct_of_hours: number;
   assignees: string[];
+  // Phase 2 causal fields. null = not captured (unknown), never zero/overdue.
+  estimated_hours?: string | number | null;
+  due_date?: string | null;
+  blocked_reason?: string | null;
+  over_estimate_hours?: string | number | null;
+  over_estimate_pct?: number | null;
+  days_overdue?: number | null;
 }
 export interface TaskBreakdownPerson {
   user_id: number;
   full_name: string;
   hours: string | number;
   pct_of_hours: number;
+}
+export interface TaskBlockingEdge {
+  task_id: number;
+  task_name: string;
+  depends_on_task_id: number;
+  depends_on_task_name: string;
+  reason?: string | null;
+  blocker_open: boolean;
+  dependent_started?: boolean;
 }
 export interface ProjectTaskBreakdown {
   project_id: number;
@@ -225,6 +241,12 @@ export interface ProjectTaskBreakdown {
   unfinished_at_deadline: TaskBreakdownTask[];
   stalled_tasks: TaskBreakdownTask[];
   by_person: TaskBreakdownPerson[];
+  // Phase 2 cause signals (empty until the data is captured).
+  blocked_tasks: TaskBreakdownTask[];
+  over_estimate_tasks: TaskBreakdownTask[];
+  overdue_tasks: TaskBreakdownTask[];
+  blocking_chains: TaskBlockingEdge[];
+  has_causal_data: boolean;
   notes: string[];
 }
 

@@ -4,6 +4,7 @@ from .client import Client
 from .client_email_domain import ClientEmailDomain
 from .project import Project
 from .task import Task
+from .task_dependency import TaskDependency
 from .time_entry import TimeEntry, TimeEntryEditHistory
 from .time_off_request import TimeOffRequest
 from .assignments import EmployeeManagerAssignment, UserProjectAccess, UserTaskAccess, TaskAssignee, ProjectManager
@@ -50,4 +51,4 @@ __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "
            "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
            "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
            "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview",
-           "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig"]
+           "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig", "TaskDependency"]

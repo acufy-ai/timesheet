@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Eye, EyeOff, KeyRound, Loader2, Users } from 'lucide-react';
 
-import { Button, Card, Input, RoleBadge, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Input, RoleBadge, Toast, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChangePassword, useMyProfile, useUpdateProfile } from '@/hooks/useAdmin';
 import { avatarTone, initials } from '@/lib/avatar';
@@ -100,9 +100,7 @@ export function ProfilePage() {
       <WorkspaceHeader title="Profile" description="Your account details." />
 
       {flash ? (
-        <div role="alert" className={'rounded-xl border px-3 py-2 text-sm ' + (flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {/* Identity + roles */}

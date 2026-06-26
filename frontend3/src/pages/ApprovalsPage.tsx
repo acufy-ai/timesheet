@@ -15,7 +15,7 @@ import {
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { Button, Card, Empty, Input, Modal, StatusBadge, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, Empty, Input, Modal, StatusBadge, TableSkeleton, Toast, WorkspaceHeader } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { useBatchApprove, useBatchReject, usePendingApprovals } from '@/hooks/useApprovals';
@@ -410,7 +410,11 @@ function ApprovalsShell({ tab, weekStartDay }: { tab: Exclude<Tab, 'timeoff'>; w
   const multiEmp = selectedEmpCount > 1;
 
   if (active.isLoading) {
-    return <div className="grid place-items-center rounded-2xl border border-border bg-card py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
+    return (
+      <Card className="overflow-hidden p-0">
+        <TableSkeleton rows={6} cols={5} />
+      </Card>
+    );
   }
   if (active.isError) {
     return <Card className="px-4 py-6 text-sm text-rose-600 dark:text-rose-300">Couldn't load. Try refreshing.</Card>;
@@ -461,9 +465,7 @@ function ApprovalsShell({ tab, weekStartDay }: { tab: Exclude<Tab, 'timeoff'>; w
 
       {/* Action result confirmation (success or per-week failure list). */}
       {bulkResult ? (
-        <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm', bulkResult.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {bulkResult.text}
-        </div>
+        <Toast tone={bulkResult.tone} message={bulkResult.text} onDismiss={() => setBulkResult(null)} />
       ) : null}
 
       {employees.length === 0 ? (

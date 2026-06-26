@@ -451,6 +451,14 @@ export function useDeleteProject() {
     onSuccess: () => { invalidateProjects(qc); invalidateTasks(qc); },
   });
 }
+export function useArchiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, archived }: { id: number; archived: boolean }) =>
+      (archived ? projectsApi.archive(id) : projectsApi.unarchive(id)).then((r) => r.data),
+    onSuccess: () => invalidateProjects(qc),
+  });
+}
 
 export function useCreateTask() {
   const qc = useQueryClient();

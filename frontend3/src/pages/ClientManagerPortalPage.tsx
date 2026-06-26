@@ -4,7 +4,7 @@ import {
   Briefcase, Check, ChevronRight, Folder, Loader2, Plus, ShieldCheck, UserPlus, Users, X,
 } from 'lucide-react';
 
-import { Button, Card, Empty, FieldError, RequiredMark, TonePill, errorBorder } from '@/components/ui';
+import { Button, Card, Empty, FieldError, RequiredMark, Toast, TonePill, errorBorder } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { clientPortalApi } from '@/api/client';
 import { ClientWorkView } from '@/pages/ClientPortalPage';
@@ -69,11 +69,7 @@ export function ClientManagerPortalPage() {
       </div>
 
       {flash ? (
-        <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm',
-          flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-            : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {/* Tabs */}

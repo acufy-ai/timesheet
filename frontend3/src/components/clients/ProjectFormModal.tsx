@@ -140,7 +140,7 @@ export function ProjectFormModal({
   const labelClass = 'mb-1 block text-[13px] font-medium text-muted-foreground';
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">

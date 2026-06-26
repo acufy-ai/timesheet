@@ -84,6 +84,20 @@ export function infoFor(label: string): string | RichTipSpec | undefined {
   return GLOSSARY[label.trim().toLowerCase()];
 }
 
+// Columns whose meaning is self-evident keep the hover tooltip (for the exact
+// formula / edge cases) but DROP the visible info icon — a row of ℹ next to
+// "Revenue", "Hours", "Cost" is just noise. The icon is reserved for the jargon
+// that genuinely needs to advertise "there's an explanation here": budget burn,
+// contract billed, margin, and the EVM ratios (PV/EV/AC/CPI/SPI/EAC/EAC).
+const OBVIOUS_LABELS = new Set([
+  'revenue', 'cost', 'hours', 'approved', 'approved hours', 'billable', 'total',
+  'budget tracked', 'budget used', 'budget', 'hours this week', 'recognized', 'billed',
+]);
+
+function showsIcon(label: string): boolean {
+  return !OBVIOUS_LABELS.has(label.trim().toLowerCase());
+}
+
 // Plain-text version of a glossary entry, for non-tooltip callers (e.g. a stat
 // tile's `info` prop that only takes a string). Flattens a RichTipSpec.
 export function infoTextFor(label: string): string | undefined {
@@ -108,11 +122,12 @@ export function InfoLabel({
   const desc = infoFor(label);
   if (!desc) return <span className={className}>{label}</span>;
   const content = typeof desc === 'string' ? desc : <RichTip {...desc} />;
+  const withIcon = showsIcon(label);
   return (
     <Tooltip label={content} side={side} maxWidth={typeof desc === 'string' ? 260 : undefined}>
       <span className={cn('inline-flex cursor-help items-center gap-1', className)}>
         {label}
-        <Info className="h-3 w-3 shrink-0 opacity-60" aria-hidden="true" />
+        {withIcon ? <Info className="h-3 w-3 shrink-0 opacity-60" aria-hidden="true" /> : null}
       </span>
     </Tooltip>
   );

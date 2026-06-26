@@ -47,7 +47,7 @@ export function LogEntryModal() {
   }
 
   return (
-    <Modal open onClose={discard} title="Log tracked time" className="max-w-3xl">
+    <Modal open onClose={discard} title="Log tracked time" className="max-w-3xl" flushBottom>
       <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
         <div className="md:col-span-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-center">
           <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{formatElapsed(elapsedMs)}</p>

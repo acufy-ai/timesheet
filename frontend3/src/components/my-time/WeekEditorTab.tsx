@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { Button, Card } from '@/components/ui';
+import { Button, Card, Toast } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { timeApi } from '@/api/client';
 import {
@@ -567,19 +567,8 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
         </div>
       ) : null}
 
-      {/* Flash */}
       {flash ? (
-        <div
-          role="alert"
-          className={
-            'rounded-xl border px-3 py-2 text-sm ' +
-            (flash.tone === 'ok'
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')
-          }
-        >
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       {/* Three-column body */}

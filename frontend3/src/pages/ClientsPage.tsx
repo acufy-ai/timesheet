@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import {
   Briefcase,
+  Archive,
+  ArchiveRestore,
   Calendar,
   Check,
   ChevronDown,
@@ -34,7 +36,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { contractsApi, clientPortalApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Button, Card, Empty, Input, Modal, TonePill, WorkspaceHeader, RequiredMark, FieldError, errorBorder } from '@/components/ui';
+import { Button, Card, Empty, Input, ListSkeleton, Modal, Toast, TonePill, WorkspaceHeader, RequiredMark, FieldError, errorBorder } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
 import { ImportClientsModal } from '@/components/clients/ImportClientsModal';
@@ -60,6 +62,7 @@ import {
   useDeleteContract,
   useDeleteContractDocument,
   useDeleteProject,
+  useArchiveProject,
   useDeleteRoleRate,
   useDeleteTask,
   useNextProjectCode,
@@ -104,6 +107,18 @@ import type {
   TaskPriority,
   TaskStatus,
 } from '@/types/admin';
+
+// Confirm-dialog payload. `danger` (default true) drives the destructive red +
+// "Delete" styling; non-destructive actions (archive) pass danger:false with
+// their own label/icon.
+type ConfirmState = {
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  danger?: boolean;
+  confirmLabel?: string;
+  confirmIcon?: typeof Pencil;
+};
 
 // ─────────────────────────────────────────────────────────────────────────
 //  Client Management — master-detail redesign.
@@ -197,11 +212,13 @@ const CONTRACT_STATUS_TONE: Record<ContractStatus, Tone> = {
 const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   to_do: 'To do',
   in_progress: 'In progress',
+  blocked: 'Blocked',
   done: 'Done',
 };
 const TASK_STATUS_TONE: Record<TaskStatus, Tone> = {
   to_do: 'neutral',
   in_progress: 'brand',
+  blocked: 'danger',
   done: 'success',
 };
 const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -239,6 +256,7 @@ export function ClientsPage() {
 
   const delClient = useDeleteClient();
   const delProject = useDeleteProject();
+  const archiveProjectMut = useArchiveProject();
   const delTask = useDeleteTask();
 
   // Selected client + tab are persisted in the URL (?client=<id>&tab=<tab>) so a
@@ -276,7 +294,7 @@ export function ClientsPage() {
   const [typeFilter, setTypeFilter] = useState<'all' | 'internal' | 'external'>('all');
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
-  const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
 
   const [clientModal, setClientModal] = useState<{ open: boolean; client: Client | null }>({ open: false, client: null });
   const [importing, setImporting] = useState(false);
@@ -434,6 +452,31 @@ export function ClientsPage() {
       },
     });
   }
+  // Archive hides the project from active + loggable lists (no new time) but
+  // keeps its history; reversible. Confirm on archive (it stops logging);
+  // unarchive is immediate.
+  async function archiveProject(p: FullProject) {
+    const run = async () => {
+      try {
+        await archiveProjectMut.mutateAsync({ id: p.id, archived: p.is_active });
+        flashAndFade('ok', p.is_active ? `"${p.name}" archived.` : `"${p.name}" restored.`);
+      } catch (e) {
+        flashAndFade('err', errText(e, 'Could not update the project.'));
+      }
+    };
+    if (p.is_active) {
+      setConfirm({
+        title: 'Archive project?',
+        message: `"${p.name}" will be hidden from active lists and no new time can be logged against it. Its history stays, and you can restore it anytime.`,
+        onConfirm: run,
+        danger: false,
+        confirmLabel: 'Archive',
+        confirmIcon: Archive,
+      });
+    } else {
+      await run();
+    }
+  }
   function removeTask(t: FullTask) {
     setConfirm({
       title: 'Delete task?',
@@ -505,17 +548,7 @@ export function ClientsPage() {
       />
 
       {flash ? (
-        <div
-          role="alert"
-          className={cn(
-            'rounded-xl border px-3 py-2 text-sm',
-            flash.tone === 'ok'
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300',
-          )}
-        >
-          {flash.text}
-        </div>
+        <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
@@ -546,9 +579,7 @@ export function ClientsPage() {
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {clientsQ.isLoading ? (
-              <div className="grid place-items-center py-12 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" />
-              </div>
+              <ListSkeleton rows={7} />
             ) : filtered.length === 0 ? (
               <p className="px-3 py-8 text-center text-sm text-muted-foreground">No clients match your search.</p>
             ) : (
@@ -617,6 +648,7 @@ export function ClientsPage() {
                   onAddProject={() => setProjectModal({ open: true, project: null })}
                   onEditProject={(p) => setProjectModal({ open: true, project: p })}
                   onDeleteProject={(p) => void removeProject(p)}
+                  onArchiveProject={(p) => void archiveProject(p)}
                   onAddTask={(p) => setTaskModal({ open: true, project: p, task: null })}
                   onEditTask={(p, t) => setTaskModal({ open: true, project: p, task: t })}
                   onDeleteTask={(t) => void removeTask(t)}
@@ -820,6 +852,7 @@ function ProjectsTab({
   onAddProject,
   onEditProject,
   onDeleteProject,
+  onArchiveProject,
   onAddTask,
   onEditTask,
   onDeleteTask,
@@ -834,6 +867,7 @@ function ProjectsTab({
   onAddProject: () => void;
   onEditProject: (p: FullProject) => void;
   onDeleteProject: (p: FullProject) => void;
+  onArchiveProject: (p: FullProject) => void;
   onAddTask: (p: FullProject) => void;
   onEditTask: (p: FullProject, t: FullTask) => void;
   onDeleteTask: (t: FullTask) => void;
@@ -873,6 +907,7 @@ function ProjectsTab({
             onToggle={() => onToggle(p.id)}
             onEdit={() => onEditProject(p)}
             onDelete={() => onDeleteProject(p)}
+            onArchive={() => onArchiveProject(p)}
             onAddTask={() => onAddTask(p)}
             onEditTask={(t) => onEditTask(p, t)}
             onDeleteTask={onDeleteTask}
@@ -891,6 +926,7 @@ function ProjectCard({
   onToggle,
   onEdit,
   onDelete,
+  onArchive,
   onAddTask,
   onEditTask,
   onDeleteTask,
@@ -902,6 +938,7 @@ function ProjectCard({
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onArchive: () => void;
   onAddTask: () => void;
   onEditTask: (t: FullTask) => void;
   onDeleteTask: (t: FullTask) => void;
@@ -943,7 +980,7 @@ function ProjectCard({
             <div className="flex flex-wrap items-center gap-2">
               <p className="truncate text-sm font-semibold text-foreground">{project.name}</p>
               {project.code ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{project.code}</span> : null}
-              {!project.is_active ? <TonePill tone="neutral">Inactive</TonePill> : null}
+              {!project.is_active ? <TonePill tone="neutral">Archived</TonePill> : null}
             </div>
             <p className="truncate text-xs text-muted-foreground">{sub}</p>
           </div>
@@ -977,6 +1014,12 @@ function ProjectCard({
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton label="Edit project" onClick={onEdit} Icon={Pencil} sm />
+          <IconButton
+            label={project.is_active ? 'Archive project' : 'Unarchive project'}
+            onClick={onArchive}
+            Icon={project.is_active ? Archive : ArchiveRestore}
+            sm
+          />
           <IconButton label="Delete project" onClick={onDelete} Icon={Trash2} sm danger />
         </div>
       </div>
@@ -2098,7 +2141,7 @@ function ClientModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-4xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit client · ${client?.name}` : 'New client'} className="max-w-4xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
@@ -2379,7 +2422,7 @@ export function ProjectModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-4xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit project · ${project?.name}` : 'New project'} className="max-w-4xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
@@ -2747,6 +2790,9 @@ function TaskModal({
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('medium');
   const [status, setStatus] = useState<TaskStatus>('to_do');
+  const [estimatedHours, setEstimatedHours] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [blockedReason, setBlockedReason] = useState('');
   const [assigneeIds, setAssigneeIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -2757,6 +2803,9 @@ function TaskModal({
     setDescription(task?.description ?? '');
     setPriority(task?.priority ?? 'medium');
     setStatus(task?.status ?? (task && !task.is_active ? 'done' : 'to_do'));
+    setEstimatedHours(task?.estimated_hours != null ? String(task.estimated_hours) : '');
+    setDueDate(task?.due_date ?? '');
+    setBlockedReason(task?.blocked_reason ?? '');
     setAssigneeIds(task?.assignee_ids ?? []);
     setError(null);
     setErrors({});
@@ -2873,6 +2922,7 @@ function TaskModal({
       setErrors(nextErrors);
       return;
     }
+    const estTrim = estimatedHours.trim();
     const body: TaskBody = {
       project_id: project.id,
       name: name.trim(),
@@ -2880,6 +2930,11 @@ function TaskModal({
       priority,
       status,
       is_active: status !== 'done',
+      // Phase 2: send null to clear an unset estimate / due date.
+      estimated_hours: estTrim ? estTrim : null,
+      due_date: dueDate || null,
+      // Reason only travels with a blocked status; any other status clears it.
+      blocked_reason: status === 'blocked' ? (blockedReason.trim() || null) : null,
       assignee_ids: assigneeIds,
     };
     try {
@@ -2897,7 +2952,7 @@ function TaskModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-4xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit task · ${task?.name}` : 'New task'} className="max-w-4xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll.
             Wide controls (assignee picker, client access, description) span both. */}
@@ -2927,6 +2982,33 @@ function TaskModal({
               ))}
             </select>
           </div>
+          <div>
+            <label className={labelClass}>Estimated hours</label>
+            <Input
+              type="number"
+              min="0"
+              step="0.25"
+              value={estimatedHours}
+              onChange={(e) => setEstimatedHours(e.target.value)}
+              placeholder="e.g. 14"
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Due date</label>
+            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </div>
+          {status === 'blocked' ? (
+            <div className="md:col-span-2">
+              <label className={labelClass}>Why is it blocked?</label>
+              <textarea
+                value={blockedReason}
+                onChange={(e) => setBlockedReason(e.target.value)}
+                rows={2}
+                placeholder="e.g. Waiting on the API contract from the client"
+                className={textareaClass}
+              />
+            </div>
+          ) : null}
           <div className="md:col-span-2">
             <label className={labelClass}>Assign to</label>
             <MultiPicker
@@ -3072,7 +3154,7 @@ function ContractModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contract · ${contract?.title}` : 'New contract'} className="max-w-3xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
@@ -3213,7 +3295,7 @@ function ContactModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit contact · ${contact?.name}` : 'New contact'} className="max-w-2xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
@@ -3311,7 +3393,7 @@ function ChannelModal({
 
   const noun = isEmail ? 'email' : 'phone';
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit ${noun}` : `New ${noun}`} className="max-w-sm">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit ${noun}` : `New ${noun}`} className="max-w-sm" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className={labelClass}>Label</label>
@@ -3420,7 +3502,7 @@ function RoleModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? `Edit role · ${role?.role}` : 'New role'} className="max-w-3xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Wider, two-column layout so everything fits without vertical scroll. */}
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
@@ -3541,7 +3623,7 @@ function NoteModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-2xl" flushBottom>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className={labelClass}>Date</label>
@@ -3754,18 +3836,28 @@ function ConfirmDialog({
   onClose,
   onConfirm,
 }: {
-  confirm: { title: string; message: string; onConfirm: () => void } | null;
+  confirm: ConfirmState | null;
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  // Default to the destructive (delete) styling for back-compat; non-destructive
+  // actions (archive) pass danger=false + their own label/icon.
+  const danger = confirm?.danger ?? true;
+  const label = confirm?.confirmLabel ?? 'Delete';
+  const Icon = confirm?.confirmIcon ?? Trash2;
   return (
     <Modal open={!!confirm} onClose={onClose} title="" className="max-w-sm">
       {confirm ? (
         <div className="space-y-4">
           <div className="flex items-start gap-3">
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-500/10 text-rose-500">
-              <Trash2 className="h-5 w-5" />
-            </span>
+            {/* Leading icon chip is a danger signal; only destructive confirms
+                (delete) get it. Non-destructive actions (archive) read calmer
+                without it. */}
+            {danger ? (
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-500/10 text-rose-500">
+                <Icon className="h-5 w-5" />
+              </span>
+            ) : null}
             <div className="min-w-0">
               <p className="text-base font-semibold text-foreground">{confirm.title}</p>
               <p className="mt-1 text-sm text-muted-foreground">{confirm.message}</p>
@@ -3779,9 +3871,11 @@ function ConfirmDialog({
               type="button"
               size="sm"
               onClick={onConfirm}
-              className="bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700"
+              className={danger
+                ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
+                : undefined}
             >
-              <Trash2 className="h-3.5 w-3.5" /> Delete
+              <Icon className="h-3.5 w-3.5" /> {label}
             </Button>
           </div>
         </div>

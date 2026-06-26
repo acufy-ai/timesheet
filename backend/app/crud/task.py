@@ -1,3 +1,5 @@
+from datetime import date
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import or_
@@ -158,6 +160,11 @@ async def task_belongs_to_project(
     return result.scalars().first() is not None
 
 
+# Sentinel for update_task: distinguishes "field omitted" from an explicit
+# clear-to-NULL on the nullable Phase 2 columns (estimate / dates / blocker).
+_UNSET = object()
+
+
 async def create_task(
     db: AsyncSession,
     project_id: int,
@@ -168,6 +175,10 @@ async def create_task(
     is_active: bool = True,
     priority: Optional[str] = None,
     status: Optional[str] = None,
+    estimated_hours: Optional[Decimal] = None,
+    start_date: Optional[date] = None,
+    due_date: Optional[date] = None,
+    blocked_reason: Optional[str] = None,
 ) -> Task:
     task = Task(
         project_id=project_id,
@@ -176,6 +187,10 @@ async def create_task(
         code=code,
         description=description,
         is_active=is_active,
+        estimated_hours=estimated_hours,
+        start_date=start_date,
+        due_date=due_date,
+        blocked_reason=(blocked_reason.strip() or None) if blocked_reason else None,
     )
     if priority is not None:
         task.priority = priority
@@ -197,6 +212,10 @@ async def update_task(
     project_id: Optional[int] = None,
     priority: Optional[str] = None,
     status: Optional[str] = None,
+    estimated_hours=_UNSET,
+    start_date=_UNSET,
+    due_date=_UNSET,
+    blocked_reason=_UNSET,
 ) -> Task:
     if name is not None:
         task.name = name
@@ -212,6 +231,19 @@ async def update_task(
         task.priority = priority
     if status is not None:
         task.status = status
+    # Phase 2 nullable fields use the _UNSET sentinel so an explicit None from
+    # the caller CLEARS the value (e.g. removing a due date) while an omitted
+    # field leaves it untouched.
+    if estimated_hours is not _UNSET:
+        task.estimated_hours = estimated_hours
+    if start_date is not _UNSET:
+        task.start_date = start_date
+    if due_date is not _UNSET:
+        task.due_date = due_date
+    if blocked_reason is not _UNSET:
+        task.blocked_reason = (
+            blocked_reason.strip() or None
+        ) if isinstance(blocked_reason, str) else blocked_reason
 
     db.add(task)
     await db.commit()
