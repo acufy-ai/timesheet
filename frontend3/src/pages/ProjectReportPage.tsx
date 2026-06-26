@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Ban, Clock, GitBranch, Loader2, TrendingUp } from 'lucide-react';
 
 import { WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -221,10 +221,11 @@ function Row({ label, value }: { label: React.ReactNode; value: React.ReactNode 
 }
 
 const TASK_STATUS_LABEL: Record<string, string> = {
-  to_do: 'To do', in_progress: 'In progress', done: 'Done',
+  to_do: 'To do', in_progress: 'In progress', blocked: 'Blocked', done: 'Done',
 };
 const TASK_STATUS_TONE: Record<string, string> = {
-  to_do: 'text-muted-foreground', in_progress: 'text-amber-600 dark:text-amber-400', done: 'text-emerald-600 dark:text-emerald-400',
+  to_do: 'text-muted-foreground', in_progress: 'text-amber-600 dark:text-amber-400',
+  blocked: 'text-rose-600 dark:text-rose-400', done: 'text-emerald-600 dark:text-emerald-400',
 };
 
 // "Why it needs a closer look" — task-level cause from real logged time + task
@@ -249,6 +250,11 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
 
   const hasUnfinished = data.unfinished_at_deadline.length > 0;
   const hasStalled = data.stalled_tasks.length > 0;
+  const hasCauses =
+    data.blocked_tasks.length > 0 ||
+    data.over_estimate_tasks.length > 0 ||
+    data.overdue_tasks.length > 0 ||
+    data.blocking_chains.length > 0;
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
@@ -269,6 +275,52 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {/* Cause signals — only the true causes captured from task data. Each
+          row is omitted when its list is empty (missing data = "unknown"). */}
+      {hasCauses ? (
+        <div className="space-y-2.5 border-b border-border px-4 py-3">
+          {data.blocked_tasks.map((t) => (
+            <div key={`b-${t.task_id}`} className="flex gap-2 text-sm">
+              <Ban className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              <span className="text-foreground">
+                <span className="font-medium">Blocked:</span> “{t.name}”
+                {t.blocked_reason ? <span className="text-muted-foreground"> — {t.blocked_reason}</span> : null}
+              </span>
+            </div>
+          ))}
+          {data.over_estimate_tasks.map((t) => (
+            <div key={`o-${t.task_id}`} className="flex gap-2 text-sm">
+              <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span className="text-foreground">
+                <span className="font-medium">Over estimate:</span> “{t.name}” at {Math.round(Number(t.hours))}h vs{' '}
+                {Math.round(Number(t.estimated_hours))}h planned
+                {t.over_estimate_pct != null ? <span className="text-muted-foreground"> (+{t.over_estimate_pct}%)</span> : null}
+              </span>
+            </div>
+          ))}
+          {data.overdue_tasks.map((t) => (
+            <div key={`d-${t.task_id}`} className="flex gap-2 text-sm">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              <span className="text-foreground">
+                <span className="font-medium">Overdue:</span> “{t.name}” is {t.days_overdue} day{t.days_overdue === 1 ? '' : 's'} past its due date
+              </span>
+            </div>
+          ))}
+          {data.blocking_chains.map((c) => (
+            <div key={`c-${c.task_id}-${c.depends_on_task_id}`} className="flex gap-2 text-sm">
+              <GitBranch className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-foreground">
+                <span className="font-medium">Blocking chain:</span>{' '}
+                {c.dependent_started
+                  ? <>“{c.task_name}” is in progress before its prerequisite “{c.depends_on_task_name}” is done</>
+                  : <>“{c.task_name}” is waiting on “{c.depends_on_task_name}” to be done</>}
+                {c.reason ? <span className="text-muted-foreground"> — {c.reason}</span> : null}
+              </span>
+            </div>
+          ))}
+        </div>
       ) : null}
 
       <div className="grid gap-px bg-border md:grid-cols-2">
@@ -338,7 +390,9 @@ function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; 
       </div>
 
       <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
-        Based on logged time and task status. Blocker and estimate-overrun detail will appear once tasks capture due dates, estimates and blockers.
+        {data.has_causal_data
+          ? 'Based on logged time, task status, and captured estimates, due dates and blockers.'
+          : 'Based on logged time and task status. Blocker and estimate-overrun detail will appear once tasks capture due dates, estimates and blockers.'}
       </p>
     </div>
   );

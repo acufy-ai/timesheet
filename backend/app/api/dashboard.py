@@ -62,6 +62,7 @@ from app.schemas import (
     ProjectTaskBreakdownResponse,
     TaskBreakdownTask,
     TaskBreakdownPerson,
+    TaskBlockingEdge,
     TeamDailyOverviewResponse,
     TeamRejectionReason,
     TeamRejectionRow,
@@ -2479,13 +2480,36 @@ async def get_project_task_breakdown(
 
     def task_row(t: "Task") -> TaskBreakdownTask:
         agg = per_task.get(t.id, {"hours": Decimal("0"), "cost": Decimal("0"), "revenue": Decimal("0")})
+        hrs = agg["hours"]
+        # Estimate overrun — only when an estimate exists AND logged hours exceed
+        # it. A missing estimate is "unknown", never an overrun.
+        est = t.estimated_hours
+        over_hours = None
+        over_pct = None
+        if est is not None and est > 0 and hrs > est:
+            over_hours = hrs - est
+            over_pct = int(round(float(over_hours) / float(est) * 100))
+        # Overdue — only when a due_date exists and is in the past. Done tasks are
+        # not "overdue"; the caller filters by open-ness where that matters.
+        days_od = None
+        if t.due_date is not None and t.due_date < today:
+            days_od = (today - t.due_date).days
         return TaskBreakdownTask(
             task_id=t.id, name=t.name,
             status=t.status.value if hasattr(t.status, "value") else str(t.status),
-            hours=agg["hours"], cost=agg["cost"], revenue=agg["revenue"],
-            pct_of_hours=pct(agg["hours"]),
+            hours=hrs, cost=agg["cost"], revenue=agg["revenue"],
+            pct_of_hours=pct(hrs),
             assignees=assignee_names.get(t.id, []),
+            estimated_hours=est,
+            due_date=t.due_date,
+            blocked_reason=t.blocked_reason,
+            over_estimate_hours=over_hours,
+            over_estimate_pct=over_pct,
+            days_overdue=days_od,
         )
+
+    def status_str(t: "Task") -> str:
+        return t.status.value if hasattr(t.status, "value") else str(t.status)
 
     done = [t for t in tasks if (t.status.value if hasattr(t.status, "value") else t.status) == "done"]
     open_tasks = [t for t in tasks if t not in done]
@@ -2517,7 +2541,68 @@ async def get_project_task_breakdown(
         key=lambda p: p.hours, reverse=True,
     )[:8]
 
-    # Data-derived headline notes (no invented causes).
+    # ── Phase 2 cause signals (each empty until the data is captured) ────────
+    # Blocked: status == blocked. Carries blocked_reason for the "why" line.
+    blocked_tasks = [task_row(t) for t in tasks if status_str(t) == "blocked"]
+
+    # Over estimate: logged hours exceeded the task's estimate. Sort by the
+    # biggest absolute overrun first.
+    over_estimate_tasks = [
+        r for r in (task_row(t) for t in tasks) if r.over_estimate_hours is not None
+    ]
+    over_estimate_tasks.sort(key=lambda r: r.over_estimate_hours or Decimal("0"), reverse=True)
+
+    # Overdue: OPEN tasks past their own due date. A done task is never overdue,
+    # and a task with no due date is "unknown" (excluded).
+    overdue_tasks = [
+        task_row(t) for t in tasks
+        if status_str(t) != "done" and t.due_date is not None and t.due_date < today
+    ]
+    overdue_tasks.sort(key=lambda r: r.days_overdue or 0, reverse=True)
+
+    # Blocking chains: an OPEN predecessor still holding a dependent task. We only
+    # surface edges where the blocker isn't done (a finished predecessor no longer
+    # blocks). Names resolved from tasks_by_id; cross-project edges can't exist.
+    from app.models.task_dependency import TaskDependency
+    dep_rows = (await db.execute(
+        select(TaskDependency).where(
+            TaskDependency.task_id.in_([t.id for t in tasks] or [-1])
+        )
+    )).scalars().all()
+    blocking_chains: list[TaskBlockingEdge] = []
+    for d in dep_rows:
+        dep_task = tasks_by_id.get(d.task_id)
+        blocker = tasks_by_id.get(d.depends_on_task_id)
+        if dep_task is None or blocker is None:
+            continue
+        blocker_open = status_str(blocker) != "done"
+        if not blocker_open:
+            continue
+        # Has the dependent task already had work logged against it? If so, the
+        # "waiting on a predecessor" framing would contradict the logged time, so
+        # we flag it and the copy describes it as "in progress before its
+        # prerequisite is done" (a real process signal) instead.
+        dep_started = (
+            per_task.get(d.task_id, {}).get("hours", Decimal("0")) > 0
+            or status_str(dep_task) == "in_progress"
+        )
+        blocking_chains.append(TaskBlockingEdge(
+            task_id=d.task_id, task_name=dep_task.name,
+            depends_on_task_id=d.depends_on_task_id, depends_on_task_name=blocker.name,
+            reason=d.reason, blocker_open=blocker_open,
+            dependent_started=dep_started,
+        ))
+
+    has_causal_data = any(
+        t.estimated_hours is not None or t.due_date is not None or t.blocked_reason
+        for t in tasks
+    ) or bool(dep_rows)
+
+    # Data-derived headline notes. The specific task-level causes (blocked /
+    # over-estimate / overdue / blocking chain) render from their structured
+    # lists in the cause-signals block, so we do NOT repeat them here — these
+    # notes carry only the project-level summary (where the hours concentrated,
+    # deadline pressure, not-started count) that the block doesn't cover.
     notes: list[str] = []
     if top_tasks:
         t0 = top_tasks[0]
@@ -2542,7 +2627,13 @@ async def get_project_task_breakdown(
         total_tasks=len(tasks), done_tasks=len(done), open_tasks=len(open_tasks),
         total_hours=total_hours, is_overdue=is_overdue, days_overdue=days_overdue,
         top_tasks=top_tasks, unfinished_at_deadline=unfinished[:6],
-        stalled_tasks=stalled[:6], by_person=by_person, notes=notes,
+        stalled_tasks=stalled[:6], by_person=by_person,
+        blocked_tasks=blocked_tasks[:6],
+        over_estimate_tasks=over_estimate_tasks[:6],
+        overdue_tasks=overdue_tasks[:6],
+        blocking_chains=blocking_chains[:6],
+        has_causal_data=has_causal_data,
+        notes=notes,
     )
 
 

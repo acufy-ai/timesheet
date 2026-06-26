@@ -462,7 +462,7 @@ export interface ProjectBody {
 }
 
 export type TaskPriority = 'low' | 'medium' | 'high';
-export type TaskStatus = 'to_do' | 'in_progress' | 'done';
+export type TaskStatus = 'to_do' | 'in_progress' | 'blocked' | 'done';
 
 // Task shape from /tasks (TaskResponse / TaskWithProject).
 export interface FullTask {
@@ -474,6 +474,11 @@ export interface FullTask {
   is_active: boolean;
   priority?: TaskPriority;
   status?: TaskStatus;
+  // Phase 2 causal fields. null = not captured (unknown).
+  estimated_hours?: string | number | null;
+  start_date?: string | null;
+  due_date?: string | null;
+  blocked_reason?: string | null;
   assignee_ids?: number[]; // task_assignees (user ids)
   client_assignees?: { user_id: number; full_name: string }[]; // client employees on this task
 }
@@ -487,6 +492,11 @@ export interface TaskBody {
   is_active?: boolean;
   priority?: TaskPriority;
   status?: TaskStatus;
+  // Phase 2 causal fields. Send null to clear, omit to leave untouched.
+  estimated_hours?: string | number | null;
+  start_date?: string | null;
+  due_date?: string | null;
+  blocked_reason?: string | null;
   assignee_ids?: number[]; // when set, replaces the task's assignees
 }
 

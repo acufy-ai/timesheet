@@ -492,7 +492,7 @@ class ClientNoteResponse(BaseModel):
 # ============================================================================
 
 _PROJECT_STATUSES = ("planning", "in_progress", "on_hold", "completed")
-_TASK_STATUSES = ("to_do", "in_progress", "done")
+_TASK_STATUSES = ("to_do", "in_progress", "blocked", "done")
 
 
 def _check_status(value, allowed, field):
@@ -592,6 +592,12 @@ class TaskBase(BaseModel):
     is_active: bool = True
     priority: str = "medium"
     status: str = "to_do"
+    # Phase 2 causal-data fields. All optional/additive — a task created without
+    # them has no estimate, no dates, and no blocker (treated as "unknown").
+    estimated_hours: Optional[Decimal] = Field(default=None, ge=0)
+    start_date: Optional[date] = None
+    due_date: Optional[date] = None
+    blocked_reason: Optional[str] = None
 
     @field_validator("status")
     @classmethod
@@ -611,6 +617,10 @@ class TaskUpdate(BaseModel):
     is_active: Optional[bool] = None
     priority: Optional[str] = None
     status: Optional[str] = None
+    estimated_hours: Optional[Decimal] = Field(default=None, ge=0)
+    start_date: Optional[date] = None
+    due_date: Optional[date] = None
+    blocked_reason: Optional[str] = None
     # When provided, replaces the task's assignees.
     assignee_ids: Optional[List[int]] = None
 
@@ -640,6 +650,28 @@ class TaskResponse(TaskBase):
 
 class TaskWithProject(TaskResponse):
     project: ProjectResponse
+
+
+# ── Task dependencies (Phase 2, part 4) ──────────────────────────────────────
+class TaskDependencyCreate(BaseModel):
+    """Create an edge: ``task_id`` depends on ``depends_on_task_id`` (the latter
+    blocks the former). Both tasks must be in the same project; cycles rejected."""
+    task_id: int
+    depends_on_task_id: int
+    reason: Optional[str] = None
+
+
+class TaskDependencyResponse(BaseModel):
+    id: int
+    task_id: int
+    depends_on_task_id: int
+    reason: Optional[str] = None
+    # Convenience labels so the UI/health "why" can render names without an extra
+    # round-trip. Populated server-side; null only when a name lookup misses.
+    task_name: Optional[str] = None
+    depends_on_task_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 # ============================================================================
@@ -1267,12 +1299,39 @@ class HealthConfigResponse(BaseModel):
 class TaskBreakdownTask(BaseModel):
     task_id: int
     name: str
-    status: str                       # to_do | in_progress | done
+    status: str                       # to_do | in_progress | blocked | done
     hours: Decimal = Decimal("0")     # approved hours logged
     cost: Decimal = Decimal("0")      # approved cost (hours × cost rate)
     revenue: Decimal = Decimal("0")   # approved billable revenue
     pct_of_hours: int = 0             # share of the project's logged hours
     assignees: list[str] = []         # names, for "who's carrying it"
+    # Phase 2 causal fields. All Optional — None means "not captured" (unknown),
+    # which the "why" logic must never treat as zero/overdue.
+    estimated_hours: Optional[Decimal] = None
+    due_date: Optional[date] = None
+    blocked_reason: Optional[str] = None
+    # Derived: hours over estimate and the overrun as a percentage. Only set when
+    # the task has an estimate AND logged hours exceed it.
+    over_estimate_hours: Optional[Decimal] = None
+    over_estimate_pct: Optional[int] = None
+    # Derived: days past due_date (>0 only when due_date is set and in the past).
+    days_overdue: Optional[int] = None
+
+
+class TaskBlockingEdge(BaseModel):
+    """A blocking chain link for the health "why": blocker_name blocks task_name."""
+    task_id: int
+    task_name: str
+    depends_on_task_id: int
+    depends_on_task_name: str
+    reason: Optional[str] = None
+    # True when the blocker (predecessor) is not yet done — i.e. it really is
+    # holding the dependent task right now.
+    blocker_open: bool = True
+    # True when the dependent task already has logged time / is in progress even
+    # though its prerequisite isn't done. The UI uses this to avoid the false
+    # "can't start" framing and instead flag work happening ahead of readiness.
+    dependent_started: bool = False
 
 
 class TaskBreakdownPerson(BaseModel):
@@ -1299,6 +1358,18 @@ class ProjectTaskBreakdownResponse(BaseModel):
     stalled_tasks: list[TaskBreakdownTask] = []
     # Who's carrying the project.
     by_person: list[TaskBreakdownPerson] = []
+    # Phase 2 cause signals (each empty until the data is captured).
+    # Tasks explicitly marked blocked (status == blocked), with their reason.
+    blocked_tasks: list[TaskBreakdownTask] = []
+    # Tasks whose logged hours exceeded their estimate.
+    over_estimate_tasks: list[TaskBreakdownTask] = []
+    # Open tasks past their own due_date (independent of the project end date).
+    overdue_tasks: list[TaskBreakdownTask] = []
+    # Blocking chains: an open predecessor holding a dependent task.
+    blocking_chains: list[TaskBlockingEdge] = []
+    # True once any task carries an estimate / due date / blocker — lets the UI
+    # drop the "detail will appear once tasks capture …" footnote.
+    has_causal_data: bool = False
     # Plain-language headline lines summarising the cause (data-derived, no fabrication).
     notes: list[str] = []
 
@@ -1931,10 +2002,19 @@ class PortalTaskUpdate(BaseModel):
 
 
 class TaskProgressUpdate(BaseModel):
-    """Internal assignee editing a task they're assigned to: status and/or
-    description only (mirrors the client-employee portal scope)."""
+    """Internal assignee editing a task they're assigned to: status,
+    description, and (when blocking) the blocker reason. Mirrors the
+    client-employee portal scope."""
     status: Optional[str] = None
     description: Optional[str] = None
+    blocked_reason: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        if v is None:
+            return v
+        return _check_status(v, _TASK_STATUSES, "task status")
 
 
 class PortalTaskCreate(BaseModel):
