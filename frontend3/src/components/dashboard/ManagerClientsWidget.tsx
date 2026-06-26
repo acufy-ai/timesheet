@@ -50,25 +50,28 @@ export function ManagerClientsWidget() {
               const isOpen = open.has(c.client_id);
               return (
                 <li key={c.client_id}>
-                  <div className="flex items-center gap-2 px-4 py-2.5">
-                    <button
-                      type="button"
-                      onClick={() => toggle(c.client_id)}
-                      aria-label={isOpen ? 'Collapse' : 'Expand'}
-                      aria-expanded={isOpen}
-                      className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:text-foreground"
-                    >
-                      <ChevronRight className={cn('h-4 w-4 transition-transform', isOpen && 'rotate-90')} />
-                    </button>
+                  {/* The whole row toggles open/closed. The client NAME inside is
+                      a distinct link to the client page (stops propagation so it
+                      doesn't also toggle). Row is a div with role=button +
+                      keyboard handling so the nested link stays valid markup. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={isOpen}
+                    onClick={() => toggle(c.client_id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(c.client_id); } }}
+                    className="flex w-full cursor-pointer items-center gap-2 px-4 py-2.5 text-left hover:bg-foreground/[0.03] focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                  >
+                    <ChevronRight className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', isOpen && 'rotate-90')} />
                     <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/client-management?client=${c.client_id}`)}
-                      className="min-w-0 flex-1 truncate text-left text-sm font-medium text-foreground underline-offset-2 hover:text-primary hover:underline"
-                      title={c.client_name}
+                    <a
+                      href={`/client-management?client=${c.client_id}`}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/client-management?client=${c.client_id}`); }}
+                      className="min-w-0 flex-1 truncate text-sm font-medium text-primary underline-offset-2 hover:underline"
+                      title={`Open ${c.client_name}`}
                     >
                       {c.client_name}
-                    </button>
+                    </a>
                     <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground">
                       {c.project_count}
                     </span>
