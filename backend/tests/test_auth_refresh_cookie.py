@@ -21,6 +21,8 @@ from app.api.auth import (
     REFRESH_COOKIE_MAX_AGE_SECONDS,
     _set_refresh_cookie,
     _clear_refresh_cookie,
+    _refresh_cookie_name,
+    _sanitize_tab_id,
 )
 
 
@@ -72,11 +74,61 @@ def test_clear_refresh_cookie_targets_same_path():
     """If the cleared cookie's Path differs from the set Path, browsers
     keep the original cookie alongside the cleared one and the session
     survives — pinning this protects against a subtle 'logout doesn't
-    log out' bug."""
+    log out' bug. With no tab id, clearing emits exactly the legacy cookie."""
     resp = Response()
     _clear_refresh_cookie(resp)
-    h = _set_cookie_headers(resp)[0]
+    headers = _set_cookie_headers(resp)
+    # No tab id => clearing the legacy cookie name only (the tab-name set
+    # collapses to the legacy name, deduped).
+    assert len(headers) == 1
+    h = headers[0]
     assert f"{REFRESH_COOKIE_NAME}=" in h
     assert f"Path={REFRESH_COOKIE_PATH}" in h
     # max-age=0 (or expires in the past) signals deletion
     assert "Max-Age=0" in h or "expires=" in h.lower()
+
+
+# ── Per-tab cookie scoping (two accounts in two tabs of one browser) ──
+
+def test_refresh_cookie_name_is_per_tab():
+    """A tab id yields a tab-scoped cookie name; no tab id yields the
+    legacy name. This is what stops two tabs from sharing one cookie."""
+    assert _refresh_cookie_name(None) == REFRESH_COOKIE_NAME
+    assert _refresh_cookie_name("") == REFRESH_COOKIE_NAME
+    assert _refresh_cookie_name("tabAAA") == f"{REFRESH_COOKIE_NAME}__tabAAA"
+    assert _refresh_cookie_name("tabAAA") != _refresh_cookie_name("tabBBB")
+
+
+def test_sanitize_tab_id_strips_junk_and_caps_length():
+    """The tab id becomes part of a cookie name, so it must be sanitized
+    to alphanumerics (no chars that could inject cookie attributes) and
+    length-capped."""
+    assert _sanitize_tab_id(None) is None
+    assert _sanitize_tab_id("") is None
+    # non-alphanumerics stripped
+    assert _sanitize_tab_id("a;b=c\nd") == "abcd"
+    # capped at 32 chars
+    assert _sanitize_tab_id("x" * 100) == "x" * 32
+    # all-junk collapses to None rather than an empty name
+    assert _sanitize_tab_id(";;;") is None
+
+
+def test_set_refresh_cookie_with_tab_id_uses_scoped_name():
+    resp = Response()
+    _set_refresh_cookie(resp, "tok-A", "tabAAA")
+    h = _set_cookie_headers(resp)[0]
+    assert h.startswith(f"{REFRESH_COOKIE_NAME}__tabAAA=tok-A")
+    assert "httponly" in h.lower()
+
+
+def test_clear_refresh_cookie_with_tab_id_clears_both_scoped_and_legacy():
+    """Logout on a tab must clear THIS tab's cookie and the legacy cookie
+    (so an upgraded session logs out cleanly), but not other tabs'."""
+    resp = Response()
+    _clear_refresh_cookie(resp, "tabAAA")
+    headers = _set_cookie_headers(resp)
+    names = {h.split("=", 1)[0] for h in headers}
+    assert f"{REFRESH_COOKIE_NAME}__tabAAA" in names
+    assert REFRESH_COOKIE_NAME in names
+    # must NOT touch a different tab's cookie
+    assert f"{REFRESH_COOKIE_NAME}__tabBBB" not in names

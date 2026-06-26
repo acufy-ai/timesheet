@@ -2070,7 +2070,7 @@ function ClientModal({
         const created = (await create.mutateAsync({ ...body, pm_ids: pmIds, member_ids: memberIds })) as Client;
         clientId = created.id;
       }
-      onSaved(isEdit ? 'Client updated.' : 'Client created.', clientId);
+      onSaved(isEdit ? 'Client updated.' : `Client ${name.trim()} created successfully.`, clientId);
       onClose();
     } catch (err) {
       setError(errText(err, 'Could not save the client.'));
@@ -2231,6 +2231,8 @@ export function ProjectModal({
   const [code, setCode] = useState('');
   const [status, setStatus] = useState<ProjectStatus>('planning');
   const [budget, setBudget] = useState('');
+  const [estHours, setEstHours] = useState(''); // PSA planned hours (for EVM/baseline)
+  const [revRec, setRevRec] = useState('as_billed'); // PSA revenue recognition method
   const [billableRate, setBillableRate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [managerIds, setManagerIds] = useState<number[]>([]);
@@ -2254,6 +2256,8 @@ export function ProjectModal({
     setCode(project?.code ?? '');
     setStatus(project?.status ?? 'planning');
     setBudget(project?.budget_amount != null ? String(project.budget_amount) : '');
+    setEstHours(project?.estimated_hours != null ? String(project.estimated_hours) : '');
+    setRevRec((project as { revenue_recognition?: string } | null)?.revenue_recognition ?? 'as_billed');
     setBillableRate(project?.billable_rate != null ? String(project.billable_rate) : '');
     setEndDate(project?.end_date ?? '');
     setManagerIds(project?.manager_ids ?? (project?.manager_id != null ? [project.manager_id] : []));
@@ -2324,6 +2328,8 @@ export function ProjectModal({
       description: description.trim() || null,
       end_date: endDate || null,
       budget_amount: budget ? num(budget) : null,
+      estimated_hours: estHours ? num(estHours) : null,
+      revenue_recognition: revRec,
       currency: project?.currency ?? 'USD',
       is_active: active,
       status,
@@ -2344,7 +2350,7 @@ export function ProjectModal({
         onSaved('Project updated.');
       } else {
         await create.mutateAsync(body);
-        onSaved('Project created.');
+        onSaved(`Project ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {
@@ -2424,6 +2430,17 @@ export function ProjectModal({
           <div>
             <label className={labelClass}>Budget ($)</label>
             <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Client budget" />
+          </div>
+          <div>
+            <label className={labelClass}>Estimated hours</label>
+            <Input type="number" step="1" min="0" value={estHours} onChange={(e) => setEstHours(e.target.value)} placeholder="Planned hours" />
+          </div>
+          <div>
+            <label className={labelClass}>Revenue recognition</label>
+            <select value={revRec} onChange={(e) => setRevRec(e.target.value)} className={selectClass}>
+              <option value="as_billed">As billed (T&amp;M)</option>
+              <option value="percent_complete">% complete (fixed-fee)</option>
+            </select>
           </div>
           <div>
             <label className={labelClass}>Billable rate ($/h)</label>
@@ -2851,7 +2868,7 @@ function TaskModal({
         onSaved('Task updated.');
       } else {
         await create.mutateAsync(body);
-        onSaved('Task created.');
+        onSaved(`Task ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {
@@ -3027,7 +3044,7 @@ function ContractModal({
           return;
         }
       }
-      onSaved(isEdit ? 'Contract updated.' : 'Contract created.', contractId);
+      onSaved(isEdit ? 'Contract updated.' : `Contract ${title.trim()} created successfully.`, contractId);
       onClose();
     } catch (err) {
       setError(errText(err, 'Could not save the contract.'));
@@ -3167,7 +3184,7 @@ function ContactModal({
         const phones: ContactChannel[] = phone.trim() ? [{ label: 'Mobile', number: phone.trim() }] : [];
         const data: ClientContactBody = { name: name.trim(), role: role.trim() || null, emails, phones };
         const created = (await create.mutateAsync({ clientId, data })) as ClientContact;
-        onSaved('Contact created.', created?.id);
+        onSaved(`Contact ${name.trim()} created successfully.`, created?.id);
       }
       onClose();
     } catch (err) {
@@ -3374,7 +3391,7 @@ function RoleModal({
         onSaved('Role updated.');
       } else {
         await create.mutateAsync({ clientId, data: body });
-        onSaved('Role created.');
+        onSaved(`Role ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {

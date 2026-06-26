@@ -46,19 +46,32 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
-def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> tuple[str, str, datetime]:
+def create_refresh_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    jti: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
+) -> tuple[str, str, datetime]:
     """Create a JWT refresh token with a unique jti claim.
 
     Returns (encoded_jwt, jti, expires_at) so the caller can persist the token.
+
+    ``jti`` and ``expires_at`` may be supplied to deterministically RE-MINT an
+    existing token's exact string (used by the rotation grace window to hand a
+    racing request the same successor token that was already issued). When
+    omitted a fresh jti and a default 7-day expiry are generated.
     """
     to_encode = data.copy()
-    if expires_delta:
+    if expires_at is not None:
+        expire = expires_at
+    elif expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + \
             timedelta(days=settings.refresh_token_expire_days)
 
-    jti = secrets.token_urlsafe(32)
+    if jti is None:
+        jti = secrets.token_urlsafe(32)
     to_encode.update({"exp": int(expire.timestamp()), "jti": jti})
     encoded_jwt = jwt.encode(
         to_encode, settings.secret_key, algorithm=settings.algorithm)

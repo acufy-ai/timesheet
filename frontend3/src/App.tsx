@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { AppShell } from '@/components/layout/AppShell';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LandingRedirect } from '@/components/layout/LandingRedirect';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
@@ -12,6 +13,8 @@ import { ClientsPage } from '@/pages/ClientsPage';
 import { PortalRouter } from '@/pages/PortalRouter';
 import { ClientProjectDetailPage } from '@/pages/ClientProjectDetailPage';
 import { DashboardPage } from '@/pages/DashboardPage';
+import { InsightsPage } from '@/pages/InsightsPage';
+import { ProjectReportPage } from '@/pages/ProjectReportPage';
 import { InboxPage } from '@/pages/InboxPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage';
@@ -65,6 +68,7 @@ export default function App() {
               trailing slash, so routes resolve under a sub-path deploy
               (prod: /apps/timesheet/). Empty string at root. */}
           <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+            <ErrorBoundary>
             <Routes>
               {/* Public */}
               <Route path="/login" element={<LoginPage />} />
@@ -89,6 +93,8 @@ export default function App() {
                 <Route path="/user-management" element={<UsersPage />} />
                 <Route path="/user-management/:userId/timesheets" element={<UserTimesheetsPage />} />
                 <Route path="/client-management" element={<ClientsPage />} />
+                <Route path="/insights" element={<InsightsPage />} />
+                <Route path="/insights/project/:id" element={<ProjectReportPage />} />
                 <Route path="/audit-trail" element={<AuditTrailPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/mailboxes" element={<MailboxesPage />} />
@@ -108,6 +114,7 @@ export default function App() {
                   role (CLIENT -> /portal, others -> their landing page). */}
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
+            </ErrorBoundary>
           </BrowserRouter>
         </AuthProvider>
       </ThemeProvider>

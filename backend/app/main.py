@@ -21,6 +21,7 @@ from app.api import (
     contracts,
     dashboard,
     departments,
+    titles,
     holidays,
     ingestion,
     leave_types,
@@ -107,6 +108,9 @@ app.add_middleware(
         "If-None-Match",  # for conditional GET round trip (ETag, /auth/me, /tenants/mine)
         "X-Service-Token",
         "X-Tenant-ID",
+        # Per-tab refresh-cookie scoping: lets two accounts in two tabs of the
+        # same browser keep independent sessions (cookie named per tab id).
+        "X-Tab-Id",
         # Platform-admin cross-tenant writes (e.g. creating an ADMIN in
         # a target tenant from the platform UI) carry the destination
         # tenant slug here so ``get_tenant_db`` can route to the right
@@ -254,6 +258,7 @@ app.include_router(contracts.router)
 app.include_router(client_extras.router)
 app.include_router(client_portal.router)
 app.include_router(departments.router)
+app.include_router(titles.router)
 app.include_router(holidays.router)
 app.include_router(leave_types.router)
 app.include_router(projects.router)

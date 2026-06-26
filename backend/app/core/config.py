@@ -147,7 +147,7 @@ class Settings(BaseModel):
         description="JWT algorithm"
     )
     access_token_expire_minutes: int = Field(
-        default=30,
+        default=60,
         description="Access token expiration time in minutes"
     )
     refresh_token_expire_days: int = Field(

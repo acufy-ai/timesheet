@@ -46,13 +46,50 @@ DEFAULT_LOCKOUT_DURATION_MINUTES = 15
 REFRESH_COOKIE_NAME = "refresh_token"
 REFRESH_COOKIE_PATH = "/"
 REFRESH_COOKIE_MAX_AGE_SECONDS = settings.refresh_token_expire_days * 24 * 60 * 60
+# A just-rotated refresh token is still honored (returns its successor) for this
+# many seconds, so a concurrent refresh / second tab / reload mid-flight doesn't
+# get a spurious 401 and log the user out. Short enough that a genuinely stolen,
+# already-used token is rejected almost immediately.
+ROTATION_GRACE_SECONDS = 30
+# Header the frontend sends to scope the refresh cookie PER TAB, so two
+# different accounts in two tabs of the same browser don't share (and clobber)
+# one cookie. The cookie is named refresh_token__<tabId>. Absent header =>
+# legacy single-cookie behavior (old bundles, API clients).
+TAB_ID_HEADER = "x-tab-id"
 
 
-def _set_refresh_cookie(response: Response, token: str) -> None:
+def _sanitize_tab_id(tab_id: str | None) -> str | None:
+    """Accept only a short alphanumeric tab id, so it can't break the cookie
+    name or inject extra cookie attributes."""
+    if not tab_id:
+        return None
+    cleaned = "".join(c for c in tab_id if c.isalnum())[:32]
+    return cleaned or None
+
+
+def _refresh_cookie_name(tab_id: str | None) -> str:
+    """Per-tab cookie name when a tab id is present, else the legacy name."""
+    tid = _sanitize_tab_id(tab_id)
+    return f"{REFRESH_COOKIE_NAME}__{tid}" if tid else REFRESH_COOKIE_NAME
+
+
+def _read_refresh_cookie(request: Request, tab_id: str | None) -> str | None:
+    """Read this tab's refresh cookie, falling back to the legacy cookie so a
+    session created before per-tab cookies (or by a client that sends no tab id)
+    still refreshes."""
+    if tab_id:
+        scoped = request.cookies.get(_refresh_cookie_name(tab_id))
+        if scoped:
+            return scoped
+    return request.cookies.get(REFRESH_COOKIE_NAME)
+
+
+def _set_refresh_cookie(response: Response, token: str, tab_id: str | None = None) -> None:
     """Write the refresh token as an HttpOnly cookie. Secure only outside
-    debug so the flow still works over http://localhost in dev."""
+    debug so the flow still works over http://localhost in dev. When a tab id is
+    given the cookie is named per-tab so tabs don't clobber each other."""
     response.set_cookie(
-        key=REFRESH_COOKIE_NAME,
+        key=_refresh_cookie_name(tab_id),
         value=token,
         max_age=REFRESH_COOKIE_MAX_AGE_SECONDS,
         path=REFRESH_COOKIE_PATH,
@@ -62,16 +99,20 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
     )
 
 
-def _clear_refresh_cookie(response: Response) -> None:
+def _clear_refresh_cookie(response: Response, tab_id: str | None = None) -> None:
     """Delete the refresh cookie. Must target the same Path it was set with,
-    or the browser keeps the original and 'logout' doesn't log out."""
-    response.delete_cookie(
-        key=REFRESH_COOKIE_NAME,
-        path=REFRESH_COOKIE_PATH,
-        httponly=True,
-        secure=not settings.debug,
-        samesite="lax",
-    )
+    or the browser keeps the original and 'logout' doesn't log out. Clears this
+    tab's cookie; also clears the legacy cookie so an upgraded session logs out
+    cleanly."""
+    names = {_refresh_cookie_name(tab_id), REFRESH_COOKIE_NAME}
+    for name in names:
+        response.delete_cookie(
+            key=name,
+            path=REFRESH_COOKIE_PATH,
+            httponly=True,
+            secure=not settings.debug,
+            samesite="lax",
+        )
 
 
 # ── Platform-admin refresh-token storage (Redis-backed) ─────────────
@@ -381,7 +422,7 @@ async def _login_with_auth0(
     else:
         user = await get_user_by_email(db, user.email)
 
-    _set_refresh_cookie(response, refresh_token)
+    _set_refresh_cookie(response, refresh_token, _sanitize_tab_id(request.headers.get(TAB_ID_HEADER)))
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -480,6 +521,9 @@ async def login(
     The frontend always sends ``{email, password}`` and is unaware of
     which path served it.
     """
+    # Per-tab cookie scoping (see TAB_ID_HEADER). Computed once and used at
+    # every refresh-cookie write below, including the nested resolver.
+    login_tab_id = _sanitize_tab_id(request.headers.get(TAB_ID_HEADER))
     from app.db_control import AsyncControlSessionLocal
     from app.models.control import PlatformAdmin
     async with AsyncControlSessionLocal() as control_db:
@@ -571,7 +615,7 @@ async def login(
         # Redis TTL matches the refresh-token expiry so revocation also
         # happens automatically when the token would naturally expire.
         await _pa_refresh_remember(pa_jti, pa_row.id, pa_expires)
-        _set_refresh_cookie(response, pa_refresh)
+        _set_refresh_cookie(response, pa_refresh, login_tab_id)
         return {
             "access_token": pa_access,
             "token_type": "bearer",
@@ -819,7 +863,7 @@ async def login(
 
     # Refresh token rides in an HttpOnly cookie, not the JSON body, so JS
     # (and therefore XSS) can't read it.
-    _set_refresh_cookie(response, refresh_token)
+    _set_refresh_cookie(response, refresh_token, login_tab_id)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -843,9 +887,10 @@ async def refresh_token(
     from app.crud.user import get_user_by_id
     from app.db_tenant import tenant_session
 
-    # Prefer the HttpOnly cookie; fall back to the request body for API-only
-    # clients (and during the frontend transition).
-    token = request.cookies.get(REFRESH_COOKIE_NAME) or (body.refresh_token if body else None)
+    # Per-tab cookie scoping: read this tab's refresh cookie (falls back to the
+    # legacy cookie, then the request body for API-only clients).
+    tab_id = _sanitize_tab_id(request.headers.get(TAB_ID_HEADER))
+    token = _read_refresh_cookie(request, tab_id) or (body.refresh_token if body else None)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token provided")
 
@@ -898,7 +943,7 @@ async def refresh_token(
         new_access = create_access_token(pa_payload)
         new_refresh, new_jti, new_expires = create_refresh_token(pa_payload)
         await _pa_refresh_remember(new_jti, pa_row.id, new_expires)
-        _set_refresh_cookie(response, new_refresh)
+        _set_refresh_cookie(response, new_refresh, tab_id)
         return {
             "access_token": new_access,
             "token_type": "bearer",
@@ -927,26 +972,25 @@ async def refresh_token(
             },
         }
 
-    # Refresh tokens for an isolated tenant live in the per-tenant DB,
-    # so check/revoke/insert all happen in one transaction.
+    # Refresh tokens for an isolated tenant live in the per-tenant DB.
     use_tenant_db = bool(token_tenant_slug)
 
-    async def _do_refresh(session: AsyncSession) -> tuple[User, str, str, datetime]:
-        """Lock + revoke + insert on the given session, atomically."""
-        if jti:
-            stored = (await session.execute(
-                select(RefreshToken)
-                .where(RefreshToken.jti == jti)
-                .with_for_update()
-            )).scalars().first()
-            if not stored or stored.revoked:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Refresh token has been revoked",
-                )
-            stored.revoked = True
-            session.add(stored)
+    async def _do_refresh(session: AsyncSession) -> tuple[User, str, str]:
+        """Validate + ROTATE the refresh token, with a grace window.
 
+        Normal path: the presented token is valid -> revoke it, issue a new
+        refresh token (single-use rotation), return the new one.
+
+        Grace path: the presented token was ALREADY rotated, but within the
+        last ROTATION_GRACE_SECONDS and we recorded its successor. This is a
+        race (concurrent refresh / second tab / reload mid-flight): instead of
+        401-ing and logging the user out, RE-MINT and return the SAME successor
+        the winning request already issued. Both requests end up holding the
+        same valid token, so nobody gets bounced.
+
+        Genuinely-dead path: token not found, or revoked outside the grace
+        window (logout / revoke-all / force-logout / old replay) -> 401.
+        """
         user = await get_user_by_id(session, int(user_id))
         if not user or not user.is_active:
             raise HTTPException(
@@ -955,34 +999,87 @@ async def refresh_token(
             )
 
         realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
-        # Carry forward active_role so multi-role users don't get
-        # downgraded; re-validated against user.roles on next request.
-        token_payload = _build_token_payload(
-            user_id=user.id,
-            tenant_id=user.tenant_id,
-            can_review=user.can_review,
-            realm=realm,
-            tenant_slug=token_tenant_slug,
-            active_role=token_active_role,
-            token_version=user.token_version,
-        )
-        new_access = create_access_token(token_payload)
-        new_refresh, new_jti, new_expires = create_refresh_token(token_payload)
 
-        session.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=new_expires))
-        await session.commit()
-        return user, new_access, new_refresh, new_expires
+        def _payload() -> dict:
+            # Carry forward active_role so multi-role users don't get
+            # downgraded; re-validated against user.roles on next request.
+            return _build_token_payload(
+                user_id=user.id,
+                tenant_id=user.tenant_id,
+                can_review=user.can_review,
+                realm=realm,
+                tenant_slug=token_tenant_slug,
+                active_role=token_active_role,
+                token_version=user.token_version,
+            )
+
+        if jti:
+            stored = (await session.execute(
+                select(RefreshToken)
+                .where(RefreshToken.jti == jti)
+                .with_for_update()
+            )).scalars().first()
+            if not stored:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token has been revoked",
+                )
+
+            if stored.revoked:
+                # Already rotated. If it was rotated very recently and we know
+                # its successor, this is a race — hand back that same successor
+                # (re-minted to its exact jti + expiry) instead of logging out.
+                now = datetime.now(timezone.utc)
+                rotated_at = stored.rotated_at
+                # Normalize to tz-aware: Postgres returns aware datetimes, but a
+                # naive value (e.g. SQLite, or a legacy row) must not crash the
+                # subtraction — treat it as UTC.
+                if rotated_at is not None and rotated_at.tzinfo is None:
+                    rotated_at = rotated_at.replace(tzinfo=timezone.utc)
+                in_grace = (
+                    rotated_at is not None
+                    and stored.replaced_by_jti is not None
+                    and (now - rotated_at).total_seconds() <= ROTATION_GRACE_SECONDS
+                )
+                if in_grace:
+                    successor = (await session.execute(
+                        select(RefreshToken).where(RefreshToken.jti == stored.replaced_by_jti)
+                    )).scalars().first()
+                    # Successor must still be live (not itself revoked/expired).
+                    if successor and not successor.revoked:
+                        same_refresh, _, _ = create_refresh_token(
+                            _payload(), jti=successor.jti, expires_at=successor.expires_at,
+                        )
+                        return user, create_access_token(_payload()), same_refresh
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token has been revoked",
+                )
+
+            # Normal rotation: revoke the presented token, mint a successor,
+            # and record the link so a racing duplicate can be served via grace.
+            new_refresh, new_jti, new_expires = create_refresh_token(_payload())
+            stored.revoked = True
+            stored.rotated_at = datetime.now(timezone.utc)
+            stored.replaced_by_jti = new_jti
+            session.add(stored)
+            session.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=new_expires))
+            await session.commit()
+            return user, create_access_token(_payload()), new_refresh
+
+        # No jti in the token (shouldn't happen for our tokens) — access only.
+        return user, create_access_token(_payload()), token
 
     if use_tenant_db:
         try:
             async with tenant_session(token_tenant_slug) as tenant_db:
-                user, access_token, new_refresh_token, _ = await _do_refresh(tenant_db)
+                user, access_token, refresh_cookie_token = await _do_refresh(tenant_db)
         except (LookupError, ValueError):
-            user, access_token, new_refresh_token, _ = await _do_refresh(db)
+            user, access_token, refresh_cookie_token = await _do_refresh(db)
     else:
-        user, access_token, new_refresh_token, _ = await _do_refresh(db)
+        user, access_token, refresh_cookie_token = await _do_refresh(db)
 
-    _set_refresh_cookie(response, new_refresh_token)
+    _set_refresh_cookie(response, refresh_cookie_token, tab_id)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1210,9 +1307,11 @@ async def logout(
     from app.core.token_denylist import revoke_access_jti
     from app.db_tenant import tenant_session
 
-    # Always clear the refresh cookie, on every exit path. Done first so the
-    # browser drops it even when there's no token to revoke server-side.
-    _clear_refresh_cookie(response)
+    # Per-tab cookie scoping: clear THIS tab's refresh cookie (and the legacy
+    # one) on every exit path, so the browser drops it even when there's no
+    # token to revoke server-side.
+    logout_tab_id = _sanitize_tab_id(request.headers.get(TAB_ID_HEADER))
+    _clear_refresh_cookie(response, logout_tab_id)
 
     # Immediately revoke the access token that authorized this request, so it
     # can't be reused for the rest of its TTL. get_current_user stashed its
@@ -1223,8 +1322,8 @@ async def logout(
         getattr(request.state, "access_exp", None),
     )
 
-    # Prefer the cookie; fall back to the body for API-only clients.
-    token = request.cookies.get(REFRESH_COOKIE_NAME) or (body.refresh_token if body else None)
+    # Prefer this tab's cookie (then legacy, then body for API-only clients).
+    token = _read_refresh_cookie(request, logout_tab_id) or (body.refresh_token if body else None)
     if not token:
         return {"message": "Logged out successfully"}
 
@@ -1604,7 +1703,7 @@ async def switch_role(
 
     # Set the HttpOnly cookie. The new-tab handoff shares the same-origin
     # cookie, so the refresh token no longer needs to ride in the body.
-    _set_refresh_cookie(response, refresh)
+    _set_refresh_cookie(response, refresh, _sanitize_tab_id(request.headers.get(TAB_ID_HEADER)))
     return {
         "access_token": access,
         "token_type": "bearer",

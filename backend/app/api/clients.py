@@ -3,9 +3,10 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from pydantic import BaseModel as PydanticBaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas import ClientResponse, ClientCreate, ClientUpdate, ClientTeamMember
-from app.crud.client import get_client_by_id, create_client, update_client, delete_client, list_clients
+from app.crud.client import get_client_by_id, get_client_by_name, create_client, update_client, delete_client, list_clients
 from app.crud.time_entry import count_protected_entries_for_client
 from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review
 from app.models.client import Client
@@ -133,7 +134,21 @@ async def create_new_client(
         )
     # Strip the team fields before creating the client row itself.
     base = ClientCreate(**client_create.model_dump(exclude={"pm_ids", "member_ids"}))
-    new_client = await create_client(db, base, tenant_id=current_user.tenant_id)
+    # A duplicate client name hits a DB unique constraint. Check up front for a
+    # clean 409 with an actionable message; the IntegrityError catch below is a
+    # backstop for races and any other constraint so we never leak a raw 500.
+    if base.name and await get_client_by_name(db, base.name.strip(), current_user.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A client named '{base.name.strip()}' already exists.",
+        )
+    try:
+        new_client = await create_client(db, base, tenant_id=current_user.tenant_id)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A client named '{base.name.strip()}' already exists.",
+        )
     await add_creator_as_pm(db, current_user, new_client.id)
     # Set the initial team in THIS request (the creator can always staff a client
     # they just made). Doing it here — rather than a follow-up PUT /team that
@@ -516,11 +531,34 @@ async def delete_client_endpoint(
 
     ingestion_client_id = client.ingestion_client_id
     client_id_local = client.id
+    client_name = client.name
+    client_tenant_id = client.tenant_id
 
     success = await delete_client(db, client_id, tenant_id=current_user.tenant_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    # Audit the deletion (cascades to the client's projects + tasks) so the
+    # destructive action is attributable in the activity trail, not just creates.
+    if client_tenant_id is not None:
+        await record_activity_events(
+            db,
+            [
+                build_activity_event(
+                    activity_type="CLIENT_DELETED",
+                    visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                    tenant_id=client_tenant_id,
+                    actor_user=current_user,
+                    entity_type="client",
+                    entity_id=client_id_local,
+                    summary=f"{current_user.full_name} deleted client {client_name}.",
+                    route="/client-management",
+                    metadata={"client_name": client_name},
+                    severity="warning",
+                )
+            ],
+        )
 
     if ingestion_client_id:
         background_tasks.add_task(

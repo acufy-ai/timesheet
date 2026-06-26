@@ -10,6 +10,7 @@ import {
   ListChecks,
   Settings,
   ShieldCheck,
+  TrendingUp,
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
@@ -94,6 +95,9 @@ export const buildNavigation = (
       visible: isAdmin(user) || isManager(user),
     },
     { label: 'Clients', to: `/client-management${roleSuffix}`, icon: Briefcase, visible: isAdmin(user) || isManager(user), match: ['/client-management'] },
+    // PSA Insights (financials, resourcing, portfolio, forecasts). Managers +
+    // viewers only — admin manages the workspace, not the money/analytics.
+    { label: 'Insights', to: '/insights', icon: TrendingUp, visible: Boolean(user && (user.role === 'MANAGER' || user.role === 'VIEWER')), match: ['/insights'] },
     { label: 'Audit Trail', to: '/audit-trail', icon: ClipboardList, visible: isAdmin(user) },
     { label: 'Settings', to: '/settings', icon: Settings, visible: isAdmin(user) },
   ];

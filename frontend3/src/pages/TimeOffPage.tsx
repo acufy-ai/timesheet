@@ -181,21 +181,30 @@ function MyTimeOff({ mode, leaveTypes, labelFor }: { mode: 'mine' | 'history'; l
       </div>
       ) : null}
 
-      {/* Balance cards (active view only) */}
+      {/* Balance cards (active view only). These are year-to-date TAKEN totals
+          across all channels (including leave logged on a timesheet), which is a
+          different population from "My requests" below — a card can show hours
+          taken while the request list is empty. The label makes that explicit so
+          the two sections don't read as contradicting each other. */}
       {isHistory ? null : usage.isLoading ? (
         <div className="grid place-items-center rounded-2xl border border-border bg-card py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" />
         </div>
       ) : (usage.data ?? []).length > 0 ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {(usage.data ?? []).map((u) => (
-            <Card key={u.leave_type} className="p-4">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: u.color }} />
-              <p className="mt-2 text-2xl font-semibold leading-none tabular-nums text-foreground">{u.days_taken}</p>
-              <p className="mt-1 text-xs font-medium text-foreground">{u.label}</p>
-              <p className="text-[11px] text-muted-foreground">{num(u.hours_taken).toFixed(1)}h taken</p>
-            </Card>
-          ))}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Taken this year
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {(usage.data ?? []).map((u) => (
+              <Card key={u.leave_type} className="p-4">
+                <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: u.color }} />
+                <p className="mt-2 text-2xl font-semibold leading-none tabular-nums text-foreground">{u.days_taken}</p>
+                <p className="mt-1 text-xs font-medium text-foreground">{u.label}</p>
+                <p className="text-[11px] text-muted-foreground">{num(u.hours_taken).toFixed(1)}h taken</p>
+              </Card>
+            ))}
+          </div>
         </div>
       ) : null}
 

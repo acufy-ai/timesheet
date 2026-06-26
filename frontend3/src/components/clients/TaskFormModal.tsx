@@ -63,7 +63,7 @@ export function TaskFormModal({
         onSaved('Task updated.');
       } else {
         await create.mutateAsync(body);
-        onSaved('Task created.');
+        onSaved(`Task ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {
