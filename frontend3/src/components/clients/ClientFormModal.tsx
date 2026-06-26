@@ -66,7 +66,7 @@ export function ClientFormModal({
         onSaved('Client updated.');
       } else {
         await create.mutateAsync(body);
-        onSaved('Client created.');
+        onSaved(`Client ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {

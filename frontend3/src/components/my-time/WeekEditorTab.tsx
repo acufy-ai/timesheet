@@ -31,7 +31,7 @@ import {
   useUpdateEntry,
   useWeeklySubmitStatus,
 } from '@/hooks/useTime';
-import { useWeekStartDay, useApprovalByAssignedManager, useAssignableUsers } from '@/hooks/useAdmin';
+import { useWeekStartDay, useApprovalByAssignedManager, useAssignableUsers, useMaxHoursPerEntry } from '@/hooks/useAdmin';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   addDays,
@@ -73,9 +73,25 @@ const fmt12h = (v: string | null | undefined): string => formatTime12h(v) ?? 'N/
 const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
 const isEditableStatus = (s: TimeEntry['status']) => s === 'DRAFT' || s === 'REJECTED';
 
+// FastAPI returns errors in two shapes: a plain {detail: "string"} for our
+// HTTPExceptions, and {detail: [{loc, msg, ...}, ...]} for Pydantic request
+// validation (e.g. hours > 24 hits the schema's le=24 before our handler).
+// Rendering the array/object form directly as a React child crashes the page,
+// so always coerce to a readable string here.
 function extractError(err: unknown): string {
-  const e = err as { response?: { data?: { detail?: string } }; message?: string };
-  return e?.response?.data?.detail ?? e?.message ?? 'Something went wrong. Please try again.';
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === 'object' && 'msg' in d ? String((d as { msg: unknown }).msg) : null))
+      .filter(Boolean);
+    if (msgs.length) return msgs.join('; ');
+  }
+  if (detail && typeof detail === 'object' && 'msg' in detail) {
+    return String((detail as { msg: unknown }).msg);
+  }
+  const message = (err as { message?: string })?.message;
+  return message ?? 'Something went wrong. Please try again.';
 }
 
 // Draft row state. Negative tempId for not-yet-saved rows; entryId set once it
@@ -133,6 +149,7 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
   const projectsQ = useProjects();
   const tasksQ = useTasks();
   const weeklyStatusQ = useWeeklySubmitStatus();
+  const maxHoursPerEntry = useMaxHoursPerEntry();
 
   const create = useCreateEntry();
   const update = useUpdateEntry();
@@ -319,6 +336,10 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
       if (derived > 0) hours = derived;
     }
     if (hours <= 0) { flashAndFade('err', 'Hours must be greater than zero.'); return; }
+    if (hours > maxHoursPerEntry) {
+      flashAndFade('err', `Hours per entry cannot exceed ${maxHoursPerEntry}.`);
+      return;
+    }
     void commitSave(key);
   }
 

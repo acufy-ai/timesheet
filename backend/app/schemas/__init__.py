@@ -55,10 +55,17 @@ class UserBase(BaseModel):
     username: str = Field(..., max_length=255)
     full_name: str
     title: Optional[str] = None
+    # FK to the managed Title table (structured), resolved server-side from
+    # `title` when only the name is supplied; either may be sent.
+    title_id: Optional[int] = None
     department: Optional[str] = None
     # FK to the managed Department table (structured). Populated server-side from
     # `department` when only the name is supplied; either may be sent.
     department_id: Optional[int] = None
+    # PSA: loaded hourly cost of this person (sensitive — admin-editable; feeds
+    # margin/EVM, never shown to employees).
+    cost_rate: Optional[Decimal] = None
+    cost_currency: Optional[str] = None
     timezone: Optional[str] = "UTC"
     role: UserRole = UserRole.EMPLOYEE
     is_active: bool = True
@@ -79,8 +86,11 @@ class UserCreate(BaseModel):
     email: Optional[EmailStr] = None
     username: Optional[str] = Field(None, min_length=3, max_length=255)
     title: Optional[str] = None
+    title_id: Optional[int] = None
     department: Optional[str] = None
     department_id: Optional[int] = None
+    cost_rate: Optional[Decimal] = None
+    cost_currency: Optional[str] = None
     timezone: Optional[str] = "UTC"
     role: UserRole = UserRole.EMPLOYEE
     is_active: bool = True
@@ -111,8 +121,11 @@ class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=255)
     full_name: Optional[str] = None
     title: Optional[str] = None
+    title_id: Optional[int] = None
     department: Optional[str] = None
     department_id: Optional[int] = None
+    cost_rate: Optional[Decimal] = None
+    cost_currency: Optional[str] = None
     timezone: Optional[str] = None
     role: Optional[UserRole] = None
     # CRUD layer dedupes and ensures the active role is included.
@@ -500,6 +513,7 @@ class ProjectBase(BaseModel):
     estimated_hours: Optional[Decimal] = None
     budget_amount: Optional[Decimal] = None
     currency: Optional[str] = None
+    revenue_recognition: str = "as_billed"  # as_billed | percent_complete
     is_active: bool = True
     status: str = "planning"
     manager_id: Optional[int] = None
@@ -510,6 +524,13 @@ class ProjectBase(BaseModel):
     @classmethod
     def _valid_status(cls, v):
         return _check_status(v, _PROJECT_STATUSES, "project status")
+
+    @field_validator("revenue_recognition")
+    @classmethod
+    def _valid_revrec(cls, v):
+        if v not in ("as_billed", "percent_complete"):
+            raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
+        return v
 
 
 class ProjectCreate(ProjectBase):
@@ -531,6 +552,7 @@ class ProjectUpdate(BaseModel):
     estimated_hours: Optional[Decimal] = None
     budget_amount: Optional[Decimal] = None
     currency: Optional[str] = None
+    revenue_recognition: Optional[str] = None
     is_active: Optional[bool] = None
     status: Optional[str] = None
     manager_id: Optional[int] = None
@@ -1058,6 +1080,7 @@ class ManagerProjectHealthRow(BaseModel):
 
     project_id: int
     project_name: str
+    client_id: Optional[int] = None
     client_name: str
     # Days remaining until end_date. Negative when overdue. None when
     # the project has no end_date set ("Open").
@@ -1069,6 +1092,8 @@ class ManagerProjectHealthRow(BaseModel):
     budget_hours_remaining: Optional[Decimal]
     # 'good' | 'at-risk' | 'needs-attention' | 'not-set'
     health: str
+    # Plain-language explanation of the health state (for the pill tooltip).
+    health_reason: Optional[str] = None
 
 
 class ManagerProjectHealthResponse(BaseModel):
@@ -1079,11 +1104,16 @@ class ProjectFinancialRow(BaseModel):
     """Per-project financials computed from REAL approved time + resolved rates."""
     project_id: int
     project_name: str
+    client_id: Optional[int] = None
     client_name: str
     currency: str = "USD"
     approved_hours: Decimal = Decimal("0")
     billable_hours: Decimal = Decimal("0")
     revenue: Decimal = Decimal("0")          # sum(hours x billed rate)
+    # PSA margin: cost = sum(hours x cost rate, all hours); margin = revenue-cost.
+    cost: Decimal = Decimal("0")
+    margin: Decimal = Decimal("0")
+    margin_pct: Optional[int] = None          # margin / revenue
     budget_amount: Optional[Decimal] = None
     budget_used_pct: Optional[int] = None     # revenue / budget
     budget_remaining: Optional[Decimal] = None
@@ -1100,12 +1130,156 @@ class FinancialSummary(BaseModel):
     billable_hours: Decimal = Decimal("0")
     nonbillable_hours: Decimal = Decimal("0")
     utilization_pct: Optional[int] = None     # billable / total hours
+    total_cost: Decimal = Decimal("0")
+    total_margin: Decimal = Decimal("0")
+    total_margin_pct: Optional[int] = None
     currency: str = "USD"
+
+
+class ResourcingAllocRow(BaseModel):
+    project_id: int
+    project_name: str
+    percent: int
+    start_date: str
+    end_date: str
+
+
+class ResourcingRow(BaseModel):
+    user_id: int
+    full_name: str
+    title: Optional[str] = None
+    capacity_hours: Decimal = Decimal("40")
+    allocated_pct: int = 0
+    state: str = "ok"  # over | ok | under
+    allocations: list[ResourcingAllocRow] = []
+
+
+class TeamResourcingResponse(BaseModel):
+    weeks_ahead: int
+    team_size: int
+    over_allocated: int
+    under_utilized: int
+    rows: list[ResourcingRow] = []
+
+
+class PortfolioRow(BaseModel):
+    project_id: int
+    project_name: str
+    client_id: Optional[int] = None
+    client_name: str
+    health: str  # good | at-risk | needs-attention | not-set
+    health_reason: Optional[str] = None
+    approved_hours: Decimal = Decimal("0")
+    revenue: Decimal = Decimal("0")
+    cost: Decimal = Decimal("0")
+    margin: Decimal = Decimal("0")
+    margin_pct: Optional[int] = None
+    budget_amount: Optional[Decimal] = None
+    budget_used_pct: Optional[int] = None
+    days_until_end: Optional[int] = None
+    currency: str = "USD"
+
+
+class PortfolioResponse(BaseModel):
+    project_count: int
+    good: int
+    at_risk: int
+    needs_attention: int
+    not_set: int
+    total_revenue: Decimal = Decimal("0")
+    total_cost: Decimal = Decimal("0")
+    total_margin_pct: Optional[int] = None
+    rows: list[PortfolioRow] = []
+
+
+class EvmRow(BaseModel):
+    project_id: int
+    project_name: str
+    client_name: str
+    bac: Decimal = Decimal("0")   # budget at completion (planned cost)
+    pv: Decimal = Decimal("0")    # planned value
+    ev: Decimal = Decimal("0")    # earned value
+    ac: Decimal = Decimal("0")    # actual cost
+    cpi: Optional[float] = None   # EV/AC
+    spi: Optional[float] = None   # EV/PV
+    cost_variance: Decimal = Decimal("0")      # EV-AC
+    schedule_variance: Decimal = Decimal("0")  # EV-PV
+    percent_complete: int = 0
+    # Forecast (predictive): EAC = projected total cost; VAC = BAC-EAC (negative
+    # = overrun); projected_overrun_pct; risk = low|medium|high.
+    eac: Decimal = Decimal("0")
+    vac: Decimal = Decimal("0")
+    projected_overrun_pct: int = 0
+    risk: str = "low"
+    currency: str = "USD"
+
+
+class EvmResponse(BaseModel):
+    rows: list[EvmRow] = []
+
+
+class RevRecRow(BaseModel):
+    project_id: int
+    project_name: str
+    client_name: str
+    method: str  # as_billed | percent_complete
+    billed: Decimal = Decimal("0")       # what was billed (hours x rate)
+    recognized: Decimal = Decimal("0")   # recognized per the method
+    percent_complete: Optional[int] = None
+    currency: str = "USD"
+
+
+class RevRecResponse(BaseModel):
+    total_billed: Decimal = Decimal("0")
+    total_recognized: Decimal = Decimal("0")
+    rows: list[RevRecRow] = []
 
 
 class ManagerFinancialsResponse(BaseModel):
     summary: FinancialSummary
     projects: list[ProjectFinancialRow]
+
+
+# ── Configurable project-health thresholds ──────────────────────────────────
+class HealthConfigBody(BaseModel):
+    """The tunable rules behind the good / at-risk / needs-attention pills.
+    Used for both the workspace default and a per-manager override."""
+    budget_enabled: bool = True
+    over_budget_pct: float = Field(100, ge=0, le=1000)
+    high_burn_pct: float = Field(80, ge=0, le=1000)
+    schedule_enabled: bool = True
+    ending_soon_days: int = Field(7, ge=0, le=365)
+    overdue_days: int = Field(30, ge=0, le=3650)
+    margin_enabled: bool = False
+    low_margin_pct: float = Field(15, ge=-100, le=100)
+
+
+class HealthConfigResponse(BaseModel):
+    """Both scopes plus which one is currently in effect for this manager."""
+    workspace: HealthConfigBody
+    override: Optional[HealthConfigBody] = None
+    # 'override' if the manager has a personal config, else 'workspace'.
+    effective_scope: str = "workspace"
+    can_edit_workspace: bool = False
+
+
+# ── Manager dashboard: clients + their projects ─────────────────────────────
+class ManagerClientProject(BaseModel):
+    project_id: int
+    project_name: str
+    status: Optional[str] = None
+
+
+class ManagerClientRow(BaseModel):
+    client_id: int
+    client_name: str
+    project_count: int
+    projects: list[ManagerClientProject] = []
+
+
+class ManagerClientsResponse(BaseModel):
+    client_count: int
+    rows: list[ManagerClientRow] = []
 
 
 # ── Employee "My Work" (assigned projects/tasks by client) ──────────────────
@@ -1492,6 +1666,20 @@ class DepartmentCreate(BaseModel):
 
 
 class DepartmentResponse(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TitleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TitleResponse(BaseModel):
     id: int
     tenant_id: int
     name: str

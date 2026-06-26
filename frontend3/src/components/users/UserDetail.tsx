@@ -14,9 +14,7 @@ import { UserActionMenu } from './UserActionMenu';
 import { UserClientAccessTab } from './UserClientAccessTab';
 import { ReportingTree } from './ReportingTree';
 
-const ROLE_LABEL: Record<string, string> = {
-  EMPLOYEE: 'Employee', MANAGER: 'Manager', VIEWER: 'Viewer', ADMIN: 'Admin', PLATFORM_ADMIN: 'Platform Admin',
-};
+import { ROLE_LABELS as ROLE_LABEL } from '@/lib/roleLabels';
 
 type DetailTab = 'details' | 'clients';
 

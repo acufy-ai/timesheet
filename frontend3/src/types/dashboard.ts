@@ -37,12 +37,14 @@ export type ProjectHealth = 'good' | 'at-risk' | 'needs-attention' | 'not-set';
 export interface ProjectHealthRow {
   project_id: number;
   project_name: string;
+  client_id?: number | null;
   client_name: string;
   days_until_end: number | null;
   hours_this_week: string;
   budget_pct: number | null;
   budget_hours_remaining: number | null;
   health: ProjectHealth;
+  health_reason?: string | null;
 }
 
 export interface ManagerProjectHealth {
@@ -53,11 +55,15 @@ export interface ManagerProjectHealth {
 export interface ProjectFinancialRow {
   project_id: number;
   project_name: string;
+  client_id?: number | null;
   client_name: string;
   currency: string;
   approved_hours: string | number;
   billable_hours: string | number;
   revenue: string | number;
+  cost?: string | number;
+  margin?: string | number;
+  margin_pct?: number | null;
   budget_amount?: string | number | null;
   budget_used_pct?: number | null;
   budget_remaining?: string | number | null;
@@ -73,11 +79,137 @@ export interface FinancialSummary {
   billable_hours: string | number;
   nonbillable_hours: string | number;
   utilization_pct?: number | null;
+  total_cost?: string | number;
+  total_margin?: string | number;
+  total_margin_pct?: number | null;
   currency: string;
+}
+export interface ResourcingAllocRow {
+  project_id: number;
+  project_name: string;
+  percent: number;
+  start_date: string;
+  end_date: string;
+}
+export interface ResourcingRow {
+  user_id: number;
+  full_name: string;
+  title?: string | null;
+  capacity_hours: string | number;
+  allocated_pct: number;
+  state: 'over' | 'ok' | 'under';
+  allocations: ResourcingAllocRow[];
+}
+export interface TeamResourcing {
+  weeks_ahead: number;
+  team_size: number;
+  over_allocated: number;
+  under_utilized: number;
+  rows: ResourcingRow[];
+}
+export interface PortfolioRow {
+  project_id: number;
+  project_name: string;
+  client_id?: number | null;
+  client_name: string;
+  health: 'good' | 'at-risk' | 'needs-attention' | 'not-set';
+  health_reason?: string | null;
+  approved_hours: string | number;
+  revenue: string | number;
+  cost: string | number;
+  margin: string | number;
+  margin_pct?: number | null;
+  budget_amount?: string | number | null;
+  budget_used_pct?: number | null;
+  days_until_end?: number | null;
+  currency: string;
+}
+export interface Portfolio {
+  project_count: number;
+  good: number;
+  at_risk: number;
+  needs_attention: number;
+  not_set: number;
+  total_revenue: string | number;
+  total_cost: string | number;
+  total_margin_pct?: number | null;
+  rows: PortfolioRow[];
+}
+export interface EvmRow {
+  project_id: number;
+  project_name: string;
+  client_name: string;
+  bac: string | number;
+  pv: string | number;
+  ev: string | number;
+  ac: string | number;
+  cpi?: number | null;
+  spi?: number | null;
+  cost_variance: string | number;
+  schedule_variance: string | number;
+  percent_complete: number;
+  eac: string | number;
+  vac: string | number;
+  projected_overrun_pct: number;
+  risk: 'low' | 'medium' | 'high';
+  currency: string;
+}
+export interface EvmData {
+  rows: EvmRow[];
+}
+export interface RevRecRow {
+  project_id: number;
+  project_name: string;
+  client_name: string;
+  method: 'as_billed' | 'percent_complete';
+  billed: string | number;
+  recognized: string | number;
+  percent_complete?: number | null;
+  currency: string;
+}
+export interface RevRec {
+  total_billed: string | number;
+  total_recognized: string | number;
+  rows: RevRecRow[];
 }
 export interface ManagerFinancials {
   summary: FinancialSummary;
   projects: ProjectFinancialRow[];
+}
+
+// Configurable project-health thresholds (GET/PUT /dashboard/health-config).
+export interface HealthConfigBody {
+  budget_enabled: boolean;
+  over_budget_pct: number;
+  high_burn_pct: number;
+  schedule_enabled: boolean;
+  ending_soon_days: number;
+  overdue_days: number;
+  margin_enabled: boolean;
+  low_margin_pct: number;
+}
+export interface HealthConfigResponse {
+  workspace: HealthConfigBody;
+  override: HealthConfigBody | null;
+  effective_scope: 'workspace' | 'override';
+  can_edit_workspace: boolean;
+}
+
+// GET /dashboard/manager-clients — the manager's clients + the projects they run.
+export interface ManagerClientProject {
+  project_id: number;
+  project_name: string;
+  status?: string | null;
+}
+export interface ManagerClientRow {
+  client_id: number;
+  client_name: string;
+  project_count: number;
+  projects: ManagerClientProject[];
+}
+export interface ManagerClients {
+  client_count: number;
+  rows: ManagerClientRow[];
 }
 
 // GET /dashboard/my-work — an employee's assigned work grouped by client.

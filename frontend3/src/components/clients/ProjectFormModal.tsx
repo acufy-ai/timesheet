@@ -128,7 +128,7 @@ export function ProjectFormModal({
         onSaved('Project updated.');
       } else {
         await create.mutateAsync(body);
-        onSaved('Project created.');
+        onSaved(`Project ${name.trim()} created successfully.`);
       }
       onClose();
     } catch (err) {

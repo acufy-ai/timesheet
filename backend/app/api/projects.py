@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas import ProjectResponse, ProjectCreate, ProjectUpdate, ProjectWithClient
 from app.crud.project import (
     get_project_by_id, create_project, update_project, delete_project,
-    list_projects_for_user, validate_project_manager_ids, next_project_code,
+    list_projects_for_user, list_loggable_projects_for_user,
+    validate_project_manager_ids, next_project_code,
 )
 from app.crud.client import get_client_by_id
 from app.crud.time_entry import count_protected_entries_for_project
@@ -58,6 +59,14 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 async def list_all_projects(
     client_id: int = Query(None),
     active_only: bool = Query(False),
+    loggable_only: bool = Query(
+        False,
+        description=(
+            "Return only projects the user may LOG TIME against (mirrors the "
+            "time-entry write check). Use for the time-entry project picker so "
+            "it never offers a project the create endpoint would 403 on."
+        ),
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
@@ -67,6 +76,14 @@ async def list_all_projects(
     List all projects with optional filtering.
     Any authenticated user can view projects within their tenant.
     """
+    if loggable_only:
+        loggable = await list_loggable_projects_for_user(
+            db, current_user, active_only=active_only,
+        )
+        if client_id is not None:
+            loggable = [p for p in loggable if p.client_id == client_id]
+        return await _attach_roster(db, list(loggable))
+
     projects = await list_projects_for_user(
         db,
         current_user,
@@ -270,11 +287,34 @@ async def delete_project_endpoint(
 
     ingestion_project_id = project.ingestion_project_id
     project_id_local = project.id
+    project_name = project.name
+    project_tenant_id = project.tenant_id
 
     success = await delete_project(db, project_id, tenant_id=current_user.tenant_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Audit the deletion (cascades to the project's tasks) so the destructive
+    # action is attributable in the activity trail, not just creates.
+    if project_tenant_id is not None:
+        await record_activity_events(
+            db,
+            [
+                build_activity_event(
+                    activity_type="PROJECT_DELETED",
+                    visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                    tenant_id=project_tenant_id,
+                    actor_user=current_user,
+                    entity_type="project",
+                    entity_id=project_id_local,
+                    summary=f"{current_user.full_name} deleted project {project_name}.",
+                    route="/client-management",
+                    metadata={"project_name": project_name},
+                    severity="warning",
+                )
+            ],
+        )
 
     if ingestion_project_id:
         background_tasks.add_task(

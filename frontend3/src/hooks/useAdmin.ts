@@ -9,6 +9,7 @@ import {
   clientNotesApi,
   contractsApi,
   departmentsApi,
+  titlesApi,
   roleRatesApi,
   holidaysApi,
   ingestionApi,
@@ -697,6 +698,18 @@ export function useApprovalByAssignedManager(): boolean {
   return v === true || v === 'true' || v === 1 || v === '1';
 }
 
+// Max hours allowed on a single time entry. Read from PUBLIC settings
+// (max_hours_per_entry is is_public=true) so the My Time editor can validate
+// before the network round-trip and show a clean message, rather than letting
+// the backend reject it. Falls back to the backend default (12) when unset; the
+// schema also hard-caps at 24, so the editor uses min(policy, 24).
+export function useMaxHoursPerEntry(): number {
+  const q = usePublicTenantSettings();
+  const v = (q.data as Record<string, unknown> | undefined)?.max_hours_per_entry;
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 24) : 12;
+}
+
 export function useUpdateTenantSettings() {
   const qc = useQueryClient();
   return useMutation({
@@ -778,6 +791,30 @@ export function useDeleteDepartment() {
   return useMutation({
     mutationFn: (id: number) => departmentsApi.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['departments'] }),
+  });
+}
+
+// ── Titles (Workforce Setup) ────────────────────────────────────────
+export function useTitles(enabled = true) {
+  return useQuery({
+    queryKey: ['titles'],
+    queryFn: () => titlesApi.list().then((r) => r.data),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+export function useCreateTitle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => titlesApi.create(name).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['titles'] }),
+  });
+}
+export function useDeleteTitle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => titlesApi.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['titles'] }),
   });
 }
 

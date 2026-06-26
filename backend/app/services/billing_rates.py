@@ -96,3 +96,17 @@ def entry_billed_amount(entry: TimeEntry, project: Optional[Project]) -> Decimal
     if rate is None:
         rate = project.billable_rate if project is not None else Decimal("0")
     return (entry.hours or Decimal("0")) * rate
+
+
+def entry_cost_amount(entry: TimeEntry) -> Decimal:
+    """The labor COST of an entry, from the frozen cost snapshot (PSA).
+
+    Unlike revenue, cost applies to ALL hours — billable or not — because the
+    person costs the firm the same regardless of whether the time is billed.
+    Returns 0 when no cost was stamped (the owner had no cost_rate at approval);
+    margin reporting treats that as "cost unknown" rather than zero-cost.
+    """
+    rate = entry.cost_rate
+    if rate is None:
+        return Decimal("0")
+    return (entry.hours or Decimal("0")) * rate

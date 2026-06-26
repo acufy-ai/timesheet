@@ -11,6 +11,8 @@ export interface ManagedUser {
   roles?: string[];
   department?: string | null;
   title?: string | null;
+  cost_rate?: number | string | null;
+  cost_currency?: string | null;
   timezone?: string | null;
   manager_id?: number | null;
   manager_ids?: number[];
@@ -38,7 +40,10 @@ export interface CreateUserBody {
   email?: string | null;
   username?: string | null;
   title?: string | null;
+  title_id?: number | null;
   department?: string | null;
+  cost_rate?: number | string | null;
+  cost_currency?: string | null;
   timezone?: string | null;
   role?: string;
   is_active?: boolean;
@@ -58,7 +63,10 @@ export interface UpdateUserBody {
   username?: string | null;
   full_name?: string;
   title?: string | null;
+  title_id?: number | null;
   department?: string | null;
+  cost_rate?: number | string | null;
+  cost_currency?: string | null;
   timezone?: string | null;
   role?: string;
   roles?: string[];
@@ -444,6 +452,7 @@ export interface ProjectBody {
   estimated_hours?: number | null;
   budget_amount?: number | null;
   currency?: string | null;
+  revenue_recognition?: string;
   is_active?: boolean;
   status?: ProjectStatus;
   manager_id?: number | null;
@@ -518,6 +527,12 @@ export interface TimeOffRequestWithUser extends TimeOffRequest {
 
 // A workforce department (GET /departments).
 export interface Department {
+  id: number;
+  name: string;
+}
+
+// A managed job title (GET /titles).
+export interface Title {
   id: number;
   name: string;
 }
@@ -624,7 +639,10 @@ export interface UserProfile {
   username: string;
   full_name: string;
   title?: string | null;
+  title_id?: number | null;
   department?: string | null;
+  cost_rate?: number | string | null;
+  cost_currency?: string | null;
   timezone?: string | null;
   role: string;
   // Back-compat single-manager fields (primary). Prefer `managers`.

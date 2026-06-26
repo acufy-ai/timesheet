@@ -276,6 +276,45 @@ async def _resolve_department_id(
     return dept.id
 
 
+async def _resolve_title_id(
+    db: AsyncSession,
+    *,
+    tenant_id: Optional[int],
+    name: Optional[str],
+    explicit_id: Optional[int] = None,
+) -> Optional[int]:
+    """Resolve a job-title FK during the additive rollout. Mirrors
+    _resolve_department_id: explicit id wins; otherwise match/create by name."""
+    from app.models.title import Title
+
+    if explicit_id is not None:
+        row = (await db.execute(
+            select(Title).where(
+                Title.id == explicit_id,
+                Title.tenant_id == tenant_id,
+            )
+        )).scalars().first()
+        return row.id if row else None
+
+    clean = _normalize_profile_text(name)
+    if not clean or tenant_id is None:
+        return None
+
+    existing = (await db.execute(
+        select(Title).where(
+            Title.tenant_id == tenant_id,
+            sa_func.lower(Title.name) == clean.lower(),
+        )
+    )).scalars().first()
+    if existing:
+        return existing.id
+
+    title = Title(tenant_id=tenant_id, name=clean)
+    db.add(title)
+    await db.flush()
+    return title.id
+
+
 def _validate_role_profile(
     role: UserRole,
     title: Optional[str],
@@ -444,6 +483,12 @@ async def create_user(
         name=normalized_department,
         explicit_id=getattr(user_create, "department_id", None),
     )
+    resolved_title_id = await _resolve_title_id(
+        db,
+        tenant_id=user_create.tenant_id,
+        name=normalized_title,
+        explicit_id=getattr(user_create, "title_id", None),
+    )
 
     # Always generate a secure random temporary password; ignore any client-supplied value.
     password = _generate_default_password()
@@ -474,8 +519,11 @@ async def create_user(
         username=raw_username,
         full_name=user_create.full_name.strip(),
         title=normalized_title,
+        title_id=resolved_title_id,
         department=normalized_department,
         department_id=resolved_department_id,
+        cost_rate=user_create.cost_rate,
+        cost_currency=(user_create.cost_currency or "USD") if user_create.cost_rate is not None else None,
         hashed_password=get_password_hash(password),
         has_changed_password=False,
         email_verified=False,
@@ -880,6 +928,17 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     if "title" in update_data:
         update_data["title"] = _normalize_profile_text(update_data["title"])
 
+    # Keep the structured title FK in sync (mirrors the department block below).
+    if "title_id" in update_data or "title" in update_data:
+        explicit_title_id = update_data.pop("title_id", None)
+        title_for_lookup = update_data.get("title", user.title)
+        update_data["title_id"] = await _resolve_title_id(
+            db,
+            tenant_id=user.tenant_id,
+            name=title_for_lookup,
+            explicit_id=explicit_title_id,
+        )
+
     if "phones" in update_data and update_data["phones"] is not None:
         update_data["phones"] = [p.strip() for p in update_data["phones"] if p.strip()][:3]
 
@@ -994,6 +1053,14 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
          "has_changed_password", "timesheet_locked", "phones", "auth0_sub",
          "tenant_id"}.intersection(update_data.keys())
     )
+
+    # PSA cost rate: default currency to USD when a rate is set without one;
+    # clearing the rate (None) also clears the currency.
+    if "cost_rate" in update_data:
+        if update_data["cost_rate"] is None:
+            update_data["cost_currency"] = None
+        elif not update_data.get("cost_currency"):
+            update_data["cost_currency"] = user.cost_currency or "USD"
 
     for field, value in update_data.items():
         setattr(user, field, value)

@@ -11,6 +11,13 @@ import type {
   TeamDailyOverview,
   TeamOnTimeStats,
   TeamProjectMatrix,
+  TeamResourcing,
+  Portfolio,
+  EvmData,
+  RevRec,
+  HealthConfigBody,
+  HealthConfigResponse,
+  ManagerClients,
   TeamRejectionStats,
 } from '@/types/dashboard';
 import type {
@@ -57,6 +64,7 @@ import type {
   ClientNoteBody,
   CreateUserBody,
   Department,
+  Title,
   CreateUserResult,
   DismissedSignal,
   EmailAlias,
@@ -125,6 +133,22 @@ export const TOKEN_KEY = 'accessToken';
 // Kept only to purge any refresh token left in storage by a previous build.
 export const REFRESH_KEY = 'refreshToken';
 
+// Per-tab id, sent as X-Tab-Id so the backend scopes the HttpOnly refresh
+// cookie PER TAB (refresh_token__<id>). This is what lets two different
+// accounts in two tabs of the same browser keep independent sessions instead
+// of fighting over one shared cookie. sessionStorage is per-tab and survives
+// reloads within the tab, so the id (and thus the session) is stable for the
+// life of the tab and gone when it closes.
+const TAB_ID_KEY = 'tabId';
+export function getTabId(): string {
+  let id = window.sessionStorage.getItem(TAB_ID_KEY);
+  if (!id) {
+    id = (crypto.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
+    window.sessionStorage.setItem(TAB_ID_KEY, id);
+  }
+  return id;
+}
+
 // Decode a JWT's `sub` (the user id) WITHOUT verification — used only to detect
 // a cross-tab identity swap, never for trust decisions. The HttpOnly refresh
 // cookie is shared across all tabs of an origin; if you log into a SECOND
@@ -160,8 +184,11 @@ export const api = axios.create({
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = window.sessionStorage.getItem(TOKEN_KEY);
-  if (token && config.headers) {
-    config.headers.set('Authorization', `Bearer ${token}`);
+  if (config.headers) {
+    if (token) config.headers.set('Authorization', `Bearer ${token}`);
+    // Per-tab refresh-cookie scoping. Harmless on non-auth calls; the backend
+    // only reads it on /auth/login, /auth/refresh, /auth/logout.
+    config.headers.set('X-Tab-Id', getTabId());
   }
   return config;
 });
@@ -197,7 +224,7 @@ async function tokenIsDead(): Promise<boolean> {
   if (!token) return true;
   try {
     await axios.get(`${API_BASE}/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, 'X-Tab-Id': getTabId() },
       withCredentials: true,
     });
     return false; // /auth/me works -> token is valid, the 403 was a permission denial
@@ -219,7 +246,10 @@ async function runRefresh(): Promise<string | null> {
   // session and bounces this tab to /login (correct — its own session is gone).
   const priorSub = tokenSub(window.sessionStorage.getItem(TOKEN_KEY));
   try {
-    const res = await axios.post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true });
+    const res = await axios.post(`${API_BASE}/auth/refresh`, {}, {
+      headers: { 'X-Tab-Id': getTabId() },
+      withCredentials: true,
+    });
     const data = res.data as { access_token?: string };
     if (!data?.access_token) return null;
     const newSub = tokenSub(data.access_token);
@@ -354,6 +384,16 @@ export const dashboardApi = {
     api.get<TeamProjectMatrix>('/dashboard/team-project-matrix', {
       params: { days_back },
     }),
+  teamResourcing: (weeks_ahead = 4) =>
+    api.get<TeamResourcing>('/dashboard/team-resourcing', { params: { weeks_ahead } }),
+  portfolio: () => api.get<Portfolio>('/dashboard/portfolio'),
+  evm: () => api.get<EvmData>('/dashboard/evm'),
+  revenueRecognition: () => api.get<RevRec>('/dashboard/revenue-recognition'),
+  managerClients: () => api.get<ManagerClients>('/dashboard/manager-clients'),
+  healthConfig: () => api.get<HealthConfigResponse>('/dashboard/health-config'),
+  setHealthConfig: (scope: 'workspace' | 'override', body: HealthConfigBody) =>
+    api.put<HealthConfigResponse>('/dashboard/health-config', body, { params: { scope } }),
+  clearHealthOverride: () => api.delete('/dashboard/health-config/override'),
 };
 
 export const timeApi = {
@@ -386,7 +426,7 @@ export const timeApi = {
 };
 
 export const projectsApi = {
-  list: (params?: { active_only?: boolean; client_id?: number; limit?: number }) =>
+  list: (params?: { active_only?: boolean; client_id?: number; limit?: number; loggable_only?: boolean }) =>
     api.get<Project[]>('/projects', { params }),
   nextCode: () => api.get<{ code: string }>('/projects/next-code'),
   create: (data: ProjectBody) => api.post<FullProject>('/projects', data),
@@ -694,6 +734,12 @@ export const departmentsApi = {
   list: () => api.get<Department[]>('/departments'),
   create: (name: string) => api.post<Department>('/departments', { name }),
   remove: (id: number) => api.delete(`/departments/${id}`),
+};
+
+export const titlesApi = {
+  list: () => api.get<Title[]>('/titles'),
+  create: (name: string) => api.post<Title>('/titles', { name }),
+  remove: (id: number) => api.delete(`/titles/${id}`),
 };
 
 // Team timesheets for the Approved-Timesheets tab (admin/manager scope).

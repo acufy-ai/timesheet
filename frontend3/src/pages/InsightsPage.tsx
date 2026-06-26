@@ -1,0 +1,533 @@
+import { useMemo, useState } from 'react';
+import { Navigate, useNavigate } from 'react-router-dom';
+import { BarChart3, CalendarRange, Layers, Loader2, SlidersHorizontal, TrendingUp } from 'lucide-react';
+
+import { Tooltip, WorkspaceHeader } from '@/components/ui';
+import { useAuth } from '@/contexts/AuthContext';
+import { cn } from '@/lib/cn';
+import { useEvm, useManagerFinancials, usePortfolio, useRevenueRecognition, useTeamResourcing } from '@/hooks/useDashboard';
+import { FinancialsReport } from '@/components/dashboard/reports/FinancialsReport';
+import { InfoLabel } from '@/components/dashboard/InfoLabel';
+import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
+import { fmtMoney } from '@/lib/format';
+
+// A clickable client cell that routes to the client's page. Shared by the
+// Insights tables so client names behave consistently.
+function ClientLink({ clientId, name }: { clientId?: number | null; name: string }) {
+  const navigate = useNavigate();
+  if (!clientId) return <span className="text-[11px] text-muted-foreground">{name}</span>;
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); navigate(`/client-management?client=${clientId}`); }}
+      className="text-[11px] text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+    >
+      {name}
+    </button>
+  );
+}
+
+// PSA "Insights" — the manager/viewer analytics section. Holds Financials,
+// Resourcing, Portfolio, and Forecasts as the program builds them out. Admin
+// is intentionally excluded (they manage the workspace, not the money), and
+// employees never see it. Gated again here in case of direct navigation.
+type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts';
+
+const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
+  { key: 'financials', label: 'Financials', Icon: BarChart3 },
+  { key: 'resourcing', label: 'Resourcing', Icon: Layers },
+  { key: 'portfolio', label: 'Portfolio', Icon: TrendingUp },
+  { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
+];
+
+export function InsightsPage() {
+  const { user } = useAuth();
+  const [tab, setTab] = useState<InsightTab>('financials');
+
+  // Manager + viewer only.
+  if (!user || (user.role !== 'MANAGER' && user.role !== 'VIEWER')) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return (
+    <div className="space-y-5">
+      <WorkspaceHeader
+        title="Insights"
+        description="Financial, resourcing and portfolio analytics for your projects."
+      />
+
+      <div className="flex gap-1 border-b border-border">
+        {TABS.map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors',
+              tab === key
+                ? 'rounded-t-lg bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Icon className="h-4 w-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'financials' ? <FinancialsTab />
+        : tab === 'resourcing' ? <ResourcingTab />
+        : tab === 'portfolio' ? <PortfolioTab />
+        : <ForecastsTab />}
+    </div>
+  );
+}
+
+// CPI/SPI tone: >=1 good (emerald), >=0.9 warn (amber), else bad (rose).
+function indexTone(v: number | null | undefined): string {
+  if (v == null) return 'text-muted-foreground';
+  if (v >= 1) return 'text-emerald-600 dark:text-emerald-400';
+  if (v >= 0.9) return 'text-amber-600 dark:text-amber-400';
+  return 'text-rose-600 dark:text-rose-400';
+}
+
+function ForecastsTab() {
+  const q = useEvm();
+  const navigate = useNavigate();
+  if (q.isLoading) {
+    return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
+  }
+  const d = q.data;
+  if (!d || d.rows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-border bg-card px-6 py-16 text-center">
+        <p className="text-base font-semibold text-foreground">Earned value (EVM)</p>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">Set a baseline (planned hours, cost and dates) on a project to track planned vs. earned vs. actual value, CPI/SPI and variance here.</p>
+      </div>
+    );
+  }
+  const highRisk = d.rows.filter((r) => r.risk === 'high').length;
+  const medRisk = d.rows.filter((r) => r.risk === 'medium').length;
+  const riskMeta = (r: string) =>
+    r === 'high' ? { label: 'High', cls: 'bg-rose-500/15 text-rose-600 dark:text-rose-400' }
+      : r === 'medium' ? { label: 'Medium', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' }
+        : { label: 'Low', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' };
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <SummaryStat label="High risk" value={highRisk} tone="rose" hint="overrun + behind" />
+        <SummaryStat label="Medium risk" value={medRisk} tone="amber" hint="cost or schedule slip" />
+        <SummaryStat label="On track" value={d.rows.length - highRisk - medRisk} tone="emerald" hint="forecast within plan" />
+      </div>
+      <EvmLegend />
+      <div className="overflow-hidden rounded-2xl border border-border bg-card">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-2 font-semibold">Project</th>
+                <th className="px-4 py-2 text-right font-semibold">% done</th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Earned (EV)" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Actual (AC)" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="CPI" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="SPI" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Forecast (EAC)" side="bottom" /></th>
+                <th className="px-4 py-2 text-center font-semibold"><InfoLabel label="Risk" side="bottom" /></th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.rows.map((r) => {
+                const rm = riskMeta(r.risk);
+                return (
+                  <tr
+                    key={r.project_id}
+                    onClick={() => navigate(`/insights/project/${r.project_id}`)}
+                    className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-foreground/[0.03]"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-foreground">{r.project_name}</div>
+                      <div className="text-[11px] text-muted-foreground">{r.client_name}</div>
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-foreground">{r.percent_complete}%</td>
+                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">{fmtMoney(r.ev, r.currency)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{fmtMoney(r.ac, r.currency)}</td>
+                    <td className={cn('px-4 py-3 text-right tabular-nums font-semibold', indexTone(r.cpi))}>{r.cpi != null ? r.cpi.toFixed(2) : '—'}</td>
+                    <td className={cn('px-4 py-3 text-right tabular-nums font-semibold', indexTone(r.spi))}>{r.spi != null ? r.spi.toFixed(2) : '—'}</td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      <span className="text-foreground">{fmtMoney(r.eac, r.currency)}</span>
+                      {r.projected_overrun_pct > 0 ? <span className="ml-1 text-[11px] text-rose-600 dark:text-rose-400">+{r.projected_overrun_pct}%</span> : null}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-semibold', rm.cls)}>{rm.label}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Plain-English legend for the earned-value columns — the terms (PV/EV/AC,
+// CPI/SPI, EAC) are jargon, so spell them out under the table.
+function EvmLegend() {
+  const items: [string, string][] = [
+    ['PV — Planned value', 'Budget that should be earned by now, per the baseline schedule.'],
+    ['EV — Earned value', 'Budget × % of work actually complete. The value delivered so far.'],
+    ['AC — Actual cost', 'Real labour cost incurred to date.'],
+    ['CPI', 'Earned ÷ Actual. ≥ 1 = under cost, < 1 = over cost.'],
+    ['SPI', 'Earned ÷ Planned. ≥ 1 = ahead of schedule, < 1 = behind.'],
+    ['EAC — Forecast', 'Projected final cost at the current pace (budget ÷ CPI). +x% = projected overrun vs. budget.'],
+    ['Risk', 'High = projected overrun AND behind. Medium = one of the two. Low = on plan.'],
+  ];
+  return (
+    <div className="rounded-xl border border-border bg-card px-4 py-3">
+      <p className="mb-2 text-xs font-semibold text-foreground">What the columns mean</p>
+      <dl className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
+        {items.map(([term, def]) => (
+          <div key={term} className="flex gap-2">
+            <dt className="shrink-0 font-medium text-foreground">{term}</dt>
+            <dd className="text-muted-foreground">{def}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+const HEALTH_META: Record<string, { label: string; dot: string; text: string }> = {
+  'needs-attention': { label: 'Needs attention', dot: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' },
+  'at-risk': { label: 'At risk', dot: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400' },
+  good: { label: 'Good', dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' },
+  'not-set': { label: 'Not set', dot: 'bg-muted-foreground/40', text: 'text-muted-foreground' },
+};
+
+function marginColor(pct: number | null | undefined): string {
+  if (pct == null) return 'text-muted-foreground';
+  if (pct >= 40) return 'text-emerald-600 dark:text-emerald-400';
+  if (pct >= 15) return 'text-amber-600 dark:text-amber-400';
+  return 'text-rose-600 dark:text-rose-400';
+}
+
+function PortfolioTab() {
+  const q = usePortfolio();
+  const navigate = useNavigate();
+  const [rulesOpen, setRulesOpen] = useState(false);
+  if (q.isLoading) {
+    return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
+  }
+  const d = q.data;
+  if (!d || d.rows.length === 0) {
+    return (
+      <>
+        <div className="mb-3 flex justify-end"><HealthRulesButton onClick={() => setRulesOpen(true)} /></div>
+        <div className="rounded-2xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+          No projects with approved time yet. The portfolio shows health, margin and budget across your book of work.
+        </div>
+        <HealthRulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
+      </>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <SummaryStat label="Needs attention" value={d.needs_attention} tone="rose" hint="over budget / overdue" />
+        <SummaryStat label="At risk" value={d.at_risk} tone="amber" hint="near end / high burn" />
+        <SummaryStat label="Good" value={d.good} tone="emerald" hint="on track" />
+        <SummaryStat label="Total margin" value={d.total_margin_pct ?? 0} tone="sky" hint="across the portfolio" suffix="%" />
+      </div>
+      <div className="overflow-hidden rounded-2xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">All projects</p>
+            <p className="text-xs text-muted-foreground">{d.project_count} projects · sorted by attention</p>
+          </div>
+          <HealthRulesButton onClick={() => setRulesOpen(true)} />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-2 font-semibold">Project</th>
+                <th className="px-4 py-2 font-semibold">
+                  <InfoLabel label="Health" />
+                </th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Revenue" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Margin" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget used" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold">Ends in</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.rows.map((r) => {
+                const h = HEALTH_META[r.health] ?? HEALTH_META['not-set'];
+                const pill = (
+                  <span className="inline-flex cursor-help items-center gap-1.5">
+                    <span className={cn('h-2 w-2 rounded-full', h.dot)} />
+                    <span className={cn('text-xs font-medium', h.text)}>{h.label}</span>
+                  </span>
+                );
+                return (
+                  <tr
+                    key={r.project_id}
+                    onClick={() => navigate(`/insights/project/${r.project_id}`)}
+                    className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-foreground/[0.03]"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-foreground">{r.project_name}</div>
+                      <ClientLink clientId={r.client_id} name={r.client_name} />
+                    </td>
+                    <td className="px-4 py-3">
+                      {r.health_reason
+                        ? <Tooltip label={r.health_reason} side="top" maxWidth={240}>{pill}</Tooltip>
+                        : pill}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">{fmtMoney(r.revenue, r.currency)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {r.margin_pct != null ? <span className={cn('font-semibold', marginColor(r.margin_pct))}>{r.margin_pct}%</span> : <span className="text-muted-foreground">N/A</span>}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {r.budget_used_pct != null ? <span className={r.budget_used_pct > 100 ? 'text-rose-600 dark:text-rose-400' : r.budget_used_pct > 80 ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}>{r.budget_used_pct}%</span> : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                      {r.days_until_end != null ? (r.days_until_end < 0 ? `${Math.abs(r.days_until_end)}d overdue` : `${r.days_until_end}d`) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <HealthRulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
+    </div>
+  );
+}
+
+function HealthRulesButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <SlidersHorizontal className="h-3.5 w-3.5" /> Health rules
+    </button>
+  );
+}
+
+function ResourcingTab() {
+  const q = useTeamResourcing(8);
+  if (q.isLoading) {
+    return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
+  }
+  const d = q.data;
+  if (!d || d.rows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+        No resourcing data yet. Allocate people to projects to plan capacity and spot over/under-utilization.
+      </div>
+    );
+  }
+  const stateMeta = (s: string) =>
+    s === 'over' ? { label: 'Over-allocated', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' }
+      : s === 'under' ? { label: 'Under-utilized', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' }
+        : { label: 'On track', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
+  return (
+    <div className="space-y-4">
+      {/* summary */}
+      <div className="grid grid-cols-3 gap-3">
+        <SummaryStat label="Over-allocated" value={d.over_allocated} tone="rose" hint="above 100% capacity" />
+        <SummaryStat label="On track" value={d.team_size - d.over_allocated - d.under_utilized} tone="emerald" hint="60–100% allocated" />
+        <SummaryStat label="Under-utilized" value={d.under_utilized} tone="sky" hint="below 60% — bench" />
+      </div>
+      <div className="rounded-2xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <p className="text-sm font-semibold text-foreground">Allocation next {d.weeks_ahead} weeks</p>
+          <p className="text-xs text-muted-foreground">{d.team_size} people · planned allocation vs. weekly capacity</p>
+        </div>
+        <div className="divide-y divide-border">
+          {d.rows.map((r) => {
+            const m = stateMeta(r.state);
+            const width = Math.min(r.allocated_pct, 150) / 1.5; // 150% maps to full bar
+            return (
+              <div key={r.user_id} className="flex items-center gap-4 px-4 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-foreground">{r.full_name}{r.title ? <span className="ml-1.5 text-xs text-muted-foreground">{r.title}</span> : null}</p>
+                  {r.allocations.length ? (
+                    <p className="truncate text-[11px] text-muted-foreground">{r.allocations.map((a) => `${a.project_name} ${a.percent}%`).join(' · ')}</p>
+                  ) : <p className="text-[11px] text-muted-foreground/70">No allocations — available</p>}
+                </div>
+                <div className="h-2 w-40 shrink-0 overflow-hidden rounded-full bg-muted">
+                  <div className={cn('h-full rounded-full', m.bar)} style={{ width: `${width}%` }} />
+                </div>
+                <div className={cn('w-28 shrink-0 text-right text-sm font-semibold tabular-nums', m.text)}>
+                  {r.allocated_pct}%
+                  <span className="ml-1 block text-[10px] font-normal text-muted-foreground">{m.label}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, tone, hint, suffix }: { label: string; value: number; tone: 'rose' | 'emerald' | 'sky' | 'amber'; hint: string; suffix?: string }) {
+  const toneCls = tone === 'rose' ? 'text-rose-600 dark:text-rose-400'
+    : tone === 'emerald' ? 'text-emerald-600 dark:text-emerald-400'
+    : tone === 'amber' ? 'text-amber-600 dark:text-amber-400'
+    : 'text-sky-600 dark:text-sky-400';
+  return (
+    <div className="rounded-2xl border border-border bg-card px-4 py-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className={cn('mt-1 text-2xl font-bold tabular-nums', toneCls)}>{value}{suffix ?? ''}</p>
+      <p className="text-[11px] text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+function FinancialsTab() {
+  const q = useManagerFinancials();
+  // What-if levers: adjust bill / cost rates by a % and see margins recompute
+  // live. Hypothetical only — never touches real data ("unlimited scenarios").
+  const [billAdj, setBillAdj] = useState(0); // -50..+50 %
+  const [costAdj, setCostAdj] = useState(0);
+  const whatIf = billAdj !== 0 || costAdj !== 0;
+
+  const adjusted = useMemo(() => {
+    if (!q.data) return q.data;
+    if (!whatIf) return q.data;
+    const bf = 1 + billAdj / 100;
+    const cf = 1 + costAdj / 100;
+    const projects = q.data.projects.map((p) => {
+      const revenue = Number(p.revenue) * bf;
+      const cost = Number(p.cost ?? 0) * cf;
+      const margin = revenue - cost;
+      const margin_pct = revenue > 0 ? Math.round((margin / revenue) * 100) : null;
+      const budget_used_pct = p.budget_amount && Number(p.budget_amount) > 0
+        ? Math.round((revenue / Number(p.budget_amount)) * 100) : p.budget_used_pct;
+      return { ...p, revenue, cost, margin, margin_pct, budget_used_pct };
+    });
+    const total_revenue = projects.reduce((s, p) => s + Number(p.revenue), 0);
+    const total_cost = projects.reduce((s, p) => s + Number(p.cost ?? 0), 0);
+    const total_margin = total_revenue - total_cost;
+    const total_margin_pct = total_revenue > 0 ? Math.round((total_margin / total_revenue) * 100) : null;
+    return { ...q.data, projects, summary: { ...q.data.summary, total_revenue, total_cost, total_margin, total_margin_pct } };
+  }, [q.data, billAdj, costAdj, whatIf]);
+
+  if (q.isLoading) {
+    return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
+  }
+  if (!q.data || q.data.projects.length === 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+        No financial data yet. Approve some time on budgeted projects to see revenue, cost and margins here.
+      </div>
+    );
+  }
+  const baseMargin = q.data.summary.total_margin_pct ?? 0;
+  const newMargin = adjusted?.summary.total_margin_pct ?? baseMargin;
+  return (
+    <div className="space-y-4">
+      {/* What-if scenario controls */}
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">What-if</p>
+            <p className="text-xs text-muted-foreground">Adjust rates to model the impact on margin. Nothing is saved.</p>
+          </div>
+          {whatIf ? (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Margin</span>
+              <span className="font-semibold text-muted-foreground">{baseMargin}%</span>
+              <span className="text-muted-foreground">→</span>
+              <span className={cn('font-bold', marginColor(newMargin))}>{newMargin}%</span>
+              <button type="button" onClick={() => { setBillAdj(0); setCostAdj(0); }} className="ml-2 rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Reset</button>
+            </div>
+          ) : null}
+        </div>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <WhatIfSlider label="Bill rate" value={billAdj} onChange={setBillAdj} />
+          <WhatIfSlider label="Cost rate" value={costAdj} onChange={setCostAdj} />
+        </div>
+      </div>
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <FinancialsReport data={adjusted ?? q.data} />
+      </div>
+      <RevenueRecognitionCard />
+    </div>
+  );
+}
+
+function RevenueRecognitionCard() {
+  const q = useRevenueRecognition();
+  if (q.isLoading || !q.data || q.data.rows.length === 0) return null;
+  const d = q.data;
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Revenue recognition</p>
+          <p className="text-xs text-muted-foreground">Recognized per each project's method (as-billed or % complete).</p>
+        </div>
+        <div className="flex items-center gap-4 text-sm">
+          <span className="text-muted-foreground">Billed <span className="font-semibold text-foreground">{fmtMoney(d.total_billed)}</span></span>
+          <span className="text-muted-foreground">Recognized <span className="font-semibold text-foreground">{fmtMoney(d.total_recognized)}</span></span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+              <th className="px-4 py-2 font-semibold">Project</th>
+              <th className="px-4 py-2 font-semibold">Method</th>
+              <th className="px-4 py-2 text-right font-semibold">% complete</th>
+              <th className="px-4 py-2 text-right font-semibold">Billed</th>
+              <th className="px-4 py-2 text-right font-semibold">Recognized</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.rows.map((r) => (
+              <tr key={r.project_id} className="border-b border-border/60 last:border-0">
+                <td className="px-4 py-3">
+                  <div className="font-medium text-foreground">{r.project_name}</div>
+                  <div className="text-[11px] text-muted-foreground">{r.client_name}</div>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', r.method === 'percent_complete' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground')}>
+                    {r.method === 'percent_complete' ? '% complete' : 'As billed'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{r.percent_complete != null ? `${r.percent_complete}%` : '—'}</td>
+                <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">{fmtMoney(r.billed, r.currency)}</td>
+                <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">{fmtMoney(r.recognized, r.currency)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function WhatIfSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className={cn('font-semibold tabular-nums', value > 0 ? 'text-emerald-600 dark:text-emerald-400' : value < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-foreground')}>{value > 0 ? '+' : ''}{value}%</span>
+      </div>
+      <input
+        type="range" min={-50} max={50} step={5} value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-primary"
+        aria-label={`${label} adjustment percent`}
+      />
+    </div>
+  );
+}
+

@@ -25,7 +25,22 @@ export function useMyEntries(startDate: string, endDate: string) {
   });
 }
 
+// Projects the current user may LOG TIME against. Backed by loggable_only so
+// the picker never offers a project the create endpoint would 403 on (e.g. a
+// manager who PMs a client but isn't staffed on its project). Distinct cache
+// key from the admin/management project lists, which are scoped differently.
 export function useProjects() {
+  return useQuery({
+    queryKey: ['projects', 'loggable'],
+    queryFn: () => projectsApi.list({ active_only: true, loggable_only: true }).then((r) => r.data),
+    staleTime: 5 * 60_000,
+  });
+}
+
+// All active projects in the user's view scope (NOT filtered to loggable). For
+// filters/pickers that list projects to report on rather than log against
+// (e.g. the export modal's project filter).
+export function useAllActiveProjects() {
   return useQuery({
     queryKey: ['projects', 'active'],
     queryFn: () => projectsApi.list({ active_only: true }).then((r) => r.data),

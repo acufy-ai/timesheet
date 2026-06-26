@@ -1,10 +1,11 @@
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 import time as time_module
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -44,6 +45,20 @@ from app.schemas import (
     TeamProjectMatrixProject,
     TeamProjectMatrixResponse,
     TeamProjectMatrixRow,
+    TeamResourcingResponse,
+    ResourcingRow,
+    ResourcingAllocRow,
+    PortfolioResponse,
+    PortfolioRow,
+    EvmResponse,
+    EvmRow,
+    RevRecResponse,
+    RevRecRow,
+    HealthConfigBody,
+    HealthConfigResponse,
+    ManagerClientsResponse,
+    ManagerClientRow,
+    ManagerClientProject,
     TeamDailyOverviewResponse,
     TeamRejectionReason,
     TeamRejectionRow,
@@ -193,6 +208,91 @@ def _week_start(value: date, week_start_day: int = 0) -> date:
     py_weekday = value.weekday()
     offset = (py_weekday + 1) % 7 if week_start_day == 0 else py_weekday
     return value - timedelta(days=offset)
+
+
+@dataclass
+class HealthConfig:
+    """Resolved thresholds behind the project-health classification. Defaults
+    mirror the historical hardcoded values, so an unconfigured tenant behaves
+    exactly as before. Each rule group can be disabled."""
+    budget_enabled: bool = True
+    over_budget_pct: float = 100.0   # needs-attention at/above
+    high_burn_pct: float = 80.0      # at-risk above
+    schedule_enabled: bool = True
+    ending_soon_days: int = 7        # at-risk within
+    overdue_days: int = 30           # needs-attention past end (days)
+    margin_enabled: bool = False
+    low_margin_pct: float = 15.0     # at-risk below
+
+
+async def _load_health_config(
+    db: AsyncSession, tenant_id: int, user_id: Optional[int]
+) -> HealthConfig:
+    """Resolve health thresholds: the manager's own override if present, else
+    the tenant's workspace default, else the built-in fallback. One query."""
+    from app.models.project_health_config import ProjectHealthConfig
+
+    rows = (await db.execute(
+        select(ProjectHealthConfig).where(
+            ProjectHealthConfig.tenant_id == tenant_id,
+            or_(
+                ProjectHealthConfig.user_id == user_id,
+                ProjectHealthConfig.user_id.is_(None),
+            ),
+        )
+    )).scalars().all()
+    by_scope = {r.user_id: r for r in rows}
+    row = by_scope.get(user_id) or by_scope.get(None)
+    if row is None:
+        return HealthConfig()
+    return HealthConfig(
+        budget_enabled=row.budget_enabled,
+        over_budget_pct=float(row.over_budget_pct),
+        high_burn_pct=float(row.high_burn_pct),
+        schedule_enabled=row.schedule_enabled,
+        ending_soon_days=int(row.ending_soon_days),
+        overdue_days=int(row.overdue_days),
+        margin_enabled=row.margin_enabled,
+        low_margin_pct=float(row.low_margin_pct),
+    )
+
+
+def _classify_health(
+    budget_pct, days_until_end, budget_amount, end_date,
+    cfg: Optional["HealthConfig"] = None, margin_pct=None,
+) -> tuple[str, str]:
+    """Return (health, reason) from the same signals used across the app, using
+    the resolved per-manager/workspace thresholds in ``cfg``. The reason is a
+    plain-language explanation of WHY this health state, for the pill tooltip."""
+    if cfg is None:
+        cfg = HealthConfig()
+
+    is_over_budget = cfg.budget_enabled and budget_pct is not None and budget_pct > cfg.over_budget_pct
+    is_long_overdue = cfg.schedule_enabled and days_until_end is not None and days_until_end < -cfg.overdue_days
+    is_close_to_end = cfg.schedule_enabled and days_until_end is not None and 0 <= days_until_end <= cfg.ending_soon_days
+    is_high_burn = cfg.budget_enabled and budget_pct is not None and budget_pct > cfg.high_burn_pct
+    is_low_margin = cfg.margin_enabled and margin_pct is not None and margin_pct < cfg.low_margin_pct
+    no_budget_no_end = budget_amount is None and end_date is None
+
+    if is_over_budget or is_long_overdue:
+        reasons = []
+        if is_over_budget:
+            reasons.append(f"over budget ({budget_pct}% used)")
+        if is_long_overdue:
+            reasons.append(f"{abs(days_until_end)} days overdue")
+        return "needs-attention", " and ".join(reasons).capitalize() + "."
+    if is_close_to_end or is_high_burn or is_low_margin:
+        reasons = []
+        if is_high_burn:
+            reasons.append(f"{budget_pct}% of budget used")
+        if is_low_margin:
+            reasons.append(f"margin {margin_pct}% below {int(cfg.low_margin_pct)}% target")
+        if is_close_to_end:
+            reasons.append(f"ends in {days_until_end} day{'s' if days_until_end != 1 else ''}")
+        return "at-risk", " and ".join(reasons).capitalize() + "."
+    if no_budget_no_end:
+        return "not-set", "No budget or end date set, so health can't be assessed."
+    return "good", "On budget and on schedule."
 
 
 async def _count_pending_timesheet_weeks(
@@ -1171,6 +1271,10 @@ async def get_manager_project_health(
             + entry_billed_amount(entry, proj)
         )
 
+    # Resolve this manager's health thresholds (own override → workspace
+    # default → built-in fallback) once for the whole list.
+    health_cfg = await _load_health_config(db, current_user.tenant_id, current_user.id)
+
     rows: list[ManagerProjectHealthRow] = []
     for project in projects:
         days_until_end: Optional[int] = None
@@ -1190,36 +1294,22 @@ async def get_manager_project_health(
             budget_pct = int(round((revenue / Decimal(str(budget_amount))) * 100))
             budget_remaining = Decimal(str(budget_amount)) - revenue
 
-        # Health classification:
-        #  needs-attention: over budget OR more than a month overdue
-        #  at-risk:         within a week of end_date OR >80% budget consumed
-        #  not-set:         no budget AND no end_date
-        #  good:            otherwise
-        is_over_budget = budget_pct is not None and budget_pct > 100
-        is_long_overdue = days_until_end is not None and days_until_end < -30
-        is_close_to_end = days_until_end is not None and 0 <= days_until_end <= 7
-        is_high_burn = budget_pct is not None and budget_pct > 80
-        no_budget_no_end = budget_amount is None and project.end_date is None
-
-        if is_over_budget or is_long_overdue:
-            health = "needs-attention"
-        elif is_close_to_end or is_high_burn:
-            health = "at-risk"
-        elif no_budget_no_end:
-            health = "not-set"
-        else:
-            health = "good"
+        health, health_reason = _classify_health(
+            budget_pct, days_until_end, budget_amount, project.end_date, cfg=health_cfg
+        )
 
         rows.append(
             ManagerProjectHealthRow(
                 project_id=project.id,
                 project_name=project.name,
+                client_id=project.client_id,
                 client_name=project.client.name if project.client else "",
                 days_until_end=days_until_end,
                 hours_this_week=hours_this_week,
                 budget_pct=budget_pct,
                 budget_hours_remaining=budget_remaining,
                 health=health,
+                health_reason=health_reason,
             )
         )
 
@@ -1245,7 +1335,7 @@ async def get_manager_financials(
     from app.models.project import Project as ProjectModel
     from app.models.client import Client
     from app.models.contract import Contract
-    from app.services.billing_rates import entry_billed_amount
+    from app.services.billing_rates import entry_billed_amount, entry_cost_amount
 
     team_ids = await _get_scoped_employee_ids(db, current_user)
     if not team_ids:
@@ -1288,13 +1378,19 @@ async def get_manager_financials(
     agg: dict[int, dict] = {}
     total_billable = Decimal("0")
     total_nonbillable = Decimal("0")
+    total_cost = Decimal("0")
     for e in entries:
         if e.project_id not in managed_ids:
             continue
         p = projects.get(e.project_id)
-        d = agg.setdefault(e.project_id, {"hours": Decimal("0"), "billable": Decimal("0"), "revenue": Decimal("0")})
+        d = agg.setdefault(e.project_id, {"hours": Decimal("0"), "billable": Decimal("0"), "revenue": Decimal("0"), "cost": Decimal("0")})
         hrs = e.hours or Decimal("0")
         d["hours"] += hrs
+        # Labor cost applies to ALL hours (billable or not) — what the person
+        # costs the firm. Zero when no cost was stamped (margin reads "unknown").
+        ecost = entry_cost_amount(e)
+        d["cost"] += ecost
+        total_cost += ecost
         if e.is_billable:
             d["billable"] += hrs
             total_billable += hrs
@@ -1310,21 +1406,27 @@ async def get_manager_financials(
         if p is None:
             continue
         revenue = d["revenue"]
+        cost = d["cost"]
         total_revenue += revenue
         budget = p.budget_amount
         if budget:
             total_budget += budget
         budget_pct = int(round(revenue / budget * 100)) if budget and budget > 0 else None
         budget_remaining = (budget - revenue) if budget is not None else None
+        # Margin (PSA): profit = revenue - cost; margin % of revenue. Only
+        # meaningful when revenue > 0 and some cost was captured.
+        margin = revenue - cost
+        margin_pct = int(round(margin / revenue * 100)) if revenue and revenue > 0 else None
         ct = contracts.get(p.contract_id) if p.contract_id else None
         contract_pct = (
             int(round(revenue / ct.value * 100)) if ct and ct.value and ct.value > 0 else None
         )
         rows.append(ProjectFinancialRow(
             project_id=pid, project_name=p.name,
-            client_name=client_name.get(p.client_id, ""),
+            client_id=p.client_id, client_name=client_name.get(p.client_id, ""),
             currency=p.currency or "USD",
             approved_hours=d["hours"], billable_hours=d["billable"], revenue=revenue,
+            cost=cost, margin=margin, margin_pct=margin_pct,
             budget_amount=budget, budget_used_pct=budget_pct, budget_remaining=budget_remaining,
             contract_id=ct.id if ct else None, contract_title=ct.title if ct else None,
             contract_value=ct.value if ct else None, contract_used_pct=contract_pct,
@@ -1333,10 +1435,13 @@ async def get_manager_financials(
 
     total_hours = total_billable + total_nonbillable
     util = int(round(total_billable / total_hours * 100)) if total_hours > 0 else None
+    total_margin = total_revenue - total_cost
+    total_margin_pct = int(round(total_margin / total_revenue * 100)) if total_revenue and total_revenue > 0 else None
     summary = FinancialSummary(
         total_revenue=total_revenue, total_budget=total_budget,
         total_approved_hours=total_hours, billable_hours=total_billable,
         nonbillable_hours=total_nonbillable, utilization_pct=util,
+        total_cost=total_cost, total_margin=total_margin, total_margin_pct=total_margin_pct,
     )
     return ManagerFinancialsResponse(summary=summary, projects=rows)
 
@@ -1943,4 +2048,553 @@ async def get_team_project_matrix(
 
     return TeamProjectMatrixResponse(
         days_back=days_back, projects=projects, rows=rows, grand_total_hours=grand_total
+    )
+
+
+@router.get("/team-resourcing", response_model=TeamResourcingResponse)
+async def get_team_resourcing(
+    weeks_ahead: int = Query(4, ge=1, le=26),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resourcing view (PSA): for each team member, their PLANNED allocation %
+    over the next ``weeks_ahead`` weeks vs. their weekly capacity, with an
+    over/under-allocation flag. Powers the Insights > Resourcing tab.
+
+    Allocation % per person = sum over their allocations overlapping the window
+    of the allocation's intensity (percent, or hours_per_week / capacity * 100).
+    > 100% = over-allocated (double-booked); < 60% = under-utilized (bench).
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.resource_allocation import ResourceAllocation
+
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+    today = date.today()
+    window_end = today + timedelta(weeks=weeks_ahead)
+
+    members = {u.id: u for u in (await db.execute(
+        select(User).where(User.id.in_(team_ids or [-1]))
+    )).scalars().all()}
+
+    allocs = (await db.execute(
+        select(ResourceAllocation).where(
+            ResourceAllocation.user_id.in_(team_ids or [-1]),
+            ResourceAllocation.tenant_id == current_user.tenant_id,
+            ResourceAllocation.start_date <= window_end,
+            ResourceAllocation.end_date >= today,
+        )
+    )).scalars().all()
+
+    proj_name = {pid: name for pid, name in (await db.execute(
+        select(Project.id, Project.name).where(Project.tenant_id == current_user.tenant_id)
+    )).all()}
+
+    # Sum intensity per user across overlapping allocations.
+    DEFAULT_CAP = Decimal("40")
+    by_user: dict[int, list[ResourceAllocation]] = {}
+    for a in allocs:
+        by_user.setdefault(a.user_id, []).append(a)
+
+    rows: list[ResourcingRow] = []
+    over = under = 0
+    for uid in team_ids:
+        u = members.get(uid)
+        if u is None:
+            continue
+        cap = u.weekly_capacity_hours or DEFAULT_CAP
+        user_allocs = by_user.get(uid, [])
+        pct_total = Decimal("0")
+        projects: list[ResourcingAllocRow] = []
+        for a in user_allocs:
+            if a.percent is not None:
+                p = a.percent
+            elif a.hours_per_week is not None and cap > 0:
+                p = (a.hours_per_week / cap * 100)
+            else:
+                p = Decimal("0")
+            pct_total += p
+            projects.append(ResourcingAllocRow(
+                project_id=a.project_id, project_name=proj_name.get(a.project_id, ""),
+                percent=int(round(p)), start_date=a.start_date.isoformat(), end_date=a.end_date.isoformat(),
+            ))
+        pct_int = int(round(pct_total))
+        state = "over" if pct_int > 100 else ("under" if pct_int < 60 else "ok")
+        if state == "over":
+            over += 1
+        elif state == "under":
+            under += 1
+        rows.append(ResourcingRow(
+            user_id=uid, full_name=u.full_name, title=u.title,
+            capacity_hours=cap, allocated_pct=pct_int, state=state, allocations=projects,
+        ))
+
+    # Sort: over-allocated first (most urgent), then by allocation desc.
+    rows.sort(key=lambda r: (0 if r.state == "over" else 1 if r.state == "ok" else 2, -r.allocated_pct))
+    return TeamResourcingResponse(
+        weeks_ahead=weeks_ahead, team_size=len(rows),
+        over_allocated=over, under_utilized=under, rows=rows,
+    )
+
+
+@router.get("/portfolio", response_model=PortfolioResponse)
+async def get_portfolio(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Portfolio roll-up (PSA): one row per managed project combining health,
+    margin, budget burn and timeline — the whole book of work at a glance, sorted
+    by attention needed. Powers Insights > Portfolio. Reuses the same health
+    classification as project-health and the same revenue/cost math as
+    financials, so the numbers reconcile."""
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.project import Project as ProjectModel
+    from app.models.client import Client
+    from app.services.billing_rates import entry_billed_amount, entry_cost_amount
+
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+    today = date.today()
+    health_cfg = await _load_health_config(db, current_user.tenant_id, current_user.id)
+
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.user_id.in_(team_ids or [-1]),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+    )).scalars().all()
+    proj_ids = {e.project_id for e in entries}
+    managed_ids = set(await _filter_managed_project_ids(db, list(proj_ids), current_user.tenant_id))
+    projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(proj_ids) or [-1]))
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+
+    agg: dict[int, dict] = {}
+    for e in entries:
+        if e.project_id not in managed_ids:
+            continue
+        d = agg.setdefault(e.project_id, {"hours": Decimal("0"), "revenue": Decimal("0"), "cost": Decimal("0")})
+        d["hours"] += e.hours or Decimal("0")
+        d["cost"] += entry_cost_amount(e)
+        if e.is_billable:
+            d["revenue"] += entry_billed_amount(e, projects.get(e.project_id))
+
+    rows: list[PortfolioRow] = []
+    counts = {"good": 0, "at-risk": 0, "needs-attention": 0, "not-set": 0}
+    tot_rev = tot_cost = Decimal("0")
+    for pid, d in agg.items():
+        p = projects.get(pid)
+        if p is None:
+            continue
+        revenue, cost = d["revenue"], d["cost"]
+        tot_rev += revenue
+        tot_cost += cost
+        margin = revenue - cost
+        margin_pct = int(round(margin / revenue * 100)) if revenue > 0 else None
+        budget = p.budget_amount
+        budget_pct = int(round(revenue / budget * 100)) if budget and budget > 0 else None
+        days_until_end = (p.end_date - today).days if p.end_date else None
+
+        health, health_reason = _classify_health(
+            budget_pct, days_until_end, budget, p.end_date, cfg=health_cfg, margin_pct=margin_pct
+        )
+        counts[health] += 1
+
+        rows.append(PortfolioRow(
+            project_id=pid, project_name=p.name, client_id=p.client_id, client_name=client_name.get(p.client_id, ""),
+            health=health, health_reason=health_reason, approved_hours=d["hours"], revenue=revenue, cost=cost,
+            margin=margin, margin_pct=margin_pct, budget_amount=budget, budget_used_pct=budget_pct,
+            days_until_end=days_until_end, currency=p.currency or "USD",
+        ))
+
+    order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
+    rows.sort(key=lambda r: (order.get(r.health, 9), -(r.margin_pct if r.margin_pct is not None else -999)))
+    tot_margin_pct = int(round((tot_rev - tot_cost) / tot_rev * 100)) if tot_rev > 0 else None
+    return PortfolioResponse(
+        project_count=len(rows), good=counts["good"], at_risk=counts["at-risk"],
+        needs_attention=counts["needs-attention"], not_set=counts["not-set"],
+        total_revenue=tot_rev, total_cost=tot_cost, total_margin_pct=tot_margin_pct, rows=rows,
+    )
+
+
+# ── Configurable project-health thresholds ──────────────────────────────────
+def _cfg_to_body(row) -> HealthConfigBody:
+    return HealthConfigBody(
+        budget_enabled=row.budget_enabled,
+        over_budget_pct=float(row.over_budget_pct),
+        high_burn_pct=float(row.high_burn_pct),
+        schedule_enabled=row.schedule_enabled,
+        ending_soon_days=int(row.ending_soon_days),
+        overdue_days=int(row.overdue_days),
+        margin_enabled=row.margin_enabled,
+        low_margin_pct=float(row.low_margin_pct),
+    )
+
+
+@router.get("/health-config", response_model=HealthConfigResponse)
+async def get_health_config(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read the project-health thresholds for this manager: the workspace
+    default plus this manager's personal override (if any), and which is in
+    effect. Managers/viewers configure how health is judged for their teams."""
+    from app.models.project_health_config import ProjectHealthConfig
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    rows = (await db.execute(
+        select(ProjectHealthConfig).where(
+            ProjectHealthConfig.tenant_id == current_user.tenant_id,
+            or_(
+                ProjectHealthConfig.user_id == current_user.id,
+                ProjectHealthConfig.user_id.is_(None),
+            ),
+        )
+    )).scalars().all()
+    by_scope = {r.user_id: r for r in rows}
+    ws_row = by_scope.get(None)
+    ov_row = by_scope.get(current_user.id)
+    return HealthConfigResponse(
+        workspace=_cfg_to_body(ws_row) if ws_row else HealthConfigBody(),
+        override=_cfg_to_body(ov_row) if ov_row else None,
+        effective_scope="override" if ov_row else "workspace",
+        can_edit_workspace=True,
+    )
+
+
+@router.put("/health-config", response_model=HealthConfigResponse)
+async def set_health_config(
+    body: HealthConfigBody,
+    scope: str = Query("override", pattern="^(workspace|override)$"),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Upsert the project-health thresholds. ``scope=workspace`` sets the tenant
+    default (one shared row); ``scope=override`` sets this manager's personal
+    override. Managers and viewers may edit both; ADMIN is read-only here."""
+    from app.models.project_health_config import ProjectHealthConfig
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER]:
+        raise HTTPException(status_code=403, detail="Only managers can configure project health.")
+
+    target_user_id = None if scope == "workspace" else current_user.id
+    existing = (await db.execute(
+        select(ProjectHealthConfig).where(
+            ProjectHealthConfig.tenant_id == current_user.tenant_id,
+            ProjectHealthConfig.user_id.is_(None) if target_user_id is None
+            else ProjectHealthConfig.user_id == target_user_id,
+        )
+    )).scalar_one_or_none()
+
+    fields = dict(
+        budget_enabled=body.budget_enabled,
+        over_budget_pct=body.over_budget_pct,
+        high_burn_pct=body.high_burn_pct,
+        schedule_enabled=body.schedule_enabled,
+        ending_soon_days=body.ending_soon_days,
+        overdue_days=body.overdue_days,
+        margin_enabled=body.margin_enabled,
+        low_margin_pct=body.low_margin_pct,
+    )
+    if existing is None:
+        db.add(ProjectHealthConfig(
+            tenant_id=current_user.tenant_id, user_id=target_user_id, **fields,
+        ))
+    else:
+        for k, v in fields.items():
+            setattr(existing, k, v)
+    await db.commit()
+    return await get_health_config(db=db, current_user=current_user)
+
+
+@router.delete("/health-config/override", status_code=204)
+async def clear_health_override(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Drop this manager's personal override so they fall back to the workspace
+    default."""
+    from app.models.project_health_config import ProjectHealthConfig
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER]:
+        raise HTTPException(status_code=403, detail="Only managers can configure project health.")
+    await db.execute(
+        ProjectHealthConfig.__table__.delete().where(
+            ProjectHealthConfig.tenant_id == current_user.tenant_id,
+            ProjectHealthConfig.user_id == current_user.id,
+        )
+    )
+    await db.commit()
+
+
+@router.get("/manager-clients", response_model=ManagerClientsResponse)
+async def get_manager_clients(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The current manager's clients, each with the projects they run, for the
+    dashboard "Clients & projects" widget. A MANAGER sees only projects they
+    own (direct manager_id or a project_managers row); VIEWER/ADMIN see the
+    whole tenant. Grouped by client, clients sorted by name."""
+    from app.models.assignments import ProjectManager
+    from app.models.client import Client
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    proj_q = select(Project).where(Project.tenant_id == current_user.tenant_id)
+    if current_user.role == UserRole.MANAGER:
+        # Projects this manager owns: direct manager_id OR a project_managers row.
+        pm_ids = (await db.execute(
+            select(ProjectManager.project_id).where(
+                ProjectManager.tenant_id == current_user.tenant_id,
+                ProjectManager.user_id == current_user.id,
+            )
+        )).scalars().all()
+        proj_q = proj_q.where(
+            or_(Project.manager_id == current_user.id, Project.id.in_(list(pm_ids) or [-1]))
+        )
+    projects = (await db.execute(proj_q)).scalars().all()
+
+    client_ids = {p.client_id for p in projects if p.client_id is not None}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.id.in_(list(client_ids) or [-1]))
+    )).all()}
+
+    by_client: dict[int, list[Project]] = {}
+    for p in projects:
+        if p.client_id is None:
+            continue
+        by_client.setdefault(p.client_id, []).append(p)
+
+    rows: list[ManagerClientRow] = []
+    for cid, projs in by_client.items():
+        projs_sorted = sorted(projs, key=lambda p: p.name.lower())
+        rows.append(ManagerClientRow(
+            client_id=cid,
+            client_name=client_name.get(cid, ""),
+            project_count=len(projs_sorted),
+            projects=[
+                ManagerClientProject(
+                    project_id=p.id, project_name=p.name,
+                    status=p.status.value if hasattr(p.status, "value") else (p.status or None),
+                )
+                for p in projs_sorted
+            ],
+        ))
+    rows.sort(key=lambda r: r.client_name.lower())
+    return ManagerClientsResponse(client_count=len(rows), rows=rows)
+
+
+@router.get("/evm", response_model=EvmResponse)
+async def get_evm(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Earned Value Management (PSA): for each project with an ACTIVE baseline,
+    compute PV (planned value), EV (earned value), AC (actual cost), and the
+    derived CPI/SPI + cost/schedule variance. Powers Insights > Forecasts.
+
+      PV = planned_cost * schedule_elapsed%  (linear over the baseline window)
+      EV = planned_cost * work_complete%      (approved hours / planned hours)
+      AC = actual labor cost incurred         (sum of cost snapshots)
+      CPI = EV/AC  (>1 = under cost) ; SPI = EV/PV (>1 = ahead of schedule)
+      CV = EV-AC   ; SV = EV-PV
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.project import Project as ProjectModel
+    from app.models.client import Client
+    from app.models.project_baseline import ProjectBaseline
+    from app.services.billing_rates import entry_cost_amount
+
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+    today = date.today()
+
+    baselines = (await db.execute(
+        select(ProjectBaseline).where(
+            ProjectBaseline.tenant_id == current_user.tenant_id,
+            ProjectBaseline.is_active == True,  # noqa: E712
+        )
+    )).scalars().all()
+    if not baselines:
+        return EvmResponse(rows=[])
+    bl_by_proj = {b.project_id: b for b in baselines}
+
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.user_id.in_(team_ids or [-1]),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.project_id.in_(list(bl_by_proj.keys())),
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+    )).scalars().all()
+    actual: dict[int, dict] = {}
+    for e in entries:
+        a = actual.setdefault(e.project_id, {"hours": Decimal("0"), "cost": Decimal("0")})
+        a["hours"] += e.hours or Decimal("0")
+        a["cost"] += entry_cost_amount(e)
+
+    projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(bl_by_proj.keys())))
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+
+    def _pct(n: Decimal, d: Decimal) -> Decimal:
+        return (n / d) if d and d > 0 else Decimal("0")
+
+    rows: list[EvmRow] = []
+    for pid, bl in bl_by_proj.items():
+        p = projects.get(pid)
+        if p is None:
+            continue
+        bac = bl.planned_cost or Decimal("0")            # budget at completion
+        a = actual.get(pid, {"hours": Decimal("0"), "cost": Decimal("0")})
+        ac = a["cost"]
+
+        # schedule elapsed %
+        if bl.baseline_start and bl.baseline_end and bl.baseline_end > bl.baseline_start:
+            total = Decimal((bl.baseline_end - bl.baseline_start).days)
+            elapsed = Decimal((min(today, bl.baseline_end) - bl.baseline_start).days)
+            sched_pct = max(Decimal("0"), min(Decimal("1"), _pct(elapsed, total)))
+        else:
+            sched_pct = Decimal("0")
+        # work complete %
+        work_pct = min(Decimal("1"), _pct(a["hours"], bl.planned_hours or Decimal("0")))
+
+        pv = bac * sched_pct
+        ev = bac * work_pct
+        cpi = _pct(ev, ac) if ac > 0 else None
+        spi = _pct(ev, pv) if pv > 0 else None
+
+        # FORECAST (predictive): project the final outcome from current trend.
+        #   EAC (estimate at completion) = BAC / CPI — at current efficiency.
+        #   VAC (variance at completion) = BAC - EAC ; negative = projected overrun.
+        # Risk: cost overrun (EAC>BAC by >5%) and/or behind schedule (SPI<0.9).
+        eac = (bac / Decimal(str(cpi))) if (cpi and cpi > 0) else (bac if bac else Decimal("0"))
+        vac = bac - eac
+        over_pct = int(round(float(_pct(eac - bac, bac)) * 100)) if bac and bac > 0 else 0
+        cost_risk = eac > bac * Decimal("1.05")
+        sched_risk = spi is not None and spi < Decimal("0.9")
+        if cost_risk and sched_risk:
+            risk = "high"
+        elif cost_risk or sched_risk:
+            risk = "medium"
+        else:
+            risk = "low"
+
+        rows.append(EvmRow(
+            project_id=pid, project_name=p.name, client_name=client_name.get(p.client_id, ""),
+            bac=bac, pv=pv.quantize(Decimal("1")), ev=ev.quantize(Decimal("1")), ac=ac.quantize(Decimal("1")),
+            cpi=round(float(cpi), 2) if cpi is not None else None,
+            spi=round(float(spi), 2) if spi is not None else None,
+            cost_variance=(ev - ac).quantize(Decimal("1")),
+            schedule_variance=(ev - pv).quantize(Decimal("1")),
+            percent_complete=int(round(work_pct * 100)),
+            eac=eac.quantize(Decimal("1")), vac=vac.quantize(Decimal("1")),
+            projected_overrun_pct=over_pct, risk=risk,
+            currency=bl.currency or "USD",
+        ))
+    # Sort by risk (high first), then worst CPI.
+    risk_order = {"high": 0, "medium": 1, "low": 2}
+    rows.sort(key=lambda r: (risk_order.get(r.risk, 9), r.cpi if r.cpi is not None else 99))
+    return EvmResponse(rows=rows)
+
+
+@router.get("/revenue-recognition", response_model=RevRecResponse)
+async def get_revenue_recognition(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recognized revenue per project by its rev-rec method (PSA):
+      as_billed        -> approved billable hours x rate (the billed amount).
+      percent_complete -> (contract value or budget) x (hours done / planned),
+                          from the active baseline. Fixed-fee work.
+    Surfaces recognized vs. billed so a manager sees the gap. Manager/viewer."""
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.project import Project as ProjectModel
+    from app.models.client import Client
+    from app.models.contract import Contract
+    from app.models.project_baseline import ProjectBaseline
+    from app.services.billing_rates import entry_billed_amount
+
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.user_id.in_(team_ids or [-1]),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        )
+    )).scalars().all()
+    proj_ids = {e.project_id for e in entries}
+    managed_ids = set(await _filter_managed_project_ids(db, list(proj_ids), current_user.tenant_id))
+    projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(proj_ids) or [-1]))
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+    contracts = {c.id: c for c in (await db.execute(select(Contract))).scalars().all()}
+    baselines = {b.project_id: b for b in (await db.execute(
+        select(ProjectBaseline).where(
+            ProjectBaseline.tenant_id == current_user.tenant_id,
+            ProjectBaseline.is_active == True,  # noqa: E712
+        )
+    )).scalars().all()}
+
+    agg: dict[int, dict] = {}
+    for e in entries:
+        if e.project_id not in managed_ids:
+            continue
+        d = agg.setdefault(e.project_id, {"hours": Decimal("0"), "billed": Decimal("0")})
+        d["hours"] += e.hours or Decimal("0")
+        if e.is_billable:
+            d["billed"] += entry_billed_amount(e, projects.get(e.project_id))
+
+    rows: list[RevRecRow] = []
+    tot_billed = tot_recognized = Decimal("0")
+    for pid, d in agg.items():
+        p = projects.get(pid)
+        if p is None:
+            continue
+        method = p.revenue_recognition or "as_billed"
+        billed = d["billed"]
+        if method == "percent_complete":
+            bl = baselines.get(pid)
+            ct = contracts.get(p.contract_id) if p.contract_id else None
+            # Prefer the project budget (the fixed fee for this engagement) over a
+            # blanket contract value, which may span many projects and overstate
+            # this one's recognizable revenue.
+            total_value = p.budget_amount or (ct.value if ct and ct.value else None) or Decimal("0")
+            planned_hours = (bl.planned_hours if bl else None) or p.estimated_hours
+            pct = (d["hours"] / planned_hours) if planned_hours and planned_hours > 0 else Decimal("0")
+            pct = min(Decimal("1"), pct)
+            recognized = (total_value * pct).quantize(Decimal("1"))
+            pct_complete = int(round(pct * 100))
+        else:
+            recognized = billed
+            pct_complete = None
+        tot_billed += billed
+        tot_recognized += recognized
+        rows.append(RevRecRow(
+            project_id=pid, project_name=p.name, client_name=client_name.get(p.client_id, ""),
+            method=method, billed=billed.quantize(Decimal("1")), recognized=recognized,
+            percent_complete=pct_complete, currency=p.currency or "USD",
+        ))
+    rows.sort(key=lambda r: -float(r.recognized))
+    return RevRecResponse(
+        total_billed=tot_billed, total_recognized=tot_recognized, rows=rows,
     )

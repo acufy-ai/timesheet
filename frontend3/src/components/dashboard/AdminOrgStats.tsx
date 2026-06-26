@@ -64,8 +64,12 @@ export function AdminOrgStats() {
     const emp = users.filter((u) => u.role === 'EMPLOYEE').length;
     const mgr = users.filter((u) => u.role === 'MANAGER').length;
     const adm = users.filter((u) => u.role === 'ADMIN').length;
+    // Everything not emp/mgr/adm (viewers, client-portal users, etc.) — folded
+    // into one bucket so the breakdown always sums to `people`. Previously these
+    // were dropped, so e.g. 94 people read "82 emp · 5 mgr · 2 adm" (= 89).
+    const other = users.length - emp - mgr - adm;
     const pendingInvites = users.filter((u) => !u.email_verified && !u.is_external).length;
-    return { people: users.length, emp, mgr, adm, pendingInvites };
+    return { people: users.length, emp, mgr, adm, other, pendingInvites };
   }, [users]);
 
   const activity = activityQ.data ?? [];
@@ -137,7 +141,7 @@ export function AdminOrgStats() {
 
       {/* 5 stat tiles */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatBox label="People" value={counts.people} sub={`${counts.emp} emp · ${counts.mgr} mgr · ${counts.adm} adm`} onClick={() => navigate('/user-management')} />
+        <StatBox label="People" value={counts.people} sub={`${counts.emp} emp · ${counts.mgr} mgr · ${counts.adm} adm${counts.other > 0 ? ` · ${counts.other} other` : ''}`} onClick={() => navigate('/user-management')} />
         <StatBox label="Clients" value={clientsQ.data?.length ?? 0} onClick={() => navigate('/client-management')} />
         <StatBox label="Active projects" value={projectsQ.data?.length ?? 0} onClick={() => navigate('/client-management')} />
         <StatBox label="Pending invites" value={counts.pendingInvites} onClick={() => navigate('/user-management')} />

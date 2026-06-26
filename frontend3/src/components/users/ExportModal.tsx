@@ -4,7 +4,7 @@ import { Download, Loader2 } from 'lucide-react';
 import { Button, FieldError, Modal, errorBorder } from '@/components/ui';
 import { usersApi } from '@/api/client';
 import { useClients, useUsers } from '@/hooks/useAdmin';
-import { useProjects } from '@/hooks/useTime';
+import { useAllActiveProjects } from '@/hooks/useTime';
 import { cn } from '@/lib/cn';
 import type { Client, ManagedUser } from '@/types/admin';
 import type { Project } from '@/types/time';
@@ -123,7 +123,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
 
   const usersQ = useUsers(open);
   const clientsQ = useClients(open);
-  const projectsQ = useProjects();
+  const projectsQ = useAllActiveProjects();
 
   const users = usersQ.data ?? [];
   const clients = clientsQ.data ?? [];
@@ -291,7 +291,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
                     className={selectClass}
                   >
                     <option value="">All roles</option>
-                    <option value="EMPLOYEE">Employee</option>
+                    <option value="EMPLOYEE">Resource</option>
                     <option value="MANAGER">Manager</option>
                     <option value="ADMIN">Admin</option>
                     <option value="VIEWER">Viewer</option>

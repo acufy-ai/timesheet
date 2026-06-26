@@ -14,6 +14,7 @@ import { Sidebar } from './Sidebar';
 import { PortalPickerModal } from './PortalPickerModal';
 import { PreferencesDefaultsSync } from './PreferencesDefaultsSync';
 import { FloatingTimer } from '@/components/timer/FloatingTimer';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import type { UserRole } from '@/types/user';
 
 // Authenticated app shell with dual-mode primary navigation. Renders either
@@ -131,7 +132,9 @@ export function AppShell() {
           />
           <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="w-full px-5 py-6 sm:px-6 lg:px-8">
-              <Outlet />
+              <ErrorBoundary resetKey={location.pathname}>
+                <Outlet />
+              </ErrorBoundary>
             </div>
           </main>
         </div>
@@ -140,7 +143,9 @@ export function AppShell() {
           <TopNav onDockToSidebar={() => setMode('sidebar')} ingestionEnabled={ingestionEnabled} canSwitch={canSwitch} />
           <main className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1800px] px-5 py-6 sm:px-6 lg:px-8">
-              <Outlet />
+              <ErrorBoundary resetKey={location.pathname}>
+                <Outlet />
+              </ErrorBoundary>
             </div>
           </main>
         </>

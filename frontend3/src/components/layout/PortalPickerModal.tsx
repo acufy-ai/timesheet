@@ -1,16 +1,10 @@
 import { ArrowRight, Briefcase, Eye, ShieldCheck } from 'lucide-react';
 
 import type { UserRole } from '@/types/user';
+import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '@/lib/roleLabels';
 
-const LABEL: Partial<Record<UserRole, string>> = {
-  ADMIN: 'Admin', MANAGER: 'Manager', VIEWER: 'Viewer', EMPLOYEE: 'Employee',
-};
-const DESC: Partial<Record<UserRole, string>> = {
-  ADMIN: 'Workspace settings, users, clients, projects, and audit trail.',
-  MANAGER: 'Approvals, reviewer inbox, and team oversight.',
-  VIEWER: 'Workspace-wide read-only oversight.',
-  EMPLOYEE: 'Your own time entries, time off, and calendar.',
-};
+const LABEL = ROLE_LABELS;
+const DESC = ROLE_DESCRIPTIONS;
 const ICON: Partial<Record<UserRole, typeof Briefcase>> = {
   ADMIN: Briefcase, MANAGER: ShieldCheck, VIEWER: Eye, EMPLOYEE: Briefcase,
 };

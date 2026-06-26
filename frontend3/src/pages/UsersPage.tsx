@@ -20,6 +20,7 @@ import { WorkforceSetupTab } from '@/components/users/WorkforceSetupTab';
 import { UserRail } from '@/components/users/UserRail';
 import { UserDetail } from '@/components/users/UserDetail';
 import { cn } from '@/lib/cn';
+import { roleLabel } from '@/lib/roleLabels';
 import type { ManagedUser, UserListParams } from '@/types/admin';
 
 type AdminTab = 'users' | 'timesheets' | 'workforce';
@@ -62,6 +63,21 @@ export function UsersPage() {
   const flashAndFade = (tone: 'ok' | 'err', text: string) => {
     setFlash({ tone, text });
     window.setTimeout(() => setFlash(null), 5000);
+  };
+
+  // After creating a user, reveal it: clear any filters/search and reset to the
+  // first page so the new user is in the list, then select it to open its
+  // detail pane. (Filters could otherwise hide a freshly-created user.)
+  const revealCreatedUser = (id?: number) => {
+    if (id == null) return;
+    setSearch('');
+    setDebouncedSearch('');
+    setRoleFilter('all');
+    setStatusFilter('all');
+    setAudienceFilter('all');
+    setAttentionFilter('all');
+    setPage(1);
+    setActiveId(id);
   };
 
   // Debounce the search box → server query.
@@ -135,11 +151,13 @@ export function UsersPage() {
   // drive their header count from the server-paged `total` instead (the paged
   // query is already scoped to their reports).
   const counts = useMemo(() => {
-    const c = { admin: 0, manager: 0, employee: 0 };
+    const c = { admin: 0, manager: 0, employee: 0, other: 0 };
     scoped.forEach((u) => {
       if (u.role === 'ADMIN') c.admin++;
       else if (u.role === 'MANAGER') c.manager++;
       else if (u.role === 'EMPLOYEE') c.employee++;
+      // Viewers, client-portal users, etc. — counted so the header sums to total.
+      else c.other++;
     });
     return c;
   }, [scoped]);
@@ -242,7 +260,7 @@ export function UsersPage() {
       <WorkspaceHeader
         title={isAdmin ? 'User Management' : 'My Team'}
         description={isAdmin
-          ? `${scoped.length} users · ${counts.admin} admins · ${counts.manager} managers · ${counts.employee} employees`
+          ? `${scoped.length} users · ${counts.admin} admins · ${counts.manager} managers · ${counts.employee} employees${counts.other > 0 ? ` · ${counts.other} other` : ''}`
           // Managers don't load the full unpaged roster (useUsers is admin-only),
           // so use the server-paged total, which is already scoped to the
           // manager's direct reports.
@@ -259,7 +277,7 @@ export function UsersPage() {
       {isAdmin ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border pb-3">
           <div className="flex items-center gap-1.5">
-            {([['users', 'Users'], ['timesheets', 'Approved Timesheets'], ['workforce', 'Workforce Setup']] as const).map(([key, label]) => (
+            {([['users', 'Users'], ['timesheets', 'Approved Timesheets'], ['workforce', 'Organization']] as const).map(([key, label]) => (
               <button key={key} type="button" onClick={() => setAdminTab(key)}
                 className={cn('pill text-sm', adminTab === key ? 'pill-active' : 'pill-idle')}>{label}</button>
             ))}
@@ -271,7 +289,7 @@ export function UsersPage() {
               <FilterSelect value={roleFilter} onChange={setRoleFilter}>
                 <option value="all">All</option>
                 {ROLE_FILTERS.filter((r) => r !== 'all').map((r) => (
-                  <option key={r} value={r}>{r.charAt(0) + r.slice(1).toLowerCase()} ({roleCounts[r] ?? 0})</option>
+                  <option key={r} value={r}>{roleLabel(r)} ({roleCounts[r] ?? 0})</option>
                 ))}
               </FilterSelect>
               <FilterSelect value={statusFilter} onChange={(v) => setStatusFilter(v as typeof statusFilter)}>
@@ -396,7 +414,7 @@ export function UsersPage() {
           )}
 
           {/* Modals */}
-          <UserEditModal open={creating} user={null} onClose={() => setCreating(false)} onSaved={(msg) => flashAndFade('ok', msg)} />
+          <UserEditModal open={creating} user={null} onClose={() => setCreating(false)} onSaved={(msg, createdId) => { flashAndFade('ok', msg); revealCreatedUser(createdId); }} />
           <UserEditModal open={!!editing} user={editing} onClose={() => setEditing(null)} onSaved={(msg) => flashAndFade('ok', msg)} />
           <ResetPasswordModal open={!!resetting} user={resetting} onClose={() => setResetting(null)} onDone={(msg) => flashAndFade('ok', msg)} />
           <ImportUsersModal open={importing} onClose={() => setImporting(false)} onDone={(msg) => flashAndFade('ok', msg)} />
