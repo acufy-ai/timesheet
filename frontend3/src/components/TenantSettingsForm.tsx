@@ -59,10 +59,11 @@ const SMTP_CREDENTIAL_KEYS = new Set([
   'smtp_from_address', 'smtp_from_name', 'smtp_use_tls',
 ]);
 
-// Friendly labels for the customization enum settings, so the raw stored
-// values (sidebar_collapsed, my-time, system, …) render as readable options.
+// Friendly labels for enum settings, so the raw stored values
+// (sidebar_collapsed, my-time, system, 480, …) render as readable options.
 // The option value is what gets stored; the label is what the admin sees.
-const CUSTOMIZATION_LABELS: Record<string, Array<{ value: string | number; label: string }>> = {
+// Keyed by setting key, so any category can opt in (not just customization).
+const FRIENDLY_SELECT_LABELS: Record<string, Array<{ value: string | number; label: string }>> = {
   default_nav_layout: [
     { value: 'sidebar', label: 'Sidebar (expanded)' },
     { value: 'sidebar_collapsed', label: 'Sidebar (collapsed icon rail)' },
@@ -94,6 +95,15 @@ const CUSTOMIZATION_LABELS: Record<string, Array<{ value: string | number; label
     { value: 25, label: '25 rows' },
     { value: 50, label: '50 rows' },
     { value: 100, label: '100 rows' },
+  ],
+  // Security: sign-in session length (access-token lifetime), stored as minutes.
+  access_token_expire_minutes: [
+    { value: 15, label: '15 minutes' },
+    { value: 30, label: '30 minutes' },
+    { value: 60, label: '1 hour' },
+    { value: 120, label: '2 hours' },
+    { value: 240, label: '4 hours' },
+    { value: 480, label: '8 hours' },
   ],
 };
 
@@ -353,8 +363,8 @@ const Widget: React.FC<WidgetProps> = ({ defn, value, onChange, labelId }) => {
   }
   // Customization: friendly-labeled selects (so the raw enum values like
   // ``sidebar_collapsed`` / ``my-time`` / ``system`` don't leak into the UI).
-  if (defn.key in CUSTOMIZATION_LABELS) {
-    const opts = CUSTOMIZATION_LABELS[defn.key];
+  if (defn.key in FRIENDLY_SELECT_LABELS) {
+    const opts = FRIENDLY_SELECT_LABELS[defn.key];
     const isInt = defn.data_type === 'int';
     return (
       <LabeledSelectWidget

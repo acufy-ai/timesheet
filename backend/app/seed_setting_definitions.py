@@ -318,6 +318,22 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": False,
         "sort_order": 20,
     },
+    "access_token_expire_minutes": {
+        "category": "security",
+        "data_type": "int",
+        "default_value": 30,
+        "validation": {"enum": [15, 30, 60, 120, 240, 480]},
+        "label": "Sign-in session length",
+        "description": (
+            "How long a sign-in stays valid before it's re-checked. Shorter is "
+            "more secure (a stolen session expires sooner); longer is more "
+            "convenient. A new value applies the next time a person signs in or "
+            "their session refreshes. People stay signed in across this through "
+            "the usual refresh, so a shorter length does not log anyone out early."
+        ),
+        "is_public": False,
+        "sort_order": 30,
+    },
     # ── reminders ──────────────────────────────────────────────────
     # Submission cadence drives reminders AND the manager-dashboard
     # "late" signal. Internal default is weekly (employees submit on a

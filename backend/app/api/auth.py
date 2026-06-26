@@ -99,6 +99,43 @@ def _set_refresh_cookie(response: Response, token: str, tab_id: str | None = Non
     )
 
 
+async def _access_expiry_for_tenant(
+    tenant_slug: str | None, tenant_id: int | None
+) -> timedelta | None:
+    """Resolve a tenant's configured access-token lifetime.
+
+    Reads the ``access_token_expire_minutes`` tenant setting from the tenant's
+    own DB (the source of truth for isolated tenants) and returns it as a
+    ``timedelta`` to hand to :func:`create_access_token` as ``expires_delta``.
+
+    Returns ``None`` when there is no tenant (platform-admin tokens), when the
+    tenant DB can't be reached, or on any read error — the caller then falls
+    back to the global ``settings.access_token_expire_minutes`` default, so a
+    settings hiccup never blocks a login. The change applies on the NEXT
+    login/refresh; already-issued tokens keep their original expiry.
+    """
+    if not tenant_slug or tenant_id is None:
+        return None
+    try:
+        from app.db_tenant import tenant_session
+        from app.core.tenant_settings import get_setting
+
+        async with tenant_session(tenant_slug) as tenant_db:
+            minutes = int(await get_setting(
+                tenant_db, tenant_id, "access_token_expire_minutes"
+            ))
+            if minutes <= 0:
+                return None
+            return timedelta(minutes=minutes)
+    except Exception:  # noqa: BLE001 - never let settings break auth
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "access_token_expiry: falling back to default for tenant %s",
+            tenant_slug, exc_info=True,
+        )
+        return None
+
+
 def _clear_refresh_cookie(response: Response, tab_id: str | None = None) -> None:
     """Delete the refresh cookie. Must target the same Path it was set with,
     or the browser keeps the original and 'logout' doesn't log out. Clears this
@@ -347,7 +384,8 @@ async def _login_with_auth0(
         tenant_slug=tenant_slug,
         token_version=user.token_version,
     )
-    access_token = create_access_token(token_payload)
+    access_expiry = await _access_expiry_for_tenant(tenant_slug, user.tenant_id)
+    access_token = create_access_token(token_payload, expires_delta=access_expiry)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
     now = datetime.now(timezone.utc)
@@ -799,7 +837,8 @@ async def login(
         tenant_slug=tenant_slug,
         token_version=user.token_version,
     )
-    access_token = create_access_token(token_payload)
+    access_expiry = await _access_expiry_for_tenant(tenant_slug, user.tenant_id)
+    access_token = create_access_token(token_payload, expires_delta=access_expiry)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
     now = datetime.now(timezone.utc)
@@ -1000,6 +1039,26 @@ async def refresh_token(
 
         realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
 
+        # Honor the tenant's configured session length on refresh too, so a
+        # policy change takes effect on the next refresh (not just next login).
+        # Read from the session in hand (the tenant DB when isolated); any error
+        # falls back to the global default. PA tokens (no tenant) keep default.
+        access_expiry: timedelta | None = None
+        if token_tenant_slug and user.tenant_id is not None:
+            try:
+                from app.core.tenant_settings import get_setting
+                _mins = int(await get_setting(
+                    session, user.tenant_id, "access_token_expire_minutes"
+                ))
+                if _mins > 0:
+                    access_expiry = timedelta(minutes=_mins)
+            except Exception:  # noqa: BLE001 - never let settings break refresh
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "access_token_expiry(refresh): default for tenant %s",
+                    token_tenant_slug, exc_info=True,
+                )
+
         def _payload() -> dict:
             # Carry forward active_role so multi-role users don't get
             # downgraded; re-validated against user.roles on next request.
@@ -1050,7 +1109,7 @@ async def refresh_token(
                         same_refresh, _, _ = create_refresh_token(
                             _payload(), jti=successor.jti, expires_at=successor.expires_at,
                         )
-                        return user, create_access_token(_payload()), same_refresh
+                        return user, create_access_token(_payload(), expires_delta=access_expiry), same_refresh
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Refresh token has been revoked",
@@ -1065,10 +1124,10 @@ async def refresh_token(
             session.add(stored)
             session.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=new_expires))
             await session.commit()
-            return user, create_access_token(_payload()), new_refresh
+            return user, create_access_token(_payload(), expires_delta=access_expiry), new_refresh
 
         # No jti in the token (shouldn't happen for our tokens) — access only.
-        return user, create_access_token(_payload()), token
+        return user, create_access_token(_payload(), expires_delta=access_expiry), token
 
     if use_tenant_db:
         try:
@@ -1690,7 +1749,10 @@ async def switch_role(
         active_role=requested_role_value,
         token_version=target.token_version,
     )
-    access = create_access_token(payload)
+    access = create_access_token(
+        payload,
+        expires_delta=await _access_expiry_for_tenant(token_tenant_slug, target.tenant_id),
+    )
     refresh, jti, expires_at = create_refresh_token(payload)
 
     if token_tenant_slug:
@@ -1834,7 +1896,10 @@ async def exchange_role_handoff(
         active_role=target_role_value,
         token_version=target.token_version,
     )
-    access = create_access_token(payload)
+    access = create_access_token(
+        payload,
+        expires_delta=await _access_expiry_for_tenant(target_tenant_slug, target.tenant_id),
+    )
     refresh, jti, expires_at = create_refresh_token(payload)
 
     if target_tenant_slug:

@@ -153,3 +153,31 @@ main h2 {
   scrollbar-width: thin;
   scrollbar-color: hsl(var(--muted-foreground) / 0.45) hsl(var(--muted) / 0.4);
 }
+
+/* Margin-simulator rate levers. We render our own colored rail behind the
+   input (see RateLever), so the native track is transparent; only the thumb is
+   styled, tinted by the lever's financial polarity via the --thumb var. */
+.lever-range::-webkit-slider-runnable-track { background: transparent; height: 100%; }
+.lever-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 1.05rem;
+  width: 1.05rem;
+  border-radius: 9999px;
+  background: var(--thumb, hsl(var(--primary)));
+  border: 2px solid hsl(var(--card));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+.lever-range::-moz-range-track { background: transparent; height: 100%; }
+.lever-range::-moz-range-thumb {
+  height: 1.05rem;
+  width: 1.05rem;
+  border-radius: 9999px;
+  background: var(--thumb, hsl(var(--primary)));
+  border: 2px solid hsl(var(--card));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+.lever-range:focus-visible::-webkit-slider-thumb { outline: 2px solid hsl(var(--ring, var(--primary))); outline-offset: 2px; }
+.lever-range:focus-visible::-moz-range-thumb { outline: 2px solid hsl(var(--ring, var(--primary))); outline-offset: 2px; }

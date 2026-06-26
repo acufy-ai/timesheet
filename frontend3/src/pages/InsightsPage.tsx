@@ -439,30 +439,18 @@ function FinancialsTab() {
   }
   const baseMargin = q.data.summary.total_margin_pct ?? 0;
   const newMargin = adjusted?.summary.total_margin_pct ?? baseMargin;
+  const baseMarginDollars = Number(q.data.summary.total_margin ?? 0);
+  const newMarginDollars = Number(adjusted?.summary.total_margin ?? baseMarginDollars);
   return (
     <div className="space-y-4">
-      {/* What-if scenario controls */}
-      <div className="rounded-2xl border border-border bg-card p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-foreground">What-if</p>
-            <p className="text-xs text-muted-foreground">Adjust rates to model the impact on margin. Nothing is saved.</p>
-          </div>
-          {whatIf ? (
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Margin</span>
-              <span className="font-semibold text-muted-foreground">{baseMargin}%</span>
-              <span className="text-muted-foreground">→</span>
-              <span className={cn('font-bold', marginColor(newMargin))}>{newMargin}%</span>
-              <button type="button" onClick={() => { setBillAdj(0); setCostAdj(0); }} className="ml-2 rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Reset</button>
-            </div>
-          ) : null}
-        </div>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <WhatIfSlider label="Bill rate" value={billAdj} onChange={setBillAdj} />
-          <WhatIfSlider label="Cost rate" value={costAdj} onChange={setCostAdj} />
-        </div>
-      </div>
+      <MarginSimulator
+        billAdj={billAdj} costAdj={costAdj}
+        onBill={setBillAdj} onCost={setCostAdj}
+        active={whatIf}
+        baseMarginPct={baseMargin} newMarginPct={newMargin}
+        baseMarginDollars={baseMarginDollars} newMarginDollars={newMarginDollars}
+        onReset={() => { setBillAdj(0); setCostAdj(0); }}
+      />
       <div className="rounded-2xl border border-border bg-card p-4">
         <FinancialsReport data={adjusted ?? q.data} />
       </div>
@@ -522,19 +510,139 @@ function RevenueRecognitionCard() {
   );
 }
 
-function WhatIfSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+// Margin simulator: model how rate changes move the portfolio margin. The
+// outcome (today -> simulated margin, in points AND dollars) is the hero; the
+// two rate levers sit underneath in the same surface so cause and effect read
+// as one object. Hypothetical only — nothing is saved.
+function MarginSimulator({
+  billAdj, costAdj, onBill, onCost, active,
+  baseMarginPct, newMarginPct, baseMarginDollars, newMarginDollars, onReset,
+}: {
+  billAdj: number; costAdj: number;
+  onBill: (v: number) => void; onCost: (v: number) => void;
+  active: boolean;
+  baseMarginPct: number; newMarginPct: number;
+  baseMarginDollars: number; newMarginDollars: number;
+  onReset: () => void;
+}) {
+  const ptsDelta = newMarginPct - baseMarginPct;
+  const dollarDelta = newMarginDollars - baseMarginDollars;
+  const up = ptsDelta > 0;
+  const down = ptsDelta < 0;
+  const deltaColor = up ? 'text-emerald-600 dark:text-emerald-400'
+    : down ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground';
+
+  return (
+    <section className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-base font-bold text-foreground">Margin simulator</h2>
+          <p className="text-xs text-muted-foreground">
+            Move your bill or cost rates to see where total margin would land. Nothing here is saved.
+          </p>
+        </div>
+        {active ? (
+          <button
+            type="button" onClick={onReset}
+            className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Reset to today
+          </button>
+        ) : null}
+      </div>
+
+      {/* Outcome headline — the thesis. Today (anchor) -> simulated (hero). */}
+      <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Today</p>
+          <p className="font-display text-3xl font-bold tabular-nums text-muted-foreground">{baseMarginPct}%</p>
+          <p className="text-xs tabular-nums text-muted-foreground">{fmtMoney(baseMarginDollars)} margin</p>
+        </div>
+        <span aria-hidden className="mb-7 text-2xl text-muted-foreground">→</span>
+        <div>
+          <p className={cn('text-[11px] font-semibold uppercase tracking-wider', active ? 'text-primary' : 'text-muted-foreground')}>
+            Simulated
+          </p>
+          <p className={cn('font-display text-5xl font-extrabold leading-none tabular-nums', marginColor(newMarginPct))}>
+            {newMarginPct}%
+          </p>
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground">{fmtMoney(newMarginDollars)} margin</p>
+        </div>
+        {active ? (
+          <div className="mb-7 flex flex-col gap-1">
+            <span className={cn('inline-flex w-fit items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-bold tabular-nums', deltaColor)}>
+              {up ? '▲' : down ? '▼' : ''}{up ? '+' : ''}{ptsDelta} pts
+            </span>
+            <span className={cn('text-xs tabular-nums', deltaColor)}>
+              {dollarDelta >= 0 ? '+' : '−'}{fmtMoney(Math.abs(dollarDelta))}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Levers — under the result they drive. Polarity is in the track color. */}
+      <div className="mt-5 grid gap-x-8 gap-y-5 sm:grid-cols-2">
+        <RateLever
+          label="Bill rate" value={billAdj} onChange={onBill}
+          tone="good" hint="Raising it lifts margin"
+        />
+        <RateLever
+          label="Cost rate" value={costAdj} onChange={onCost}
+          tone="cost" hint="Raising it trims margin"
+        />
+      </div>
+    </section>
+  );
+}
+
+// One rate lever. The track is tinted by financial polarity — emerald for the
+// lever that helps margin (bill), rose for the one that costs (cost) — so you
+// know which way is "good" before touching it. A center notch marks neutral (0).
+function RateLever({
+  label, value, onChange, tone, hint,
+}: {
+  label: string; value: number; onChange: (v: number) => void;
+  tone: 'good' | 'cost'; hint: string;
+}) {
+  const trackColor = tone === 'good' ? '#10b981' : '#f43f5e'; // emerald-500 / rose-500
+  const rail = 'rgba(128,128,140,0.28)'; // theme-neutral unfilled rail
+  // Fill the track from the center (0) out to the thumb so the lever reads as a
+  // delta from neutral, not an absolute 0..100 bar.
+  const pct = (value + 50); // 0..100 thumb position
+  const center = 50;
+  const lo = Math.min(pct, center);
+  const hi = Math.max(pct, center);
+  const fill = `linear-gradient(to right, ${rail} 0%, ${rail} ${lo}%, ${trackColor} ${lo}%, ${trackColor} ${hi}%, ${rail} ${hi}%, ${rail} 100%)`;
+
   return (
     <div>
-      <div className="mb-1 flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span className={cn('font-semibold tabular-nums', value > 0 ? 'text-emerald-600 dark:text-emerald-400' : value < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-foreground')}>{value > 0 ? '+' : ''}{value}%</span>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-semibold text-foreground">{label}</span>
+          <span className="text-[11px] text-muted-foreground">{hint}</span>
+        </div>
+        <span className={cn('text-sm font-bold tabular-nums',
+          value === 0 ? 'text-muted-foreground'
+            : (tone === 'good') === (value > 0) ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
+          {value > 0 ? '+' : ''}{value}%
+        </span>
       </div>
-      <input
-        type="range" min={-50} max={50} step={5} value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-primary"
-        aria-label={`${label} adjustment percent`}
-      />
+      <div className="relative flex h-5 items-center">
+        {/* Colored rail: neutral track with the from-0 fill in the lever's tone. */}
+        <span aria-hidden className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full" style={{ background: fill }} />
+        {/* Neutral (0) notch */}
+        <span aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 z-10 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-foreground/30" />
+        <input
+          type="range" min={-50} max={50} step={1} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label={`${label} adjustment percent`}
+          className="lever-range relative z-20 h-5 w-full cursor-pointer appearance-none bg-transparent"
+          style={{ ['--thumb' as string]: trackColor } as React.CSSProperties}
+        />
+      </div>
+      <div className="mt-1 flex justify-between text-[10px] tabular-nums text-muted-foreground">
+        <span>−50%</span><span>0</span><span>+50%</span>
+      </div>
     </div>
   );
 }
