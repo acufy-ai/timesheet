@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Folder, Loader2, Minus, Plus, Search, Star, X } from 'lucide-react';
 
 import { Button, FieldError, Input, Modal, RequiredMark, errorBorder } from '@/components/ui';
-import { useCreateUser, useUpdateUser, useAddAlias, useAssignableUsers, useAllProjects, useAllTasks, useClients, useCreateClient, useUserClients, useAddUserClient, useRemoveUserClient, useDepartments, useApprovalByAssignedManager } from '@/hooks/useAdmin';
+import { useCreateUser, useUpdateUser, useAddAlias, useAssignableUsers, useAllProjects, useAllTasks, useClients, useCreateClient, useUserClients, useAddUserClient, useRemoveUserClient, useDepartments, useTitles, useApprovalByAssignedManager } from '@/hooks/useAdmin';
 import { UserExtrasPanel } from './UserExtrasPanel';
 import { cn } from '@/lib/cn';
+import { ROLE_LABELS as ROLE_LABEL } from '@/lib/roleLabels';
 import type { Client, CreateUserBody, FullProject, FullTask, ManagedUser, UpdateUserBody } from '@/types/admin';
 
 // Create / edit a workspace user. One form for both: when `user` is provided we
@@ -16,12 +17,6 @@ import type { Client, CreateUserBody, FullProject, FullTask, ManagedUser, Update
 
 // Roles an admin can assign. PLATFORM_ADMIN is never assignable here.
 const ROLES = ['EMPLOYEE', 'MANAGER', 'VIEWER', 'ADMIN'] as const;
-const ROLE_LABEL: Record<string, string> = {
-  EMPLOYEE: 'Employee',
-  MANAGER: 'Manager',
-  VIEWER: 'Viewer',
-  ADMIN: 'Admin',
-};
 // Additional portals a user may also act as (beyond their primary role).
 const EXTRA_PORTAL_ROLES = ['MANAGER', 'VIEWER', 'ADMIN'] as const;
 
@@ -39,6 +34,7 @@ interface FormState {
   primary_manager_id: number | null;
   title: string;
   department: string;
+  cost_rate: string; // PSA loaded hourly cost; '' = not set. Admin-editable.
   timezone: string;
   can_review: boolean;
   phones: string[];
@@ -54,13 +50,14 @@ function blankForm(): FormState {
     full_name: '',
     email: '',
     username: '',
-    role: 'EMPLOYEE',
+    role: '',
     extraRoles: [],
     manager_id: '',
     manager_ids: [],
     primary_manager_id: null,
     title: '',
     department: '',
+    cost_rate: '',
     timezone: 'UTC',
     can_review: false,
     phones: [],
@@ -85,6 +82,7 @@ function fromUser(u: ManagedUser): FormState {
     primary_manager_id: u.primary_manager_id ?? u.manager_id ?? null,
     title: u.title ?? '',
     department: u.department ?? '',
+    cost_rate: u.cost_rate != null ? String(u.cost_rate) : '',
     timezone: u.timezone ?? 'UTC',
     can_review: !!u.can_review,
     phones: u.phones ?? [],
@@ -121,7 +119,9 @@ export function UserEditModal({
   open: boolean;
   user: ManagedUser | null; // null = create
   onClose: () => void;
-  onSaved: (msg: string) => void;
+  // createdId is the new user's id on create (so the page can select + reveal
+  // it); undefined on edit.
+  onSaved: (msg: string, createdId?: number) => void;
   // Manager editing a direct report: collapse the form to the project-access
   // checklist only; save patches just project_ids (the backend allows managers
   // to patch only that field for their reports).
@@ -144,6 +144,8 @@ export function UserEditModal({
   // True when the admin picked "Other" in the department dropdown to type a new
   // department name (distinct from a legacy free-text value already on the user).
   const [deptOtherMode, setDeptOtherMode] = useState(false);
+  // Same "Other" escape hatch for the managed Title dropdown.
+  const [titleOtherMode, setTitleOtherMode] = useState(false);
 
   const create = useCreateUser();
   const update = useUpdateUser();
@@ -152,6 +154,7 @@ export function UserEditModal({
   const assignableQ = useAssignableUsers(open);
   const clientsQ = useClients(open);
   const departmentsQ = useDepartments(open);
+  const titlesQ = useTitles(open);
   const multiManager = useApprovalByAssignedManager();
 
   // Reset the form whenever the modal opens or the target user changes.
@@ -162,6 +165,7 @@ export function UserEditModal({
     setAliasDraft('');
     setNewClientIds([]);
     setDeptOtherMode(false);
+    setTitleOtherMode(false);
     setError(null);
     setErrors({});
   }, [open, user]);
@@ -188,6 +192,10 @@ export function UserEditModal({
   // Show the free-text box when the admin explicitly chose "Other", or when the
   // user already carries a legacy department name not in the managed list.
   const deptIsCustom = deptOtherMode || (!!form.department && !knownDeptNames.has(form.department));
+  // Managed titles + the "Other" free-text escape hatch (mirrors departments).
+  const titles = titlesQ.data ?? [];
+  const knownTitleNames = useMemo(() => new Set(titles.map((t) => t.name)), [titles]);
+  const titleIsCustom = titleOtherMode || (!!form.title && !knownTitleNames.has(form.title));
   const isEmployee = form.role === 'EMPLOYEE';
   const saving = create.isPending || update.isPending;
 
@@ -246,13 +254,25 @@ export function UserEditModal({
     if (!form.full_name.trim()) {
       fieldErrors.full_name = 'Full name is required.';
     }
-    if (!form.is_external && (form.role === 'MANAGER' || form.role === 'EMPLOYEE')) {
-      if (!form.title.trim()) {
-        fieldErrors.title = `A title is required for ${form.role === 'MANAGER' ? 'managers' : 'employees'}.`;
+    // For internal users every org field is mandatory: role, title, department,
+    // and who they report to. External users have no role/department/manager
+    // surface, so those don't apply to them.
+    if (!form.is_external) {
+      if (!form.role) {
+        fieldErrors.role = 'Select a role.';
       }
-    }
-    if (!form.is_external && form.role === 'MANAGER' && !form.department.trim()) {
-      fieldErrors.department = 'A department is required for managers.';
+      if (!form.title.trim()) {
+        fieldErrors.title = 'A title is required.';
+      }
+      if (!form.department.trim()) {
+        fieldErrors.department = 'A department is required.';
+      }
+      const hasManager = multiManager
+        ? form.manager_ids.length > 0
+        : form.manager_id !== '';
+      if (!hasManager) {
+        fieldErrors.manager_id = 'Select who this user reports to.';
+      }
     }
     if (Object.keys(fieldErrors).length) {
       setErrors(fieldErrors);
@@ -286,6 +306,7 @@ export function UserEditModal({
           is_external: form.is_external,
           title: form.title.trim() || null,
           department: form.department.trim() || null,
+          cost_rate: form.cost_rate.trim() === '' ? null : Number(form.cost_rate),
           timezone: form.timezone || null,
           can_review: form.is_external ? false : form.can_review,
           ...managerFields,
@@ -307,6 +328,7 @@ export function UserEditModal({
           is_active: form.is_active,
           title: form.title.trim() || null,
           department: form.department.trim() || null,
+          cost_rate: form.cost_rate.trim() === '' ? null : Number(form.cost_rate),
           timezone: form.timezone || null,
           can_review: form.is_external ? false : form.can_review,
           ...managerFields,
@@ -332,12 +354,14 @@ export function UserEditModal({
           }
         }
         const temp = res.temporary_password;
+        const name = form.full_name.trim();
         onSaved(
           temp
-            ? `User created. Temporary password: ${temp}`
+            ? `User ${name} created successfully. Temporary password: ${temp}`
             : res.verification_email_sent
-              ? 'User created. An invitation email was sent.'
-              : 'User created.',
+              ? `User ${name} created successfully. An invitation email was sent.`
+              : `User ${name} created successfully.`,
+          newId,
         );
       }
       onClose();
@@ -476,8 +500,43 @@ export function UserEditModal({
                 <FieldError error={errors.username} />
               </div>
               <div>
-                <label className={labelClass}>Title{!form.is_external && (form.role === 'EMPLOYEE' || form.role === 'MANAGER') ? <RequiredMark /> : ''}</label>
-                <Input value={form.title} onChange={(e) => { patch({ title: e.target.value }); clearError('title'); }} placeholder="Senior Consultant" error={!!errors.title} />
+                <label className={labelClass}>Title{!form.is_external ? <RequiredMark /> : ''}</label>
+                {/* Bound to the managed Title list (Workforce Setup). "Other"
+                    keeps a free-text escape hatch for a new/legacy title. */}
+                {form.is_external ? (
+                  <Input value={form.title} onChange={(e) => { patch({ title: e.target.value }); clearError('title'); }} placeholder="Senior Consultant" error={!!errors.title} />
+                ) : (
+                  <>
+                    <select
+                      value={titleIsCustom ? '__other__' : form.title}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === '__other__') {
+                          setTitleOtherMode(true);
+                          patch({ title: '' });
+                        } else {
+                          setTitleOtherMode(false);
+                          patch({ title: v });
+                          clearError('title');
+                        }
+                      }}
+                      className={cn(selectClass, errorBorder(!!errors.title))}
+                    >
+                      <option value="">Select…</option>
+                      {titles.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                      <option value="__other__">Other (type a new one)…</option>
+                    </select>
+                    {titleIsCustom ? (
+                      <Input
+                        className="mt-2"
+                        value={form.title}
+                        onChange={(e) => { patch({ title: e.target.value }); clearError('title'); }}
+                        placeholder="New title name"
+                        error={!!errors.title}
+                      />
+                    ) : null}
+                  </>
+                )}
                 <FieldError error={errors.title} />
               </div>
             </div>
@@ -530,29 +589,40 @@ export function UserEditModal({
               <>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <label className={labelClass}>Role</label>
-                    <select value={form.role} onChange={(e) => patch({ role: e.target.value })} className={selectClass}>
+                    <label className={labelClass}>Role<RequiredMark /></label>
+                    <select
+                      value={form.role}
+                      onChange={(e) => { patch({ role: e.target.value }); clearError('role'); }}
+                      className={cn(selectClass, errorBorder(!!errors.role))}
+                    >
+                      <option value="">Select a role…</option>
                       {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                     </select>
+                    <FieldError error={errors.role} />
                   </div>
                   <div>
-                    <label className={labelClass}>Manager{multiManager ? 's' : ''}</label>
+                    <label className={labelClass}>Reports to<RequiredMark /></label>
                     {multiManager ? (
                       <ManagerMultiSelect
                         managers={managers}
                         selected={form.manager_ids}
                         primary={form.primary_manager_id}
-                        onChange={(ids, primary) => patch({ manager_ids: ids, primary_manager_id: primary })}
+                        onChange={(ids, primary) => { patch({ manager_ids: ids, primary_manager_id: primary }); clearError('manager_id'); }}
                       />
                     ) : (
-                      <select value={form.manager_id} onChange={(e) => patch({ manager_id: e.target.value ? Number(e.target.value) : '' })} className={selectClass}>
-                        <option value="">No manager</option>
+                      <select
+                        value={form.manager_id}
+                        onChange={(e) => { patch({ manager_id: e.target.value ? Number(e.target.value) : '' }); clearError('manager_id'); }}
+                        className={cn(selectClass, errorBorder(!!errors.manager_id))}
+                      >
+                        <option value="">Select…</option>
                         {managers.map((m) => <option key={m.id} value={m.id}>{m.full_name}</option>)}
                       </select>
                     )}
+                    <FieldError error={errors.manager_id} />
                   </div>
                   <div>
-                    <label className={labelClass}>Department{form.role === 'MANAGER' ? <RequiredMark /> : ''}</label>
+                    <label className={labelClass}>Department<RequiredMark /></label>
                     {/* Bound to the managed Department list (Workforce Setup).
                         "Other" keeps a free-text escape hatch so admins can still
                         enter a new/legacy department without pre-creating it. */}
@@ -571,7 +641,7 @@ export function UserEditModal({
                       }}
                       className={cn(selectClass, errorBorder(!!errors.department))}
                     >
-                      <option value="">No department</option>
+                      <option value="">Select…</option>
                       {departments.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
                       <option value="__other__">Other (type a new one)…</option>
                     </select>
@@ -585,6 +655,24 @@ export function UserEditModal({
                       />
                     ) : null}
                     <FieldError error={errors.department} />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Cost rate</label>
+                    {/* PSA: the loaded hourly cost of this person. Feeds margin
+                        and EVM; never shown to employees. Optional. */}
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={form.cost_rate}
+                        onChange={(e) => patch({ cost_rate: e.target.value })}
+                        placeholder="0.00"
+                        className="pl-6"
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">Hourly cost to the firm. Used for margins (not visible to employees).</p>
                   </div>
                   <div>
                     <label className={labelClass}>Default client</label>

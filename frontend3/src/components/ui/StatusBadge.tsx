@@ -8,6 +8,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { roleLabel } from '@/lib/roleLabels';
 
 // One central place for every status pill in the app. Tones are FIXED (not
 // theme-bound) because semantic meaning beats brand coherence: "approved"
@@ -111,17 +112,9 @@ const ROLE_TONE: Record<string, Tone> = {
   PLATFORM_ADMIN: 'neutral',
 };
 
-const ROLE_LABEL: Record<string, string> = {
-  ADMIN: 'Admin',
-  MANAGER: 'Manager',
-  EMPLOYEE: 'Employee',
-  VIEWER: 'Viewer',
-  PLATFORM_ADMIN: 'Platform admin',
-};
-
 export function RoleBadge({ role, className }: { role: string; className?: string }) {
   const tone = ROLE_TONE[role] ?? 'neutral';
-  const label = ROLE_LABEL[role] ?? role;
+  const label = roleLabel(role);
   return (
     <TonePill tone={tone} className={className}>
       {label}

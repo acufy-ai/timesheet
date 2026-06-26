@@ -4,14 +4,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
-
-const ROLE_LABEL: Record<string, string> = {
-  ADMIN: 'Admin',
-  MANAGER: 'Manager',
-  VIEWER: 'Viewer',
-  EMPLOYEE: 'Employee',
-  PLATFORM_ADMIN: 'Platform admin',
-};
+import { roleLabel } from '@/lib/roleLabels';
 
 // Avatar button → dropdown with the user's name/role and a logout action.
 // Shared by both nav modes. When `expanded` is true (the UtilityBar) the
@@ -61,7 +54,7 @@ export function UserMenu({
     navigate('/login', { replace: true });
   };
 
-  const roleLabel = ROLE_LABEL[user.role] ?? user.role;
+  const roleText = roleLabel(user.role);
 
   return (
     <div ref={ref} className="relative">
@@ -78,7 +71,7 @@ export function UserMenu({
           </span>
           <span className="hidden text-left leading-tight sm:block">
             <span className="block text-sm font-semibold text-foreground">{user.full_name}</span>
-            <span className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{roleLabel}</span>
+            <span className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{roleText}</span>
           </span>
           <ChevronDown className={cn('hidden h-4 w-4 text-muted-foreground transition-transform sm:block', open && 'rotate-180')} />
         </button>

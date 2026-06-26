@@ -9,13 +9,7 @@ import { NotificationsBell } from './NotificationsBell';
 import { ThemePicker } from './ThemePicker';
 import { TopbarTimer } from '@/components/timer/TopbarTimer';
 import { UserMenu } from './UserMenu';
-
-const ROLE_LABEL: Record<string, string> = {
-  MANAGER: 'Manager',
-  VIEWER: 'Viewer',
-  ADMIN: 'Admin',
-  EMPLOYEE: 'Employee',
-};
+import { roleLabel } from '@/lib/roleLabels';
 
 // The always-present top utility bar: brand · global search · role switch ·
 // theme · notifications · account. Sits above BOTH nav modes so the brand and
@@ -69,7 +63,7 @@ export function UtilityBar() {
             className="inline-flex h-9 items-center gap-1.5 rounded-full border border-primary/40 bg-primary/5 px-3.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
           >
             <ExternalLink className="h-4 w-4" />
-            Switch to {ROLE_LABEL[r] ?? r}
+            Switch to {roleLabel(r)}
           </button>
         ))}
         {/* Workspace (tenant) name. Sits with the global actions so it's always
