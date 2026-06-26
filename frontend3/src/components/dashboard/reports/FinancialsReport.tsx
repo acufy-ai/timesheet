@@ -55,7 +55,7 @@ export function FinancialsReport({ data }: { data: ManagerFinancials }) {
   };
 
   const exportCsv = () => {
-    const headers = ['Project', 'Client', 'Approved hours', 'Billable hours', 'Revenue', 'Cost', 'Margin', 'Margin %', 'Budget used %', 'Budget amount', 'Contract used %', 'Contract value'];
+    const headers = ['Project', 'Client', 'Approved hours', 'Billable hours', 'Revenue', 'Cost', 'Margin', 'Margin %', 'Budget burn %', 'Budget amount', 'Contract billed %', 'Contract value'];
     const lines = sorted.map((r) => [
       r.project_name, r.client_name,
       Math.round(Number(r.approved_hours)), Math.round(Number(r.billable_hours)),
@@ -132,15 +132,15 @@ export function FinancialsReport({ data }: { data: ManagerFinancials }) {
               <SortHead label="Revenue" k="revenue" align="right" />
               <SortHead label="Cost" k="cost" align="right" />
               <SortHead label="Margin" k="margin" align="right" />
-              <SortHead label="Budget used" k="budget" align="right" />
-              <SortHead label="Contract used" k="contract" align="right" />
+              <SortHead label="Budget burn" k="budget" align="right" />
+              <SortHead label="Contract billed" k="contract" align="right" />
             </tr>
           </thead>
           <tbody>
             {sorted.map((r) => (
               <tr
                 key={r.project_id}
-                onClick={() => navigate(`/insights/project/${r.project_id}`)}
+                onClick={() => navigate(`/insights/project/${r.project_id}?from=financials`)}
                 className="cursor-pointer border-b border-border/60 hover:bg-foreground/[0.03]"
               >
                 <td className="px-3 py-2">

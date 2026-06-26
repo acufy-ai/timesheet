@@ -195,6 +195,39 @@ export interface HealthConfigResponse {
   can_edit_workspace: boolean;
 }
 
+// GET /dashboard/project/:id/task-breakdown — task-level "why" for a project.
+export interface TaskBreakdownTask {
+  task_id: number;
+  name: string;
+  status: string;
+  hours: string | number;
+  cost: string | number;
+  revenue: string | number;
+  pct_of_hours: number;
+  assignees: string[];
+}
+export interface TaskBreakdownPerson {
+  user_id: number;
+  full_name: string;
+  hours: string | number;
+  pct_of_hours: number;
+}
+export interface ProjectTaskBreakdown {
+  project_id: number;
+  project_name: string;
+  total_tasks: number;
+  done_tasks: number;
+  open_tasks: number;
+  total_hours: string | number;
+  is_overdue: boolean;
+  days_overdue: number;
+  top_tasks: TaskBreakdownTask[];
+  unfinished_at_deadline: TaskBreakdownTask[];
+  stalled_tasks: TaskBreakdownTask[];
+  by_person: TaskBreakdownPerson[];
+  notes: string[];
+}
+
 // GET /dashboard/manager-clients — the manager's clients + the projects they run.
 export interface ManagerClientProject {
   project_id: number;

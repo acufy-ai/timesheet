@@ -1,13 +1,14 @@
 import { useMemo } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 import { WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
-import { useEvm, useManagerFinancials, usePortfolio, useRevenueRecognition } from '@/hooks/useDashboard';
+import { useEvm, useManagerFinancials, usePortfolio, useProjectTaskBreakdown, useRevenueRecognition } from '@/hooks/useDashboard';
 import { InfoLabel } from '@/components/dashboard/InfoLabel';
 import { fmtMoney } from '@/lib/format';
+import type { ProjectTaskBreakdown } from '@/types/dashboard';
 
 // Dedicated per-project dossier — the "View report" target. Assembles a full
 // picture from the same data the Insights tables use (portfolio, financials,
@@ -37,12 +38,23 @@ export function ProjectReportPage() {
   const { user } = useAuth();
   const { id } = useParams();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const projectId = Number(id);
+
+  // Where "Back" returns: the tab/screen the user came from. Defaults to the
+  // Projects tab. 'dashboard' = the manager dashboard (e.g. clients widget).
+  const from = params.get('from');
+  const back = from === 'dashboard'
+    ? { to: '/dashboard', label: 'Back to dashboard' }
+    : from && ['financials', 'resourcing', 'portfolio', 'forecasts'].includes(from)
+      ? { to: `/insights?tab=${from}`, label: 'Back' }
+      : { to: '/insights?tab=portfolio', label: 'Back' };
 
   const portfolio = usePortfolio();
   const financials = useManagerFinancials();
   const evm = useEvm();
   const revrec = useRevenueRecognition();
+  const breakdown = useProjectTaskBreakdown(projectId);
 
   const data = useMemo(() => {
     const p = portfolio.data?.rows.find((r) => r.project_id === projectId);
@@ -68,10 +80,10 @@ export function ProjectReportPage() {
     <div className="space-y-5">
       <button
         type="button"
-        onClick={() => navigate('/insights')}
+        onClick={() => navigate(back.to)}
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> Back to Insights
+        <ArrowLeft className="h-4 w-4" /> {back.label}
       </button>
 
       <WorkspaceHeader
@@ -109,6 +121,12 @@ export function ProjectReportPage() {
             {p?.health_reason ? <span className="text-sm text-muted-foreground">{p.health_reason}</span> : null}
           </div>
 
+          {/* Why this status — task-level detail, shown when the project needs
+              a closer look. Built from logged time + task status (real data). */}
+          {(p?.health === 'at-risk' || p?.health === 'needs-attention') ? (
+            <WhySection data={breakdown.data} loading={breakdown.isLoading} currency={currency} />
+          ) : null}
+
           {/* Financial summary */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="Revenue" value={fmtMoney(f?.revenue ?? p?.revenue ?? 0, currency)} />
@@ -119,7 +137,7 @@ export function ProjectReportPage() {
               valueClass={marginColor(f?.margin_pct ?? p?.margin_pct)}
             />
             <Stat
-              label="Budget used"
+              label="Budget burn"
               value={(f?.budget_used_pct ?? p?.budget_used_pct) != null ? `${f?.budget_used_pct ?? p?.budget_used_pct}%` : '—'}
             />
           </div>
@@ -198,6 +216,130 @@ function Row({ label, value }: { label: React.ReactNode; value: React.ReactNode 
     <div className="flex items-center justify-between py-2 text-sm">
       <span className="text-muted-foreground">{label}</span>
       <span className="tabular-nums font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
+const TASK_STATUS_LABEL: Record<string, string> = {
+  to_do: 'To do', in_progress: 'In progress', done: 'Done',
+};
+const TASK_STATUS_TONE: Record<string, string> = {
+  to_do: 'text-muted-foreground', in_progress: 'text-amber-600 dark:text-amber-400', done: 'text-emerald-600 dark:text-emerald-400',
+};
+
+// "Why it needs a closer look" — task-level cause from real logged time + task
+// status. Honest about its limits: it shows where effort went and what's
+// unfinished, not invented blockers (that needs task estimates/blockers we don't
+// capture yet).
+function WhySection({ data, loading, currency }: { data?: ProjectTaskBreakdown; loading: boolean; currency: string }) {
+  if (loading) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-4 py-6 text-center text-muted-foreground">
+        <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+      </div>
+    );
+  }
+  if (!data || data.total_tasks === 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
+        No tasks on this project yet, so there’s no task-level detail to explain the status.
+      </div>
+    );
+  }
+
+  const hasUnfinished = data.unfinished_at_deadline.length > 0;
+  const hasStalled = data.stalled_tasks.length > 0;
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="border-b border-border px-4 py-3">
+        <p className="text-sm font-semibold text-foreground">Why it needs a closer look</p>
+        <p className="text-xs text-muted-foreground">
+          {data.done_tasks} of {data.total_tasks} tasks done · {Math.round(Number(data.total_hours))}h logged
+        </p>
+      </div>
+
+      {/* Headline notes — the data-derived cause in one line each. */}
+      {data.notes.length ? (
+        <ul className="space-y-1.5 border-b border-border px-4 py-3">
+          {data.notes.map((n, i) => (
+            <li key={i} className="flex gap-2 text-sm text-foreground">
+              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+              <span>{n}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="grid gap-px bg-border md:grid-cols-2">
+        {/* Where the hours/$ went */}
+        <div className="bg-card px-4 py-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Where the time went</p>
+          {data.top_tasks.length ? (
+            <ul className="space-y-2">
+              {data.top_tasks.map((t) => (
+                <li key={t.task_id}>
+                  <div className="flex items-baseline justify-between gap-2 text-sm">
+                    <span className="min-w-0 truncate text-foreground" title={t.name}>{t.name}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {Math.round(Number(t.hours))}h · {fmtMoney(t.cost, currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div className="h-full rounded-full bg-primary/70" style={{ width: `${Math.min(100, t.pct_of_hours)}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="text-sm text-muted-foreground">No time logged against tasks.</p>}
+        </div>
+
+        {/* What's unfinished + who's carrying it */}
+        <div className="space-y-3 bg-card px-4 py-3">
+          {hasUnfinished ? (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Still open {data.is_overdue ? 'past the deadline' : 'near the deadline'}
+              </p>
+              <ul className="space-y-1">
+                {data.unfinished_at_deadline.map((t) => (
+                  <li key={t.task_id} className="flex items-baseline justify-between gap-2 text-sm">
+                    <span className="min-w-0 truncate text-foreground" title={t.name}>{t.name}</span>
+                    <span className={cn('shrink-0 text-xs font-medium', TASK_STATUS_TONE[t.status])}>{TASK_STATUS_LABEL[t.status] ?? t.status}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {hasStalled ? (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Not started</p>
+              <p className="text-sm text-muted-foreground">
+                {data.stalled_tasks.map((t) => t.name).join(', ')}
+              </p>
+            </div>
+          ) : null}
+
+          {data.by_person.length ? (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Who’s carrying it</p>
+              <ul className="space-y-1">
+                {data.by_person.slice(0, 4).map((p) => (
+                  <li key={p.user_id} className="flex items-baseline justify-between gap-2 text-sm">
+                    <span className="min-w-0 truncate text-foreground">{p.full_name}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(Number(p.hours))}h · {p.pct_of_hours}%</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+        Based on logged time and task status. Blocker and estimate-overrun detail will appear once tasks capture due dates, estimates and blockers.
+      </p>
     </div>
   );
 }

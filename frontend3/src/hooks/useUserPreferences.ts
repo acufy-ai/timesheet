@@ -35,7 +35,11 @@ export function useUpdatePreferences() {
     mutationFn: (patch: Partial<UserPreferences>) =>
       meApi.updatePreferences(patch).then((r) => r.data as UserPreferences),
     onSuccess: (data) => {
+      // Mirror the server's merged prefs into cache immediately, then revalidate
+      // so a stale read can't resurrect the pre-save value (manager-dashboard
+      // order/hide/columns were resetting without the refetch).
       qc.setQueryData(PREFERENCES_QUERY_KEY, data);
+      qc.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
     },
   });
 }

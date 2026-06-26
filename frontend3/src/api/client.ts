@@ -18,6 +18,7 @@ import type {
   HealthConfigBody,
   HealthConfigResponse,
   ManagerClients,
+  ProjectTaskBreakdown,
   TeamRejectionStats,
 } from '@/types/dashboard';
 import type {
@@ -390,6 +391,8 @@ export const dashboardApi = {
   evm: () => api.get<EvmData>('/dashboard/evm'),
   revenueRecognition: () => api.get<RevRec>('/dashboard/revenue-recognition'),
   managerClients: () => api.get<ManagerClients>('/dashboard/manager-clients'),
+  projectTaskBreakdown: (projectId: number) =>
+    api.get<ProjectTaskBreakdown>(`/dashboard/project/${projectId}/task-breakdown`),
   healthConfig: () => api.get<HealthConfigResponse>('/dashboard/health-config'),
   setHealthConfig: (scope: 'workspace' | 'override', body: HealthConfigBody) =>
     api.put<HealthConfigResponse>('/dashboard/health-config', body, { params: { scope } }),

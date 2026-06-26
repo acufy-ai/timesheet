@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { BarChart3, CalendarRange, Layers, Loader2, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
 import { Tooltip, WorkspaceHeader } from '@/components/ui';
@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
 import { useEvm, useManagerFinancials, usePortfolio, useRevenueRecognition, useTeamResourcing } from '@/hooks/useDashboard';
 import { FinancialsReport } from '@/components/dashboard/reports/FinancialsReport';
-import { InfoLabel } from '@/components/dashboard/InfoLabel';
+import { InfoLabel, HealthInfoLabel } from '@/components/dashboard/InfoLabel';
 import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
 import { fmtMoney } from '@/lib/format';
 
@@ -31,18 +31,26 @@ function ClientLink({ clientId, name }: { clientId?: number | null; name: string
 // Resourcing, Portfolio, and Forecasts as the program builds them out. Admin
 // is intentionally excluded (they manage the workspace, not the money), and
 // employees never see it. Gated again here in case of direct navigation.
-type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts';
+export type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts';
 
 const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   { key: 'financials', label: 'Financials', Icon: BarChart3 },
   { key: 'resourcing', label: 'Resourcing', Icon: Layers },
-  { key: 'portfolio', label: 'Portfolio', Icon: TrendingUp },
+  // key stays 'portfolio' (route/deep-link stability); label is "Projects".
+  { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
   { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
 ];
 
+const VALID_TABS = new Set<InsightTab>(TABS.map((t) => t.key));
+
 export function InsightsPage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<InsightTab>('financials');
+  // The active tab lives in the URL (?tab=) so deep-links from the dashboard
+  // land on the right tab AND the project-report "Back" can return to it.
+  const [params, setParams] = useSearchParams();
+  const raw = params.get('tab') as InsightTab | null;
+  const tab: InsightTab = raw && VALID_TABS.has(raw) ? raw : 'financials';
+  const setTab = (key: InsightTab) => setParams({ tab: key }, { replace: true });
 
   // Manager + viewer only.
   if (!user || (user.role !== 'MANAGER' && user.role !== 'VIEWER')) {
@@ -140,7 +148,7 @@ function ForecastsTab() {
                 return (
                   <tr
                     key={r.project_id}
-                    onClick={() => navigate(`/insights/project/${r.project_id}`)}
+                    onClick={() => navigate(`/insights/project/${r.project_id}?from=forecasts`)}
                     className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-foreground/[0.03]"
                   >
                     <td className="px-4 py-3">
@@ -252,11 +260,11 @@ function PortfolioTab() {
               <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                 <th className="px-4 py-2 font-semibold">Project</th>
                 <th className="px-4 py-2 font-semibold">
-                  <InfoLabel label="Health" />
+                  <HealthInfoLabel />
                 </th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Revenue" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Margin" side="bottom" /></th>
-                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget used" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget burn" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold">Ends in</th>
               </tr>
             </thead>
@@ -272,7 +280,7 @@ function PortfolioTab() {
                 return (
                   <tr
                     key={r.project_id}
-                    onClick={() => navigate(`/insights/project/${r.project_id}`)}
+                    onClick={() => navigate(`/insights/project/${r.project_id}?from=portfolio`)}
                     className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-foreground/[0.03]"
                   >
                     <td className="px-4 py-3">

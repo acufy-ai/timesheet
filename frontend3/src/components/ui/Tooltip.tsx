@@ -14,12 +14,16 @@ import { createPortal } from 'react-dom';
 type Side = 'right' | 'left' | 'top' | 'bottom';
 
 interface TooltipProps {
-  label: string;
+  /** Plain string for a simple label, or rich content (a lead line + formula +
+   * legend) for metric help — see RichTip in dashboard/tooltipContent. Rich
+   * content implies a wrapped, max-width bubble. */
+  label: React.ReactNode;
   side?: Side;
   /** Gap in px between the trigger and the tooltip. */
   offset?: number;
   /** When set, the bubble wraps to this max width (px) instead of one line.
-   * Use for multi-sentence help text; omit for short single-line labels. */
+   * Use for multi-sentence help text; omit for short single-line labels.
+   * Auto-applied (280px) when `label` is not a plain string. */
   maxWidth?: number;
   children: React.ReactNode;
 }
@@ -84,6 +88,12 @@ export const Tooltip: React.FC<TooltipProps> = ({
 
   const hide = useCallback(() => setCoords(null), []);
 
+  // Rich (non-string) content always wraps; default it to a comfortable
+  // reading column so structured help (lead + formula + legend) lays out.
+  const isRich = typeof label !== 'string';
+  const effectiveMaxWidth = maxWidth ?? (isRich ? 280 : undefined);
+  const wraps = effectiveMaxWidth != null;
+
   return (
     <span
       ref={triggerRef}
@@ -100,10 +110,12 @@ export const Tooltip: React.FC<TooltipProps> = ({
           <span
             id={tooltipId}
             role="tooltip"
-            style={{ top: coords.top, left: coords.left, transform: coords.transform, maxWidth }}
+            style={{ top: coords.top, left: coords.left, transform: coords.transform, maxWidth: effectiveMaxWidth }}
             className={
-              'pointer-events-none fixed z-[100] rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 ' +
-              (maxWidth ? 'whitespace-normal leading-snug' : 'whitespace-nowrap')
+              'pointer-events-none fixed z-[100] block rounded-lg border border-border bg-popover text-popover-foreground shadow-lg animate-in fade-in-0 zoom-in-95 ' +
+              (isRich
+                ? 'px-3 py-2.5 text-xs leading-snug'
+                : 'px-2 py-1 text-xs font-medium ' + (wraps ? 'whitespace-normal leading-snug' : 'whitespace-nowrap'))
             }
           >
             {label}
