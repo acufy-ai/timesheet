@@ -254,6 +254,16 @@ export function UserEditModal({
     if (!form.full_name.trim()) {
       fieldErrors.full_name = 'Full name is required.';
     }
+    // Email is required when creating a user — it's how they receive the
+    // account-setup invite. (On edit it can stay as-is.)
+    if (!isEdit) {
+      const email = form.email.trim();
+      if (!email) {
+        fieldErrors.email = 'Email is required.';
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        fieldErrors.email = 'Enter a valid email address.';
+      }
+    }
     // For internal users every org field is mandatory: role, title, department,
     // and who they report to. External users have no role/department/manager
     // surface, so those don't apply to them.
@@ -353,14 +363,13 @@ export function UserEditModal({
             try { await addUserClient.mutateAsync({ userId: newId, clientId }); } catch { /* skip a bad assignment */ }
           }
         }
-        const temp = res.temporary_password;
+        // Users are onboarded via the account-setup email; we never surface a
+        // temporary password (credentials don't belong in a toast).
         const name = form.full_name.trim();
         onSaved(
-          temp
-            ? `User ${name} created successfully. Temporary password: ${temp}`
-            : res.verification_email_sent
-              ? `User ${name} created successfully. An invitation email was sent.`
-              : `User ${name} created successfully.`,
+          res.verification_email_sent
+            ? `${name} added. An account-setup email is on the way.`
+            : `${name} added.`,
           newId,
         );
       }
@@ -450,8 +459,8 @@ export function UserEditModal({
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Email</label>
-                <Input type="email" value={form.email} onChange={(e) => { patch({ email: e.target.value }); clearError('email'); }} placeholder="jane@example.com" error={!!errors.email} />
+                <label className={labelClass}>Email{!isEdit ? <RequiredMark /> : null}</label>
+                <Input type="email" value={form.email} onChange={(e) => { patch({ email: e.target.value }); clearError('email'); }} placeholder="jane@example.com" required={!isEdit} error={!!errors.email} />
                 <FieldError error={errors.email} />
               </div>
               <div>

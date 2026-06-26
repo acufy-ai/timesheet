@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Download, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, Plus, Search, Upload, Users as UsersIcon } from 'lucide-react';
 
 import { Button, Card, Empty, Input, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -60,9 +61,13 @@ export function UsersPage() {
   const orgChartOpen = false;
   const [bulkBusy, setBulkBusy] = useState(false);
 
+  // Bottom-right toast. A single timer ref so rapid successive messages don't
+  // let an old timer clear a newer toast.
+  const flashTimer = useRef<number | null>(null);
   const flashAndFade = (tone: 'ok' | 'err', text: string) => {
     setFlash({ tone, text });
-    window.setTimeout(() => setFlash(null), 5000);
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), 6000);
   };
 
   // After creating a user, reveal it: clear any filters/search and reset to the
@@ -314,14 +319,6 @@ export function UsersPage() {
 
       {!isAdmin || adminTab === 'users' ? (
         <>
-          {flash ? (
-            <div role="alert" className={cn('rounded-xl border px-3 py-2 text-sm',
-              flash.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300')}>
-              {flash.text}
-            </div>
-          ) : null}
-
           {isAdmin && orgChartOpen ? (
             <Card className="p-4"><OrgChart users={scoped} currentUserId={user?.id} /></Card>
           ) : (
@@ -422,6 +419,33 @@ export function UsersPage() {
           <NoProjectAccessModal open={noAccessOpen} users={scoped} onClose={() => setNoAccessOpen(false)} onAssign={(u) => { setNoAccessOpen(false); setEditing(u); }} />
         </>
       ) : null}
+
+      {/* Transient toast, bottom-right. Portaled so it floats over content and
+          never shifts the page (the new-user detail stays visible behind it).
+          Auto-dismisses via flashAndFade's timer; click to dismiss early. */}
+      {flash
+        ? createPortal(
+            <div className="pointer-events-none fixed bottom-5 right-5 z-[120] flex max-w-sm flex-col items-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFlash(null)}
+                role="status"
+                className={cn(
+                  'pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm shadow-lg backdrop-blur-sm animate-in fade-in-0 slide-in-from-bottom-2',
+                  flash.tone === 'ok'
+                    ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300',
+                )}
+              >
+                {flash.tone === 'ok'
+                  ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                  : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
+                <span className="text-left">{flash.text}</span>
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

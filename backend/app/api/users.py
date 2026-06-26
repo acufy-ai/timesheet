@@ -312,7 +312,12 @@ async def get_my_preferences(
     so the user inherits the team default once. The defaults are computed, not
     persisted: the moment the user saves their own choice it takes over.
     """
-    prefs = dict(current_user.preferences or {})
+    # Read preferences from THIS (tenant) session, not from current_user, which
+    # is loaded via the legacy get_db session. On isolated tenants those are
+    # different DBs; reading current_user would miss values the PATCH saved to
+    # the tenant DB (e.g. manager_dashboard customization).
+    db_user = await db.get(User, current_user.id)
+    prefs = dict((db_user.preferences if db_user else None) or current_user.preferences or {})
 
     if current_user.tenant_id is not None:
         try:
@@ -357,17 +362,27 @@ async def update_my_preferences(
                 detail='Inbox view must be either "cards" or "table".',
             )
 
+    # IMPORTANT: current_user is loaded via get_db (the legacy shared DB
+    # session), but this handler commits the get_tenant_db session. On an
+    # isolated tenant those are DIFFERENT databases/sessions, so mutating
+    # current_user and committing `db` persisted NOTHING to the tenant DB
+    # (the write silently vanished — this broke dashboard customization).
+    # Load the user from THIS session and mutate that instance instead.
+    db_user = await db.get(User, current_user.id)
+    if db_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
     # Merge over the existing dict instead of replacing it so unrelated
     # preferences keys survive partial PATCHes.
-    merged = dict(current_user.preferences or {})
+    merged = dict(db_user.preferences or {})
     for key, value in incoming.items():
         if value is None:
             merged.pop(key, None)
         else:
             merged[key] = value
-    current_user.preferences = merged
-    # SQLAlchemy doesn't flag JSONB mutations by default; re-assigning the
-    # whole dict above already triggers an UPDATE, so commit and return.
+    # Re-assign the whole dict (SQLAlchemy doesn't track in-place JSONB
+    # mutations) so the UPDATE actually fires, then commit this session.
+    db_user.preferences = merged
     await db.commit()
     return merged
 
