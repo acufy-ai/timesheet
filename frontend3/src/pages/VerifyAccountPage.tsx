@@ -45,7 +45,7 @@ export function VerifyAccountPage() {
     const nextErrors: Record<string, string> = {};
     if (!tempPassword) nextErrors.tempPassword = 'This field is required.';
     if (!newPassword) nextErrors.newPassword = 'This field is required.';
-    else if (newPassword.length < 10) nextErrors.newPassword = 'New password must be at least 10 characters.';
+    else if (newPassword.length < 8) nextErrors.newPassword = 'New password must be at least 8 characters.';
     else if (tempPassword && newPassword === tempPassword.trim()) nextErrors.newPassword = 'New password must be different from your temporary password.';
     if (!confirmPassword) nextErrors.confirmPassword = 'This field is required.';
     else if (newPassword && newPassword !== confirmPassword) nextErrors.confirmPassword = 'Passwords do not match.';
@@ -87,13 +87,13 @@ export function VerifyAccountPage() {
           <div>
             <label className="mb-1 block text-[13px] font-medium text-muted-foreground">New password<RequiredMark /></label>
             <div className="relative">
-              <Input type={showNew ? 'text' : 'password'} value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setErrors((er) => ({ ...er, newPassword: '' })); }} error={!!errors.newPassword} autoComplete="new-password" placeholder="At least 10 characters" />
+              <Input type={showNew ? 'text' : 'password'} value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setErrors((er) => ({ ...er, newPassword: '' })); }} error={!!errors.newPassword} autoComplete="new-password" placeholder="At least 8 characters" />
               <button type="button" onClick={() => setShowNew((v) => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label={showNew ? 'Hide' : 'Show'}>
                 {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
             <FieldError error={errors.newPassword} />
-            <p className="mt-1 text-[11px] text-muted-foreground">At least 10 characters with uppercase, lowercase, number, and special character.</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">At least 8 characters with uppercase, lowercase, number, and special character.</p>
           </div>
           <div>
             <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Confirm new password<RequiredMark /></label>

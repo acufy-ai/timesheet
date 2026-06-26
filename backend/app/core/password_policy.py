@@ -5,7 +5,7 @@ Centralized password policy enforcement for SaaS deployment.
 import re
 
 # Minimum length for all passwords
-MIN_PASSWORD_LENGTH = 10
+MIN_PASSWORD_LENGTH = 8
 
 # Common passwords that pass complexity rules but are easily guessed.
 # This is a compact list — for production, consider loading from a file

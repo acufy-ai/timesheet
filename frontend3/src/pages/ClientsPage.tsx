@@ -350,6 +350,26 @@ export function ClientsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClientId, clients]);
 
+  // Deep link to a specific project (e.g. from the dashboard "Clients & projects"
+  // widget): ?project=<id> expands that project card and scrolls it into view,
+  // then drops the param so it doesn't re-fire on later interactions.
+  const projectParam = searchParams.get('project');
+  useEffect(() => {
+    if (!projectParam) return;
+    const pid = Number(projectParam);
+    if (!Number.isFinite(pid)) return;
+    if (!projects.some((p) => p.id === pid)) return; // wait until projects load
+    setExpanded((s) => ({ ...s, [pid]: true }));
+    const t = window.setTimeout(() => {
+      document.getElementById(`project-${pid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+    const next = new URLSearchParams(searchParams);
+    next.delete('project');
+    setSearchParams(next, { replace: true });
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectParam, projects]);
+
   const activeClient = clients.find((c) => c.id === activeClientId) ?? null;
   const teamQ = useClientTeam(activeClient?.id ?? null);
   const team = (teamQ.data ?? []) as ClientTeamMember[];
@@ -915,7 +935,7 @@ function ProjectCard({
     .join(' · ');
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card id={`project-${project.id}`} className="overflow-hidden p-0 scroll-mt-24">
       <div className={cn('flex items-center gap-3 px-4 py-3', open ? '' : 'rounded-2xl')}>
         <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-3 text-left">
           <ChevronRight className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />

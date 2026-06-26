@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, Loader2, Users } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Loader2, Users } from 'lucide-react';
 
 import { Button, Card, Input, RoleBadge, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -41,6 +41,7 @@ export function ProfilePage() {
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
   const [pwError, setPwError] = useState<string | null>(null);
+  const [showPw, setShowPw] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -178,17 +179,27 @@ export function ProfilePage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label className={labelClass}>Current password</label>
-                <Input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} autoComplete="current-password" />
+                <div className="relative">
+                  <Input type={showPw ? 'text' : 'password'} value={curPw} onChange={(e) => setCurPw(e.target.value)} autoComplete="current-password" className="pr-10" />
+                  <PwToggle shown={showPw} onToggle={() => setShowPw((v) => !v)} />
+                </div>
               </div>
               <div>
                 <label className={labelClass}>New password</label>
-                <Input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoComplete="new-password" />
+                <div className="relative">
+                  <Input type={showPw ? 'text' : 'password'} value={newPw} onChange={(e) => setNewPw(e.target.value)} autoComplete="new-password" className="pr-10" />
+                  <PwToggle shown={showPw} onToggle={() => setShowPw((v) => !v)} />
+                </div>
               </div>
               <div>
                 <label className={labelClass}>Confirm new</label>
-                <Input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} autoComplete="new-password" />
+                <div className="relative">
+                  <Input type={showPw ? 'text' : 'password'} value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} autoComplete="new-password" className="pr-10" />
+                  <PwToggle shown={showPw} onToggle={() => setShowPw((v) => !v)} />
+                </div>
               </div>
             </div>
+            <p className="text-[11px] text-muted-foreground">At least 8 characters with uppercase, lowercase, number, and special character.</p>
             {pwError ? <p className="text-sm text-rose-600 dark:text-rose-300">{pwError}</p> : null}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="ghost" size="sm" onClick={() => setPwOpen(false)}>Cancel</Button>
@@ -243,5 +254,20 @@ export function ProfilePage() {
         </Card>
       ) : null}
     </div>
+  );
+}
+
+// Eye toggle inside a password input. Reveals/hides the field so the user can
+// check what they typed before submitting.
+function PwToggle({ shown, onToggle }: { shown: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={shown ? 'Hide password' : 'Show password'}
+      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+    >
+      {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+    </button>
   );
 }
