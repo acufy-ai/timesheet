@@ -822,6 +822,18 @@ async def _stamp_billed_rate(db: AsyncSession, entry: TimeEntry) -> None:
             entry.billed_currency = resolved.currency
     except Exception:  # noqa: BLE001 - never let rate resolution break approval
         pass
+    # PSA: freeze the cost snapshot too, in PARALLEL — from the entry owner's
+    # cost_rate. Same best-effort contract: never block an approval, leave NULL
+    # when no cost rate is set (margin reporting simply omits that entry's cost).
+    try:
+        from app.models.user import User
+
+        owner = await db.get(User, entry.user_id)
+        if owner is not None and owner.cost_rate is not None:
+            entry.cost_rate = owner.cost_rate
+            entry.cost_currency = owner.cost_currency or "USD"
+    except Exception:  # noqa: BLE001 - cost stamping must never break approval
+        pass
 
 
 async def approve_time_entry(

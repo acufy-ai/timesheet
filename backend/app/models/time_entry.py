@@ -67,6 +67,15 @@ class TimeEntry(Base, TimestampMixin):
         Numeric(12, 2), nullable=True)
     billed_currency: Mapped[Optional[str]] = mapped_column(
         String(10), nullable=True)
+    # Frozen COST snapshot, stamped at approval from the user's cost_rate —
+    # PARALLEL to billed_rate and equally immutable. Cost is what the person
+    # costs the firm (loaded hourly), vs. billed_rate (what the client pays).
+    # margin = billed_amount - cost_amount. NULL until approved / when no cost
+    # rate is set on the user. Never mutates the revenue path.
+    cost_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True)
+    cost_currency: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True)
     status: Mapped[TimeEntryStatus] = mapped_column(SQLEnum(
         TimeEntryStatus), nullable=False, default=TimeEntryStatus.DRAFT, index=True)
 

@@ -1,7 +1,8 @@
-from sqlalchemy import String, Boolean, Integer, Enum as SQLEnum, ForeignKey, Text, DateTime, UniqueConstraint, Index
+from sqlalchemy import String, Boolean, Integer, Numeric, Enum as SQLEnum, ForeignKey, Text, DateTime, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
+from decimal import Decimal
 from typing import Optional, List
 from datetime import datetime
 from .base import Base, TimestampMixin
@@ -53,7 +54,11 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Free-text job title (legacy). Kept alongside title_id during the additive
+    # rollout; title_id (FK to the managed Title table) is the structured source.
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    title_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("titles.id", ondelete="SET NULL"), nullable=True, index=True)
     # Free-text department label (legacy). Kept alongside department_id during
     # the additive rollout; department_id (FK to the managed Department table) is
     # the structured source for rollups/filtering. A later migration drops this.
@@ -63,6 +68,19 @@ class User(Base, TimestampMixin):
         ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, default="UTC")
+    # Loaded hourly COST of this person to the firm (PSA). Distinct from what
+    # they bill (project/role rates): cost feeds margin, WIP, EVM actual cost.
+    # Snapshotted onto each time entry at approval (immutable), so later cost
+    # edits never re-price approved work. NULL = no cost tracked for this user.
+    cost_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True)
+    cost_currency: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True, default="USD")
+    # PSA capacity: this person's available billable-ish hours per week. Drives
+    # utilization-vs-capacity and over/under-allocation. Defaults to 40 (FT);
+    # set lower for part-time. NULL falls back to the 40h default in code.
+    weekly_capacity_hours: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 2), nullable=True, default=Decimal("40"))
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     has_changed_password: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False)
@@ -162,6 +180,7 @@ class User(Base, TimestampMixin):
 
     # Relationships
     tenant: Mapped[Optional["Tenant"]] = relationship("Tenant", back_populates="users")
+    title_ref: Mapped[Optional["Title"]] = relationship("Title")
     department_ref: Mapped[Optional["Department"]] = relationship("Department")
     # The PRIMARY manager assignment. An employee may now have several manager
     # rows (multi-manager); this relationship resolves to the one flagged

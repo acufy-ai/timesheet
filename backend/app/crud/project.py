@@ -281,6 +281,43 @@ async def list_projects_for_user(
     return result.scalars().all()
 
 
+async def list_loggable_projects_for_user(
+    db: AsyncSession,
+    user: User,
+    active_only: bool = True,
+) -> list[Project]:
+    """Projects the user may actually LOG TIME against — the read-side mirror of
+    `user_has_project_access`. Used by the My Time editor so its project picker
+    never offers a project the create endpoint would reject with a 403.
+
+    ADMIN/PLATFORM_ADMIN: everything. EMPLOYEE: roster + per-task project grants
+    (fails closed — empty access means no projects). MANAGER/VIEWER: their
+    assigned set, or everything when they have no assignments (matching the
+    write check, which doesn't project-scope these roles when unassigned).
+    """
+    query = select(Project).options(selectinload(Project.client))
+    if user.role != UserRole.PLATFORM_ADMIN:
+        query = query.where(Project.tenant_id == user.tenant_id)
+    if active_only:
+        query = query.where(Project.is_active.is_(True))
+
+    if user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+        result = await db.execute(query)
+        return result.scalars().all()
+
+    assigned = set(await get_assigned_project_ids(db, user.id))
+
+    if user.role == UserRole.EMPLOYEE:
+        visible = assigned | set(await get_task_access_project_ids(db, user.id))
+        query = query.where(Project.id.in_(visible or {-1}))
+    elif assigned:
+        # MANAGER/VIEWER are scoped to their assignments only when they have any.
+        query = query.where(Project.id.in_(assigned))
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 async def list_projects_by_client(db: AsyncSession, client_id: int, tenant_id: Optional[int] = None) -> list[Project]:
     """List projects by client ID, scoped to a tenant."""
     query = select(Project).where(Project.client_id == client_id)

@@ -22,6 +22,7 @@ from .ingestion_timesheet import (
 from .refresh_token import RefreshToken
 from .password_invite_token import PasswordInviteToken
 from .department import Department
+from .title import Title
 from .leave_type import LeaveType
 from .setting_definition import SettingDefinition
 from .permission import Permission
@@ -36,13 +37,17 @@ from .client_access_grant import ClientAccessGrant
 from .client_employee_link import ClientEmployeeLink
 from .client_task_review import ClientTaskReview
 from .holiday import Holiday, HolidayType
+from .project_baseline import ProjectBaseline
+from .resource_allocation import ResourceAllocation
+from .project_health_config import ProjectHealthConfig
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserTaskAccess", "TaskAssignee", "ProjectManager", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
-           "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
+           "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "Title", "LeaveType",
            "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment",
            "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
            "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
-           "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview"]
+           "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview",
+           "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig"]

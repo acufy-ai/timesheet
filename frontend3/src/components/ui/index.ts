@@ -11,3 +11,4 @@ export { WorkspaceHeader } from './WorkspaceHeader';
 export { Empty } from './Empty';
 export { Modal } from './Modal';
 export { Tooltip } from './Tooltip';
+export { Pager, pageWindow } from './Pager';

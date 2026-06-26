@@ -43,6 +43,12 @@ class Project(Base, TimestampMixin):
     budget_amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(12, 2), nullable=True)
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # PSA revenue-recognition method: how recognized revenue is computed.
+    #   as_billed        = approved billable hours x rate (T&M; the default).
+    #   percent_complete = (contract value or budget) x (hours done / planned),
+    #                      for fixed-fee work — uses the project baseline.
+    revenue_recognition: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="as_billed", server_default="as_billed")
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
     # Per-project PM toggle: when true, this project may be shared with CLIENT

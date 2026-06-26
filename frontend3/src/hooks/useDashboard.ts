@@ -110,6 +110,90 @@ export function useTeamProjectMatrix(daysBack = 30, enabled = true) {
   });
 }
 
+export function useTeamResourcing(weeksAhead = 4, enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'team-resourcing', weeksAhead],
+    queryFn: () => dashboardApi.teamResourcing(weeksAhead).then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function usePortfolio(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'portfolio'],
+    queryFn: () => dashboardApi.portfolio().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useEvm(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'evm'],
+    queryFn: () => dashboardApi.evm().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useRevenueRecognition(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'revenue-recognition'],
+    queryFn: () => dashboardApi.revenueRecognition().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// The manager's clients + the projects they run (dashboard widget).
+export function useManagerClients(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'manager-clients'],
+    queryFn: () => dashboardApi.managerClients().then((r) => r.data),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// Configurable project-health thresholds (workspace default + this manager's
+// override). The mutation invalidates portfolio + project-health so the pills
+// reclassify immediately after a rule change.
+export function useHealthConfig(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard', 'health-config'],
+    queryFn: () => dashboardApi.healthConfig().then((r) => r.data),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useSaveHealthConfig() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['dashboard', 'health-config'] });
+    qc.invalidateQueries({ queryKey: ['dashboard', 'portfolio'] });
+    qc.invalidateQueries({ queryKey: ['dashboard', 'manager-project-health'] });
+  };
+  return useMutation({
+    mutationFn: ({ scope, body }: { scope: 'workspace' | 'override'; body: import('@/types/dashboard').HealthConfigBody }) =>
+      dashboardApi.setHealthConfig(scope, body).then((r) => r.data),
+    onSuccess: invalidate,
+  });
+}
+
+export function useClearHealthOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => dashboardApi.clearHealthOverride().then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dashboard', 'health-config'] });
+      qc.invalidateQueries({ queryKey: ['dashboard', 'portfolio'] });
+      qc.invalidateQueries({ queryKey: ['dashboard', 'manager-project-health'] });
+    },
+  });
+}
+
 // Personal summary (own hours logged/approved/pending). Powers the employee
 // dashboard variant for non-managers.
 export function useDashboardSummary(enabled = true) {
