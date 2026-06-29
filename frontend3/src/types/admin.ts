@@ -404,6 +404,13 @@ export interface ClientNote {
   author_user_id?: number | null; // provable author link
   body: string;
   note_date?: string | null;
+  // Optional target project/task. project_name/code/task_name are denormalized
+  // server-side for display + search.
+  project_id?: number | null;
+  task_id?: number | null;
+  project_name?: string | null;
+  project_code?: string | null;
+  task_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -411,6 +418,8 @@ export interface ClientNote {
 export interface ClientNoteBody {
   body?: string;
   note_date?: string | null;
+  project_id?: number | null;
+  task_id?: number | null;
 }
 
 // Project lifecycle status (migration 071). Wire values are snake_case.

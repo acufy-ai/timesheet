@@ -701,6 +701,8 @@ export function ClientsPage() {
                 <NotesTab
                   clientId={activeClient.id}
                   notes={clientNotes}
+                  projects={projectsByClient.get(activeClient.id) ?? []}
+                  tasksByProject={tasksByProject}
                   loading={notesQ.isLoading}
                   onConfirm={setConfirm}
                   onSaved={(m) => flashAndFade('ok', m)}
@@ -2026,6 +2028,8 @@ function RolesTab({
 function NotesTab({
   clientId,
   notes,
+  projects,
+  tasksByProject,
   loading,
   onConfirm,
   onSaved,
@@ -2033,6 +2037,8 @@ function NotesTab({
 }: {
   clientId: number;
   notes: ClientNote[];
+  projects: FullProject[];
+  tasksByProject: Map<number, FullTask[]>;
   loading: boolean;
   onConfirm: (c: { title: string; message: string; onConfirm: () => void }) => void;
   onSaved: (msg: string) => void;
@@ -2043,13 +2049,17 @@ function NotesTab({
   const [modal, setModal] = useState<{ open: boolean; note: ClientNote | null }>({ open: false, note: null });
 
   const q = search.trim().toLowerCase();
-  // Search any field: the author's name, the note text, or its date.
+  // Search any field: author, note text, date, AND the linked project name /
+  // code / task name so finding a note by its project or task works.
   const filtered = notes.filter((n) => {
     if (!q) return true;
     return [
       n.author ?? '',
       n.body,
       n.note_date ? fmtDate(n.note_date) : '',
+      n.project_name ?? '',
+      n.project_code ?? '',
+      n.task_name ?? '',
     ].some((f) => f.toLowerCase().includes(q));
   });
 
@@ -2109,6 +2119,20 @@ function NotesTab({
                     <p className="text-sm font-semibold text-foreground">{author}</p>
                     {n.note_date ? <span className="text-xs text-muted-foreground">{fmtDate(n.note_date)}</span> : null}
                   </div>
+                  {n.project_name || n.task_name ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {n.project_name ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          <Briefcase className="h-3 w-3" />{n.project_name}{n.project_code ? ` · ${n.project_code}` : ''}
+                        </span>
+                      ) : null}
+                      {n.task_name ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                          {n.task_name}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <p className="mt-1.5 whitespace-pre-wrap text-sm text-foreground">{n.body}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5">
@@ -2125,6 +2149,8 @@ function NotesTab({
         open={modal.open}
         clientId={clientId}
         note={modal.note}
+        projects={projects}
+        tasksByProject={tasksByProject}
         onClose={() => setModal({ open: false, note: null })}
         onSaved={onSaved}
         onError={onError}
@@ -3697,6 +3723,8 @@ function NoteModal({
   open,
   clientId,
   note,
+  projects,
+  tasksByProject,
   onClose,
   onSaved,
   onError,
@@ -3704,6 +3732,8 @@ function NoteModal({
   open: boolean;
   clientId: number;
   note: ClientNote | null;
+  projects: FullProject[];
+  tasksByProject: Map<number, FullTask[]>;
   onClose: () => void;
   onSaved: (msg: string) => void;
   onError: (msg: string) => void;
@@ -3714,6 +3744,11 @@ function NoteModal({
 
   const [date, setDate] = useState('');
   const [body, setBody] = useState('');
+  // Optional target. '' = none. Picking a project filters the task list; the
+  // task is optional. When a task is set with body text, the backend mirrors the
+  // body into the task's "Why is it blocked?" reason and marks it blocked.
+  const [projectId, setProjectId] = useState('');
+  const [taskId, setTaskId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -3729,9 +3764,14 @@ function NoteModal({
     })();
     setDate(note?.note_date ?? today);
     setBody(note?.body ?? '');
+    setProjectId(note?.project_id != null ? String(note.project_id) : '');
+    setTaskId(note?.task_id != null ? String(note.task_id) : '');
     setError(null);
     setErrors({});
   }, [open, note]);
+
+  // Tasks of the chosen project drive the task dropdown.
+  const projectTasks = projectId ? (tasksByProject.get(Number(projectId)) ?? []) : [];
 
   const saving = create.isPending || update.isPending;
 
@@ -3747,6 +3787,8 @@ function NoteModal({
     const data: ClientNoteBody = {
       note_date: date || null,
       body: body.trim(),
+      project_id: projectId ? Number(projectId) : null,
+      task_id: taskId ? Number(taskId) : null,
     };
     try {
       if (isEdit && note) {
@@ -3770,10 +3812,44 @@ function NoteModal({
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           <p className="mt-1 text-[11px] text-muted-foreground">The note is recorded under your name automatically.</p>
         </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className={labelClass}>Project</label>
+            <select
+              value={projectId}
+              onChange={(e) => { setProjectId(e.target.value); setTaskId(''); }}
+              className={selectClass}
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}{p.code ? ` · ${p.code}` : ''}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Task</label>
+            <select
+              value={taskId}
+              onChange={(e) => setTaskId(e.target.value)}
+              disabled={!projectId}
+              className={cn(selectClass, !projectId && 'opacity-60')}
+            >
+              <option value="">{projectId ? 'No task' : 'Pick a project first'}</option>
+              {projectTasks.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
         <div>
           <label className={labelClass}>Note<RequiredMark /></label>
           <textarea value={body} onChange={(e) => { setBody(e.target.value); setErrors((p) => ({ ...p, body: '' })); }} rows={4} placeholder="Write your note..." className={cn(textareaClass, errorBorder(!!errors.body))} required />
           <FieldError error={errors.body} />
+          {taskId ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              This note becomes the selected task's "Why is it blocked?" reason and marks the task blocked.
+            </p>
+          ) : null}
         </div>
         {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
         <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">

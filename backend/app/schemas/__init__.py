@@ -471,12 +471,18 @@ class ClientNoteCreate(BaseModel):
     # logged-in user so a note can't claim someone else's name.
     body: str
     note_date: Optional[date] = None
+    # Optional target. When task_id is set, the note body is mirrored into that
+    # task's blocked_reason; a non-empty body also flips the task to 'blocked'.
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
 
 
 class ClientNoteUpdate(BaseModel):
     # Author is immutable after creation; only the content/date can be edited.
     body: Optional[str] = None
     note_date: Optional[date] = None
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
 
 
 class ClientNoteResponse(BaseModel):
@@ -487,6 +493,13 @@ class ClientNoteResponse(BaseModel):
     author_user_id: Optional[int] = None
     body: str
     note_date: Optional[date] = None
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    # Denormalized display labels for the note card + search (resolved server-side
+    # from the linked project/task so the frontend needn't join).
+    project_name: Optional[str] = None
+    project_code: Optional[str] = None
+    task_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}

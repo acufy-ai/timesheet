@@ -66,6 +66,14 @@ class ClientNote(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     note_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Optional target: a note can be attached to a specific project + task. When
+    # a task is set, the note body is mirrored into that task's blocked_reason
+    # (done in the notes API). ON DELETE SET NULL keeps the note if the
+    # project/task is removed.
+    project_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True)
 
     client = relationship("Client")
     author_user = relationship("User", foreign_keys=[author_user_id])

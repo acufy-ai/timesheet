@@ -398,7 +398,9 @@ export function useCreateClientNote() {
   return useMutation({
     mutationFn: ({ clientId, data }: { clientId: number; data: NoteBody }) =>
       clientNotesApi.create(clientId, data).then((r) => r.data),
-    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }),
+    // A note can target a task (mirrors body -> blocked_reason + marks blocked),
+    // so refresh tasks too.
+    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }); invalidateTasks(qc); },
   });
 }
 export function useUpdateClientNote() {
@@ -406,7 +408,7 @@ export function useUpdateClientNote() {
   return useMutation({
     mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: NoteBody }) =>
       clientNotesApi.update(clientId, id, data).then((r) => r.data),
-    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }),
+    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }); invalidateTasks(qc); },
   });
 }
 export function useDeleteClientNote() {

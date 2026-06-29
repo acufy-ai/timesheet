@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.crud.client import get_client_by_id
 from app.models.client_extras import ClientContact, ClientNote, ClientRoleRate
+from app.models.project import Project
+from app.models.task import Task, TaskStatus
 from app.models.user import User
 from app.api._client_access import assert_client_access
 from app.schemas import (
@@ -171,6 +173,60 @@ async def delete_role_rate(
 
 
 # ── Notes ────────────────────────────────────────────────────────────────────
+
+async def _resolve_note_link(db: AsyncSession, tenant_id: int, client_id: int,
+                             project_id, task_id) -> tuple:
+    """Validate the optional project/task link and return (project, task).
+
+    A task implies a project. Both must belong to this tenant; the project to
+    this client; the task to that project. Raises 422 on a mismatch so a note
+    can't point at someone else's project/task. Either may be None.
+    """
+    project = task = None
+    if project_id is not None:
+        project = (await db.execute(
+            select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if project is None or project.client_id != client_id:
+            raise HTTPException(status_code=422, detail="Project not found for this client.")
+    if task_id is not None:
+        if project_id is None:
+            raise HTTPException(status_code=422, detail="A task note must also pick its project.")
+        task = (await db.execute(
+            select(Task).where(Task.id == task_id, Task.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if task is None or task.project_id != project_id:
+            raise HTTPException(status_code=422, detail="Task not found on the selected project.")
+    return project, task
+
+
+def _mirror_note_to_task(task, body: str) -> None:
+    """Mirror a note's body into the task's blocked_reason. A non-empty body also
+    flips the task to 'blocked' (so the reason actually shows); an empty body
+    just clears the reason text and leaves the status untouched."""
+    text = (body or "").strip()
+    task.blocked_reason = text or None
+    if text:
+        task.status = TaskStatus.blocked
+
+
+async def _note_response(db: AsyncSession, row: ClientNote) -> dict:
+    """ClientNote -> response dict with denormalized project/task display labels
+    (so the note card + search can show/match project name, code, task name)."""
+    project = await db.get(Project, row.project_id) if row.project_id else None
+    task = await db.get(Task, row.task_id) if row.task_id else None
+    return {
+        "id": row.id, "client_id": row.client_id,
+        "author": row.author, "author_user_id": row.author_user_id,
+        "body": row.body, "note_date": row.note_date,
+        "project_id": row.project_id, "task_id": row.task_id,
+        "project_name": project.name if project else None,
+        "project_code": project.code if project else None,
+        "task_name": task.name if task else None,
+        "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
 @router.get("/notes", response_model=list[ClientNoteResponse])
 async def list_notes(
     client_id: int,
@@ -185,7 +241,7 @@ async def list_notes(
             .order_by(ClientNote.note_date.desc().nullslast(), ClientNote.id.desc())
         )
     ).scalars().all()
-    return rows
+    return [await _note_response(db, r) for r in rows]
 
 
 @router.post("/notes", response_model=ClientNoteResponse, status_code=status.HTTP_201_CREATED)
@@ -195,16 +251,22 @@ async def create_note(
     current_user: User = Depends(get_current_user),
 ):
     await _require_client(db, client_id, current_user.tenant_id, current_user)
+    _, task = await _resolve_note_link(
+        db, current_user.tenant_id, client_id, payload.project_id, payload.task_id)
     # Authorship is stamped from the logged-in user; never caller-supplied.
     row = ClientNote(
         tenant_id=current_user.tenant_id, client_id=client_id,
         author=current_user.full_name, author_user_id=current_user.id,
         body=payload.body, note_date=payload.note_date,
+        project_id=payload.project_id, task_id=payload.task_id,
     )
     db.add(row)
+    if task is not None:
+        _mirror_note_to_task(task, payload.body)
+        db.add(task)
     await db.commit()
     await db.refresh(row)
-    return row
+    return await _note_response(db, row)
 
 
 @router.put("/notes/{row_id}", response_model=ClientNoteResponse)
@@ -214,12 +276,20 @@ async def update_note(
     current_user: User = Depends(get_current_user),
 ):
     row = await _get_scoped(db, ClientNote, client_id, row_id, current_user.tenant_id, current_user)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    sent = payload.model_dump(exclude_unset=True)
+    for field, value in sent.items():
         setattr(row, field, value)
+    # Validate the (possibly new) link and mirror the body into the task. Use the
+    # row's effective values after applying the patch.
+    _, task = await _resolve_note_link(
+        db, current_user.tenant_id, client_id, row.project_id, row.task_id)
     db.add(row)
+    if task is not None:
+        _mirror_note_to_task(task, row.body)
+        db.add(task)
     await db.commit()
     await db.refresh(row)
-    return row
+    return await _note_response(db, row)
 
 
 @router.delete("/notes/{row_id}", status_code=status.HTTP_204_NO_CONTENT)
