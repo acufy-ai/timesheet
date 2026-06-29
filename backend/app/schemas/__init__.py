@@ -181,7 +181,10 @@ class UserCreateResponse(BaseModel):
 
 class UserSummaryResponse(BaseModel):
     id: int
-    email: EmailStr
+    # Plain str (not EmailStr) so synthetic `@local.invalid` placeholder emails
+    # for users without a real address round-trip on the response instead of
+    # 500-ing serialization. Mirrors the UserBase decision. Input paths validate.
+    email: str
     username: str
     full_name: str
     title: Optional[str] = None
@@ -199,7 +202,9 @@ class UserSummaryResponse(BaseModel):
 
 class UserProfileResponse(BaseModel):
     id: int
-    email: EmailStr
+    # Plain str so `@local.invalid` placeholder emails round-trip (see
+    # UserSummaryResponse / UserBase). Input paths still validate via EmailStr.
+    email: str
     username: str
     full_name: str
     title: Optional[str] = None
@@ -1645,7 +1650,9 @@ class SetPasswordRequest(BaseModel):
 class SetPasswordResponse(BaseModel):
     """Response after a successful local password-set / reset."""
     success: bool = True
-    email: EmailStr
+    # Plain str: echoes the stored user email, which may be a synthetic
+    # `@local.invalid` placeholder (see UserBase). Don't 500 on round-trip.
+    email: str
     purpose: str  # 'invite' or 'reset'
 
 
@@ -1654,7 +1661,8 @@ class InvitationStatusResponse(BaseModel):
     frontend can show the user's email and purpose without making
     them submit a password against a token that's already invalid."""
     valid: bool
-    email: Optional[EmailStr] = None
+    # Plain str so a placeholder email round-trips (see UserBase).
+    email: Optional[str] = None
     purpose: Optional[str] = None
     reason: Optional[str] = None
 
