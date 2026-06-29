@@ -585,7 +585,7 @@ export function ClientsPage() {
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="pl-9" placeholder="Search clients, projects, tasks, people..." value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input className="pl-9" placeholder="Search clients" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <div className="mt-2 flex items-center gap-1.5">
               {(['all', 'internal', 'external'] as const).map((t) => (
@@ -1162,6 +1162,7 @@ function ProjectCard({
             nameOf={nameOf}
             onAddTask={onAddTask}
             onEditTask={onEditTask}
+            views={['list', 'grid', 'kanban']}
             renderList={() => (
               <div className="space-y-1.5">
                 {tasks.map((t) => (

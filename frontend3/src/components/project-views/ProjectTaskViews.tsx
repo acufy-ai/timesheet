@@ -50,7 +50,7 @@ const parse = (iso?: string | null) => (iso ? new Date(`${iso}T00:00:00`) : null
 const dayDiff = (a: Date, b: Date) => Math.round((b.getTime() - a.getTime()) / 86_400_000);
 
 export function ProjectTaskViews({
-  project, tasks, nameOf, onAddTask, onEditTask, renderList,
+  project, tasks, nameOf, onAddTask, onEditTask, renderList, views,
 }: {
   project: FullProject;
   tasks: FullTask[];
@@ -59,7 +59,10 @@ export function ProjectTaskViews({
   onEditTask: (t: FullTask) => void;
   // The existing List rendering is passed in so 'List' stays byte-identical.
   renderList: () => React.ReactNode;
+  // Which view tabs to offer. Defaults to all; pass a subset to hide some.
+  views?: ViewKey[];
 }) {
+  const shownViews = views ? VIEWS.filter((v) => views.includes(v.key)) : VIEWS;
   const [view, setView] = useState<ViewKey>('list');
   const update = useUpdateTask();
   const patch = (t: FullTask, data: Partial<FullTask>) =>
@@ -69,7 +72,7 @@ export function ProjectTaskViews({
     <div className="space-y-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
-          {VIEWS.map(({ key, label, Icon }) => (
+          {shownViews.map(({ key, label, Icon }) => (
             <button
               key={key}
               type="button"
