@@ -14,7 +14,6 @@ export type ManagerTileKey =
   | 'project-health'
   | 'project-matrix'
   | 'financials'
-  | 'clients-projects'
   | 'daily'
   | 'quality'
   | 'roster';
@@ -31,7 +30,7 @@ export interface ManagerTileDef {
 export const MANAGER_TILES: ManagerTileDef[] = [
   {
     key: 'project-health',
-    label: 'Project health',
+    label: 'Projects',
     columns: [
       { key: 'project', label: 'Project', locked: true },
       { key: 'client', label: 'Client' },
@@ -61,7 +60,6 @@ export const MANAGER_TILES: ManagerTileDef[] = [
       { key: 'contract_used', label: 'Contract billed' },
     ],
   },
-  { key: 'clients-projects', label: 'Clients & projects' },
   { key: 'daily', label: 'Daily check-in' },
   { key: 'quality', label: 'Team quality (billable + on-time)' },
   { key: 'roster', label: 'Team roster' },

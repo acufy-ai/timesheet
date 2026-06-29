@@ -103,6 +103,11 @@ async def org(db_session: AsyncSession):
     )
     db_session.add(project)
     manager = await _user(db_session, email="mgr@t.io", role=UserRole.MANAGER, tenant_id=tenant.id, full_name="Mgr One")
+    await db_session.flush()
+    # The manager runs this project (manager-project-health is scoped to projects
+    # the manager owns via manager_id or a project_managers row).
+    project.manager_id = manager.id
+    db_session.add(project)
     await db_session.commit()
     return {"tenant": tenant, "project": project, "manager": manager}
 
@@ -519,11 +524,15 @@ async def test_project_health_403_for_employee(db_session, org):
 
 
 @pytest.mark.asyncio
-async def test_project_health_empty_when_no_team(db_session, org):
+async def test_project_health_shows_owned_project_even_with_no_team(db_session, org):
+    # A manager who owns a project sees it even with no direct reports / no time
+    # logged — it surfaces as 'not-started' (widget shows all managed projects).
     with _make_app(db_session) as client:
         resp = client.get("/dashboard/manager-project-health", headers=_auth(org["manager"]))
     assert resp.status_code == 200
-    assert resp.json() == {"rows": []}
+    rows = resp.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["health"] == "not-started"
 
 
 @pytest.mark.asyncio
@@ -555,25 +564,27 @@ async def test_project_health_includes_only_projects_with_recent_entries(db_sess
 
 
 @pytest.mark.asyncio
-async def test_project_health_classifies_over_budget_as_needs_attention(db_session, org):
+async def test_project_health_classifies_over_budget_as_critical(db_session, org):
     mgr = org["manager"]
     emp = await _user(db_session, email="ob@t.io", role=UserRole.EMPLOYEE, tenant_id=mgr.tenant_id, full_name="OB")
     await _assign(db_session, manager=mgr, employee=emp)
-    # Set the project's estimated_hours to 10; log 12.
-    org["project"].estimated_hours = Decimal("10")
+    # Dollar budget $1000; bill rate $100/h. Log 12 approved billable hours =
+    # $1200 revenue = 120% of budget -> critical (the classifier uses the dollar
+    # budget burn, not estimated_hours).
+    org["project"].budget_amount = Decimal("1000")
     db_session.add(org["project"])
     today = date.today()
     monday = _monday_of(today)
     db_session.add(TimeEntry(
         tenant_id=mgr.tenant_id, user_id=emp.id, project_id=org["project"].id,
-        entry_date=monday, hours=Decimal("12"),
+        entry_date=monday, hours=Decimal("12"), is_billable=True,
         status=TimeEntryStatus.APPROVED, description="x",
     ))
     await db_session.commit()
     with _make_app(db_session) as client:
         resp = client.get("/dashboard/manager-project-health", headers=_auth(mgr))
     row = resp.json()["rows"][0]
-    assert row["health"] == "needs-attention"
+    assert row["health"] == "critical"
     assert row["budget_pct"] == 120
 
 
@@ -595,4 +606,29 @@ async def test_project_health_not_set_when_no_budget_and_no_end_date(db_session,
     row = resp.json()["rows"][0]
     assert row["health"] == "not-set"
     assert row["budget_pct"] is None
-    assert row["days_until_end"] is None
+
+
+@pytest.mark.asyncio
+async def test_project_health_not_started_when_no_time_logged(db_session, org):
+    """An active project the manager owns with NO time logged ever surfaces as
+    'not-started' (the widget now shows all managed projects, started or not)."""
+    mgr = org["manager"]
+    # No time entries at all on org["project"].
+    with _make_app(db_session) as client:
+        resp = client.get("/dashboard/manager-project-health", headers=_auth(mgr))
+    rows = resp.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["project_id"] == org["project"].id
+    assert rows[0]["health"] == "not-started"
+
+
+@pytest.mark.asyncio
+async def test_project_health_excludes_archived_project(db_session, org):
+    """An archived (is_active=False) managed project does NOT appear."""
+    mgr = org["manager"]
+    org["project"].is_active = False
+    db_session.add(org["project"])
+    await db_session.commit()
+    with _make_app(db_session) as client:
+        resp = client.get("/dashboard/manager-project-health", headers=_auth(mgr))
+    assert resp.json()["rows"] == []

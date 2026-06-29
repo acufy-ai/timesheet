@@ -36,7 +36,7 @@ export function UtilityBar() {
   }
 
   return (
-    <header className="flex h-[96px] shrink-0 items-center gap-5 border-b border-border bg-card pl-6 pr-4">
+    <header className="flex h-[96px] shrink-0 items-center gap-3 border-b border-border bg-card pl-3 pr-2 sm:gap-5 sm:pl-6 sm:pr-4">
       <Link to="/dashboard" aria-label="Go to dashboard" className="shrink-0">
         <AcufyLogo height={84} />
       </Link>
@@ -53,17 +53,21 @@ export function UtilityBar() {
         />
       </div> */}
 
-      <div className="ml-auto flex items-center gap-2.5">
-        {/* Multi-role switch (e.g. "Switch to Manager") lives up here. */}
+      <div className="ml-auto flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+        {/* Multi-role switch (e.g. "Switch to Manager") lives up here. On
+            narrow screens it collapses to an icon-only button (label kept on
+            aria-label) so the header never overflows past the account menu. */}
         {otherRoles.map((r) => (
           <button
             key={r}
             type="button"
             onClick={() => void doSwitch(r)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-primary/40 bg-primary/5 px-3.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
+            aria-label={`Switch to ${roleLabel(r)}`}
+            title={`Switch to ${roleLabel(r)}`}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border border-primary/40 bg-primary/5 px-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10 sm:px-3.5"
           >
-            <ExternalLink className="h-4 w-4" />
-            Switch to {roleLabel(r)}
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            <span className="hidden lg:inline">Switch to {roleLabel(r)}</span>
           </button>
         ))}
         {/* Workspace (tenant) name. Sits with the global actions so it's always
@@ -80,7 +84,7 @@ export function UtilityBar() {
         {!isClient ? <TopbarTimer /> : null}
         <ThemePicker />
         {!isClient ? <NotificationsBell /> : null}
-        <div className="ml-1 mr-0.5 h-7 w-px bg-border" />
+        <div className="mx-0.5 hidden h-7 w-px bg-border sm:block sm:ml-1" />
         <UserMenu expanded />
       </div>
     </header>

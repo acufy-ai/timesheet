@@ -16,7 +16,7 @@ import type { HealthConfigBody } from '@/types/dashboard';
 type Scope = 'workspace' | 'override';
 
 const FALLBACK: HealthConfigBody = {
-  budget_enabled: true, over_budget_pct: 100, high_burn_pct: 80,
+  budget_enabled: true, over_budget_pct: 100, high_burn_pct: 80, excellent_under_pct: 50,
   schedule_enabled: true, ending_soon_days: 7, overdue_days: 30,
   margin_enabled: false, low_margin_pct: 15,
 };
@@ -54,9 +54,10 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
     <Modal open={open} onClose={onClose} title="Project health rules" className="max-w-lg" flushBottom>
       <div className="space-y-4 pb-4">
         <p className="text-xs text-muted-foreground">
-          Decide how projects are flagged <span className="font-medium text-rose-600 dark:text-rose-400">needs attention</span>,{' '}
-          <span className="font-medium text-amber-600 dark:text-amber-400">at risk</span> or{' '}
-          <span className="font-medium text-emerald-600 dark:text-emerald-400">good</span>. These rules drive the health pills across Insights and the dashboard.
+          Decide how projects are flagged <span className="font-medium text-rose-600 dark:text-rose-400">critical</span>,{' '}
+          <span className="font-medium text-amber-600 dark:text-amber-400">at risk</span>,{' '}
+          <span className="font-medium text-sky-600 dark:text-sky-400">on track</span> or{' '}
+          <span className="font-medium text-emerald-600 dark:text-emerald-400">excellent</span>. These rules drive the health pills across Insights and the dashboard. (Blocked is set automatically when a project has a blocked task.)
         </p>
 
         {/* Scope switch */}
@@ -93,8 +94,9 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
               enabled={form.budget_enabled}
               onToggle={(v) => set('budget_enabled', v)}
             >
-              <NumField label="Needs attention above" suffix="% of budget" value={form.over_budget_pct} onChange={(v) => set('over_budget_pct', v)} tone="rose" />
+              <NumField label="Critical above" suffix="% of budget" value={form.over_budget_pct} onChange={(v) => set('over_budget_pct', v)} tone="rose" />
               <NumField label="At risk above" suffix="% of budget" value={form.high_burn_pct} onChange={(v) => set('high_burn_pct', v)} tone="amber" />
+              <NumField label="Excellent below" suffix="% of budget" value={form.excellent_under_pct} onChange={(v) => set('excellent_under_pct', v)} tone="emerald" />
             </RuleGroup>
 
             <RuleGroup
@@ -104,7 +106,7 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
               onToggle={(v) => set('schedule_enabled', v)}
             >
               <NumField label="At risk within" suffix="days of end" value={form.ending_soon_days} onChange={(v) => set('ending_soon_days', v)} tone="amber" />
-              <NumField label="Needs attention when overdue by" suffix="days" value={form.overdue_days} onChange={(v) => set('overdue_days', v)} tone="rose" />
+              <NumField label="Critical when overdue by" suffix="days" value={form.overdue_days} onChange={(v) => set('overdue_days', v)} tone="rose" />
             </RuleGroup>
 
             <RuleGroup
@@ -172,9 +174,9 @@ function RuleGroup({
 function NumField({
   label, suffix, value, onChange, tone,
 }: {
-  label: string; suffix: string; value: number; onChange: (v: number) => void; tone: 'rose' | 'amber';
+  label: string; suffix: string; value: number; onChange: (v: number) => void; tone: 'rose' | 'amber' | 'emerald';
 }) {
-  const dot = tone === 'rose' ? 'bg-rose-500' : 'bg-amber-500';
+  const dot = tone === 'rose' ? 'bg-rose-500' : tone === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500';
   return (
     <label className="block">
       <span className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">

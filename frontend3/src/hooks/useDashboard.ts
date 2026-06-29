@@ -204,6 +204,19 @@ export function useClearHealthOverride() {
   });
 }
 
+// Set or clear ONE project's manual health override (health: null clears it).
+export function useSetProjectHealthOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, health }: { projectId: number; health: string | null }) =>
+      dashboardApi.setProjectHealthOverride(projectId, health).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dashboard', 'portfolio'] });
+      qc.invalidateQueries({ queryKey: ['dashboard', 'manager-project-health'] });
+    },
+  });
+}
+
 // Personal summary (own hours logged/approved/pending). Powers the employee
 // dashboard variant for non-managers.
 export function useDashboardSummary(enabled = true) {

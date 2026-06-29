@@ -12,6 +12,8 @@ export { Empty } from './Empty';
 export { Modal } from './Modal';
 export { Toast } from './Toast';
 export type { ToastTone } from './Toast';
+export { ConfirmDialog, ConfirmProvider, useConfirm } from './ConfirmDialog';
+export type { ConfirmOptions, ConfirmState } from './ConfirmDialog';
 export { Skeleton, ListSkeleton, TableSkeleton } from './Skeleton';
 export { Tooltip } from './Tooltip';
 export { Pager, pageWindow } from './Pager';

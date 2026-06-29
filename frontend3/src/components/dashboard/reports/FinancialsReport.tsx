@@ -78,7 +78,7 @@ export function FinancialsReport({ data }: { data: ManagerFinancials }) {
 
   const SortHead = ({ label, k, align = 'left' }: { label: string; k: SortKey; align?: 'left' | 'right' }) => (
     <th
-      className={cn('sticky top-0 z-10 cursor-pointer select-none bg-card px-3 py-2 font-semibold whitespace-nowrap', align === 'left' ? 'text-left' : 'text-right')}
+      className={cn('table-header-cell table-header-cell-sticky sticky top-0 z-10 cursor-pointer select-none whitespace-nowrap', align === 'right' && 'text-right')}
       onClick={() => onSort(k)}
     >
       <span className={cn('inline-flex items-center gap-1', align === 'right' && 'flex-row-reverse')}>
@@ -125,7 +125,7 @@ export function FinancialsReport({ data }: { data: ManagerFinancials }) {
       <div className="overflow-auto rounded-lg border border-border">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+            <tr>
               <SortHead label="Project" k="project" />
               <SortHead label="Approved" k="hours" align="right" />
               <SortHead label="Billable" k="billable" align="right" />

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Check, CheckSquare, ChevronDown, Folder, Info, Loader2, Mail, Pencil, Plus,
-  Trash2, UserPlus, UserRound,
+  Search, Trash2, UserPlus, UserRound,
 } from 'lucide-react';
 
 import { Button, Empty, FieldError, Input, Modal, RequiredMark, TonePill } from '@/components/ui';
@@ -73,7 +73,28 @@ export function ClientAccessManager({
   const portalUsers = portalUsersQ.data ?? [];
 
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const refresh = () => qc.invalidateQueries({ queryKey: ['client-portal-users', clientId] });
+
+  // Resolve a grant's project/task name so search matches what the user sees.
+  const projectName = (id?: number | null) => (id == null ? '' : (allProjects.find((p) => p.id === id)?.name ?? ''));
+  const taskName = (id?: number | null) => {
+    if (id == null) return '';
+    for (const tasks of tasksByProject.values()) {
+      const t = tasks.find((x) => x.id === id);
+      if (t) return t.name;
+    }
+    return '';
+  };
+
+  const q = search.trim().toLowerCase();
+  // Search any field: name, email, label, and the project/task names a person is
+  // granted access to.
+  const filteredUsers = portalUsers.filter((u) => {
+    if (!q) return true;
+    const grantNames = (u.grants ?? []).flatMap((g) => [projectName(g.project_id), taskName(g.task_id)]);
+    return [u.full_name, u.email, u.label ?? '', ...grantNames].some((f) => f.toLowerCase().includes(q));
+  });
 
   return (
     <div className="space-y-5">
@@ -87,13 +108,23 @@ export function ClientAccessManager({
         {portalUsers.length === 0 ? (
           <Empty Icon={UserPlus} title="No client accounts" description="Invite someone on the client side to give them scoped access to this client's projects." />
         ) : (
-          <div className="space-y-2.5">
-            {portalUsers.map((u) => (
-              <ClientGrantCard key={u.user_id} portalUser={u}
-                clientProjects={clientProjects} tasksByProject={tasksByProject}
-                allProjects={allProjects} onFlash={onFlash} onChanged={refresh} />
-            ))}
-          </div>
+          <>
+            <div className="relative mb-3 min-w-0 sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-9" placeholder="Search client accounts..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            {filteredUsers.length === 0 ? (
+              <Empty Icon={UserPlus} title="No client accounts match" description="Try a different search." />
+            ) : (
+              <div className="space-y-2.5">
+                {filteredUsers.map((u) => (
+                  <ClientGrantCard key={u.user_id} portalUser={u}
+                    clientProjects={clientProjects} tasksByProject={tasksByProject}
+                    allProjects={allProjects} onFlash={onFlash} onChanged={refresh} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </section>
 

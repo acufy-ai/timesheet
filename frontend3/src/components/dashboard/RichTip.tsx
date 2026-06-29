@@ -10,7 +10,7 @@ import type { HealthConfigBody } from '@/types/dashboard';
 // A plain string label stays a plain string elsewhere; RichTip is opt-in for the
 // entries that actually carry structure (health, risk, the EVM/financial ratios).
 
-type Dot = 'rose' | 'amber' | 'emerald' | 'sky' | 'muted';
+type Dot = 'rose' | 'amber' | 'emerald' | 'sky' | 'violet' | 'muted';
 
 export interface RichTipSpec {
   lead: string;
@@ -23,6 +23,7 @@ const DOT: Record<Dot, string> = {
   amber: 'bg-amber-500',
   emerald: 'bg-emerald-500',
   sky: 'bg-sky-500',
+  violet: 'bg-primary',
   muted: 'bg-muted-foreground/40',
 };
 
@@ -65,16 +66,19 @@ const plural = (n: number) => (n === 1 ? '' : 's');
 // mirroring the backend _classify_health rules so the tooltip always matches
 // the pills it explains. Honors each enable flag and the margin rule.
 export function healthLegendFromConfig(cfg: HealthConfigBody): RichTipSpec['legend'] {
-  const needs: string[] = [];
+  const critical: string[] = [];   // top severity
   const risk: string[] = [];
+  const excellentParts: string[] = [];
 
   if (cfg.budget_enabled) {
-    needs.push(`over ${num(cfg.over_budget_pct)}% of budget`);
+    critical.push(`over ${num(cfg.over_budget_pct)}% of budget`);
     risk.push(`over ${num(cfg.high_burn_pct)}% of budget`);
+    excellentParts.push(`under ${num(cfg.excellent_under_pct)}% of budget`);
   }
   if (cfg.schedule_enabled) {
-    needs.push(`${num(cfg.overdue_days)}+ day${plural(cfg.overdue_days)} overdue`);
+    critical.push(`${num(cfg.overdue_days)}+ day${plural(cfg.overdue_days)} overdue`);
     risk.push(`${num(cfg.ending_soon_days)} day${plural(cfg.ending_soon_days)} or less to the end date`);
+    excellentParts.push(`well ahead of the end date`);
   }
   if (cfg.margin_enabled) {
     risk.push(`margin below ${num(cfg.low_margin_pct)}%`);
@@ -82,9 +86,14 @@ export function healthLegendFromConfig(cfg: HealthConfigBody): RichTipSpec['lege
 
   const join = (parts: string[]) => parts.join(', or ');
   const legend: NonNullable<RichTipSpec['legend']> = [];
-  if (needs.length) legend.push({ dot: 'rose', label: 'Needs attention', cond: join(needs) });
+  if (critical.length) legend.push({ dot: 'rose', label: 'Critical', cond: join(critical) });
+  legend.push({ dot: 'violet', label: 'Blocked', cond: 'has a task in blocked status' });
   if (risk.length) legend.push({ dot: 'amber', label: 'At risk', cond: join(risk) });
-  legend.push({ dot: 'emerald', label: 'Good', cond: 'none of the above' });
+  legend.push({ dot: 'sky', label: 'On track', cond: 'on budget and on schedule' });
+  legend.push({
+    dot: 'emerald', label: 'Excellent',
+    cond: excellentParts.length ? join(excellentParts) : 'comfortably ahead',
+  });
   legend.push({ dot: 'muted', label: 'Not set', cond: 'no budget and no end date' });
   return legend;
 }

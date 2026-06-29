@@ -6,6 +6,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LandingRedirect } from '@/components/layout/LandingRedirect';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import { ConfirmProvider } from '@/components/ui';
 import { ApprovalsPage } from '@/pages/ApprovalsPage';
 import { AuditTrailPage } from '@/pages/AuditTrailPage';
 import { CalendarPage } from '@/pages/CalendarPage';
@@ -64,6 +65,10 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <AuthProvider>
+          {/* ConfirmProvider exposes useConfirm() app-wide — the styled
+              replacement for native window.confirm(). The dialog floats over
+              all authenticated routes. */}
+          <ConfirmProvider>
           {/* basename = Vite's base path (import.meta.env.BASE_URL), minus the
               trailing slash, so routes resolve under a sub-path deploy
               (prod: /apps/timesheet/). Empty string at root. */}
@@ -116,6 +121,7 @@ export default function App() {
             </Routes>
             </ErrorBoundary>
           </BrowserRouter>
+          </ConfirmProvider>
         </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>

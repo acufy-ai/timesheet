@@ -35,6 +35,13 @@ export default {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
         },
+        // Semantic destructive token (theme-independent). One source of truth
+        // for destructive button/confirm fills. Subtle washes can still use the
+        // fixed `danger` scale below (e.g. bg-danger-500/10 for icon chips).
+        destructive: {
+          DEFAULT: 'hsl(var(--destructive))',
+          foreground: 'hsl(var(--destructive-foreground))',
+        },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',

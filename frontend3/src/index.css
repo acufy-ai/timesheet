@@ -26,6 +26,13 @@
   --input: 170 40% 80%;
   --ring: 192 91% 37%;
   --radius: 0.625rem;
+
+  /* Destructive action color. Intentionally NOT theme-bound: a delete/remove
+     action should read as dangerous on every brand theme, light or dark. This
+     is the single source of truth for destructive button/confirm fills (rose),
+     replacing the ad-hoc mix of bg-rose-500 / -600 / -700 across components. */
+  --destructive: 347 77% 50%;            /* rose-600 #e11d48 — AA on white */
+  --destructive-foreground: 0 0% 100%;
 }
 
 /* Loaded in main.tsx before React mounts. Keeps the pre-React frame from
@@ -124,6 +131,49 @@ main h2 {
   .pager-num-active {
     @apply border-primary bg-primary font-bold text-primary-foreground hover:bg-primary;
   }
+
+  /* Reusable table column-header treatment. Makes the header row clearly read as
+     headers (subtle themed tint + a bottom divider + more legible, slightly
+     heavier labels with extra vertical padding) while staying quieter than the
+     widget title and the primary row data. Built entirely on theme tokens
+     (--muted / --muted-foreground / --border) so it works across all themes,
+     light and dark, with no hardcoded colors.
+     Usage: put `table-header-row` on the <tr> (or <thead>) and
+     `table-header-cell` on each <th>. */
+  .table-header-row {
+    /* Full-strength muted tint: on light themes --muted is a very pale tint, so
+       50% opacity reads as ~white and the header blends into the rows. Full
+       opacity gives a header band that is clearly its own surface. */
+    background-color: hsl(var(--muted));
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .table-header-cell {
+    @apply px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide;
+    /* Full foreground so the header text is clearly darker/heavier than the
+       muted data text beneath it. */
+    color: hsl(var(--foreground));
+  }
+  /* For sticky headers the tint must live on the cell itself (a sticky <th>
+     paints over scrolling rows, so the row background alone isn't enough). This
+     variant carries the same themed tint as .table-header-row but opaque so rows
+     sliding underneath are masked. Pair with `sticky top-0`. */
+  .table-header-cell-sticky {
+    background-color: hsl(var(--card));
+    background-image: linear-gradient(hsl(var(--muted)), hsl(var(--muted)));
+    border-bottom: 1px solid hsl(var(--border));
+  }
+}
+
+/* Hide the native up/down spinner on <input type="number"> without changing
+   any other behavior (typing, validation, step still work). */
+.no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 /* Always-visible horizontal scrollbar for overflow-x containers that would

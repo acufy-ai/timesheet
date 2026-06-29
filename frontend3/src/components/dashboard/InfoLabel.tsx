@@ -26,11 +26,13 @@ const GLOSSARY: Record<string, string | RichTipSpec> = {
   'contract used': { lead: 'How much of the total contract (MSA/SOW) value has been billed so far.', formula: 'approved revenue ÷ contract value' },
   'contract billed': { lead: 'How much of the total contract (MSA/SOW) value has been billed so far.', formula: 'approved revenue ÷ contract value' },
   health: {
-    lead: 'How each project is flagged, from budget use and time to its end date.',
+    lead: 'How each project is flagged, from budget use, time to its end date, and blocked tasks.',
     legend: [
-      { dot: 'rose', label: 'Needs attention', cond: 'over budget, or 30+ days overdue' },
+      { dot: 'rose', label: 'Critical', cond: 'over budget, or 30+ days overdue' },
+      { dot: 'violet', label: 'Blocked', cond: 'has a task in blocked status' },
       { dot: 'amber', label: 'At risk', cond: '7 days or less to the end date, or over 80% of budget used' },
-      { dot: 'emerald', label: 'Good', cond: 'on budget and on schedule' },
+      { dot: 'sky', label: 'On track', cond: 'on budget and on schedule' },
+      { dot: 'emerald', label: 'Excellent', cond: 'comfortably under budget and ahead of schedule' },
       { dot: 'muted', label: 'Not set', cond: 'no budget and no end date' },
     ],
   },

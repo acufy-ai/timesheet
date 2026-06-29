@@ -397,6 +397,10 @@ export const dashboardApi = {
   setHealthConfig: (scope: 'workspace' | 'override', body: HealthConfigBody) =>
     api.put<HealthConfigResponse>('/dashboard/health-config', body, { params: { scope } }),
   clearHealthOverride: () => api.delete('/dashboard/health-config/override'),
+  // Per-project manual health override. `health: null` clears it (back to auto).
+  setProjectHealthOverride: (projectId: number, health: string | null) =>
+    api.put<{ project_id: number; health_override: string | null }>(
+      `/dashboard/project/${projectId}/health-override`, { health }),
 };
 
 export const timeApi = {

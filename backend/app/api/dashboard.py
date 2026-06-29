@@ -56,6 +56,8 @@ from app.schemas import (
     RevRecRow,
     HealthConfigBody,
     HealthConfigResponse,
+    ProjectHealthOverrideBody,
+    ProjectHealthOverrideResponse,
     ManagerClientsResponse,
     ManagerClientRow,
     ManagerClientProject,
@@ -220,11 +222,12 @@ class HealthConfig:
     mirror the historical hardcoded values, so an unconfigured tenant behaves
     exactly as before. Each rule group can be disabled."""
     budget_enabled: bool = True
-    over_budget_pct: float = 100.0   # needs-attention at/above
+    over_budget_pct: float = 100.0   # critical at/above
     high_burn_pct: float = 80.0      # at-risk above
+    excellent_under_pct: float = 50.0  # excellent below (+ schedule comfort)
     schedule_enabled: bool = True
     ending_soon_days: int = 7        # at-risk within
-    overdue_days: int = 30           # needs-attention past end (days)
+    overdue_days: int = 30           # critical past end (days)
     margin_enabled: bool = False
     low_margin_pct: float = 15.0     # at-risk below
 
@@ -253,6 +256,7 @@ async def _load_health_config(
         budget_enabled=row.budget_enabled,
         over_budget_pct=float(row.over_budget_pct),
         high_burn_pct=float(row.high_burn_pct),
+        excellent_under_pct=float(getattr(row, "excellent_under_pct", None) or 50.0),
         schedule_enabled=row.schedule_enabled,
         ending_soon_days=int(row.ending_soon_days),
         overdue_days=int(row.overdue_days),
@@ -261,13 +265,46 @@ async def _load_health_config(
     )
 
 
+# Five-tier project health. Severity worst→best (lower rank = more urgent).
+# 'not-started' (no time logged yet) and 'not-set' (no budget/dates to assess)
+# are non-urgent display states, ranked last.
+HEALTH_RANK = {
+    "critical": 0,
+    "blocked": 1,
+    "at-risk": 2,
+    "on-track": 3,
+    "excellent": 4,
+    "not-set": 5,
+    "not-started": 6,
+}
+# Human labels (for the "Manually set to X" tooltip).
+HEALTH_LABEL = {
+    "critical": "Critical",
+    "blocked": "Blocked",
+    "at-risk": "At risk",
+    "on-track": "On track",
+    "excellent": "Excellent",
+    "not-set": "Not set",
+    "not-started": "Not started",
+}
+# Values a manager may set as a manual override (blocked is auto-derived from
+# tasks; not-set means "no data" and isn't a deliberate choice).
+MANUAL_HEALTH_VALUES = {"excellent", "on-track", "at-risk", "critical"}
+
+
 def _classify_health(
     budget_pct, days_until_end, budget_amount, end_date,
     cfg: Optional["HealthConfig"] = None, margin_pct=None,
+    has_blocked_task: bool = False,
 ) -> tuple[str, str]:
     """Return (health, reason) from the same signals used across the app, using
     the resolved per-manager/workspace thresholds in ``cfg``. The reason is a
-    plain-language explanation of WHY this health state, for the pill tooltip."""
+    plain-language explanation of WHY this health state, for the pill tooltip.
+
+    Five tiers, first match wins (severity order): critical → blocked → at-risk
+    → not-set → (excellent | on-track). ``has_blocked_task`` is supplied by the
+    caller (a project with any task in 'blocked' status). This stays
+    pure-computed; a manual override is overlaid by the caller afterward."""
     if cfg is None:
         cfg = HealthConfig()
 
@@ -278,13 +315,18 @@ def _classify_health(
     is_low_margin = cfg.margin_enabled and margin_pct is not None and margin_pct < cfg.low_margin_pct
     no_budget_no_end = budget_amount is None and end_date is None
 
+    # 1. Critical — the worst computed state (over budget / long overdue).
     if is_over_budget or is_long_overdue:
         reasons = []
         if is_over_budget:
             reasons.append(f"over budget ({budget_pct}% used)")
         if is_long_overdue:
             reasons.append(f"{abs(days_until_end)} days overdue")
-        return "needs-attention", " and ".join(reasons).capitalize() + "."
+        return "critical", " and ".join(reasons).capitalize() + "."
+    # 2. Blocked — checked after critical, so over-budget + blocked = critical.
+    if has_blocked_task:
+        return "blocked", "One or more tasks are blocked."
+    # 3. At risk — near the end date, high burn, or thin margin.
     if is_close_to_end or is_high_burn or is_low_margin:
         reasons = []
         if is_high_burn:
@@ -294,9 +336,54 @@ def _classify_health(
         if is_close_to_end:
             reasons.append(f"ends in {days_until_end} day{'s' if days_until_end != 1 else ''}")
         return "at-risk", " and ".join(reasons).capitalize() + "."
+    # 4. Not set — nothing to assess.
     if no_budget_no_end:
         return "not-set", "No budget or end date set, so health can't be assessed."
-    return "good", "On budget and on schedule."
+    # 5. Excellent vs On track — healthy; excellent if comfortably under budget
+    #    AND comfortably ahead of (or with no) end date, and not overdue.
+    budget_comfortable = (
+        not cfg.budget_enabled or budget_pct is None or budget_pct < cfg.excellent_under_pct
+    )
+    schedule_comfortable = (
+        not cfg.schedule_enabled or days_until_end is None or days_until_end > cfg.ending_soon_days
+    )
+    not_overdue = days_until_end is None or days_until_end >= 0
+    if budget_comfortable and schedule_comfortable and not_overdue:
+        return "excellent", "Comfortably on budget and ahead of schedule."
+    return "on-track", "On budget and on schedule."
+
+
+def _apply_health_override(
+    computed: tuple[str, str], override: Optional[str]
+) -> tuple[str, str]:
+    """Overlay a manager's manual override on the computed (health, reason). A
+    valid override wins; the reason notes the auto value so it's never hidden."""
+    if override and override in MANUAL_HEALTH_VALUES:
+        computed_health, computed_reason = computed
+        return override, f"Manually set to {HEALTH_LABEL[override]}. (Auto: {computed_reason})"
+    return computed
+
+
+async def _projects_with_blocked_task(
+    db: AsyncSession, project_ids: list[int], tenant_id: int
+) -> set[int]:
+    """Project ids that have at least one active task in 'blocked' status. One
+    grouped query so the project-health 'blocked' tier costs no N+1."""
+    if not project_ids:
+        return set()
+    from app.models.task import Task, TaskStatus
+
+    result = await db.execute(
+        select(Task.project_id)
+        .where(
+            Task.project_id.in_(project_ids),
+            Task.tenant_id == tenant_id,
+            Task.status == TaskStatus.blocked,
+            Task.is_active.is_(True),
+        )
+        .group_by(Task.project_id)
+    )
+    return {pid for (pid,) in result.all()}
 
 
 async def _count_pending_timesheet_weeks(
@@ -1185,48 +1272,62 @@ async def get_manager_project_health(
     week_start = today - timedelta(days=today.weekday())
     prior_week_start = week_start - timedelta(days=7)
 
+    # Team members drive the hours/revenue aggregation below. A manager may own
+    # projects without having direct reports (or with reports who haven't logged
+    # time yet), so this is NOT a gate on which projects show — only on whose
+    # hours count toward them.
     team_member_ids = await _get_scoped_employee_ids(db, current_user)
-    if not team_member_ids:
-        return ManagerProjectHealthResponse(rows=[])
 
-    # 1) Find the projects the team has MEANINGFULLY worked on recently. We sum
-    # submitted/approved hours over the lookback and keep only projects above a
-    # small floor — so stray one-off drafts on unrelated projects don't surface
-    # as "the team's projects" with 0 real work. (Window widened to 30d so a
-    # project worked the prior weeks still shows even with a quiet current week.)
-    _MIN_PROJECT_HOURS = Decimal("1")
-    lookback_start = today - timedelta(days=30)
-    project_hours_result = await db.execute(
-        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
-        .where(
-            TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date >= lookback_start,
-            TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
-        )
-        .group_by(TimeEntry.project_id)
-    )
-    worked_ids = [
-        pid for pid, h in project_hours_result.all()
-        if Decimal(str(h or 0)) >= _MIN_PROJECT_HOURS
-    ]
-    # Authorship gate: a project only counts as "the team's" if it actually has a
-    # manager/PM assigned. Unassigned seed/abandoned projects (no manager_id and
-    # no project_managers row) carry stray approved history but aren't a real
-    # live engagement, so they don't belong on the health board.
-    project_ids = await _filter_managed_project_ids(db, worked_ids, current_user.tenant_id)
-    if not project_ids:
-        return ManagerProjectHealthResponse(rows=[])
+    # 1) Load ALL active projects this manager runs — not just ones with recent
+    # logged time — so not-started projects also appear on the board. A MANAGER
+    # owns a project via a direct manager_id OR a project_managers row; VIEWER/
+    # ADMIN see every active project in the tenant. (Same ownership rule as
+    # get_manager_clients.) Archived/inactive projects are excluded.
+    from app.models.assignments import ProjectManager
 
-    # 2) Load projects + clients in one shot.
-    projects_result = await db.execute(
+    proj_q = (
         select(Project)
         .options(selectinload(Project.client))
         .where(
-            Project.id.in_(project_ids),
             Project.tenant_id == current_user.tenant_id,
+            Project.is_active.is_(True),
         )
     )
-    projects = list(projects_result.scalars().all())
+    if current_user.role == UserRole.MANAGER:
+        pm_ids = (await db.execute(
+            select(ProjectManager.project_id).where(
+                ProjectManager.tenant_id == current_user.tenant_id,
+                ProjectManager.user_id == current_user.id,
+            )
+        )).scalars().all()
+        proj_q = proj_q.where(
+            or_(Project.manager_id == current_user.id, Project.id.in_(list(pm_ids) or [-1]))
+        )
+    projects = list((await db.execute(proj_q)).scalars().all())
+    project_ids = [p.id for p in projects]
+    if not project_ids:
+        return ManagerProjectHealthResponse(rows=[])
+
+    # 1b) Lifetime-worked set: projects with ANY submitted/approved time ever.
+    # A project absent here has never been started → health "not-started"
+    # (overlaid below, unless a manual override is set).
+    worked_pids = {
+        pid for (pid,) in (await db.execute(
+            select(TimeEntry.project_id)
+            .where(
+                TimeEntry.project_id.in_(project_ids),
+                TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
+            )
+            .group_by(TimeEntry.project_id)
+        )).all()
+    }
+
+    # 2b) Which projects have at least one BLOCKED task (Phase-2 task status).
+    # One grouped query → set of project ids, so the classifier's "blocked"
+    # signal costs no per-project query.
+    blocked_pids = await _projects_with_blocked_task(
+        db, project_ids, current_user.tenant_id
+    )
 
     # 3) Hours-this-week per project, only for entries that count
     # against the budget (SUBMITTED + APPROVED).
@@ -1298,14 +1399,26 @@ async def get_manager_project_health(
             budget_pct = int(round((revenue / Decimal(str(budget_amount))) * 100))
             budget_remaining = Decimal(str(budget_amount)) - revenue
 
-        health, health_reason = _classify_health(
-            budget_pct, days_until_end, budget_amount, project.end_date, cfg=health_cfg
+        health, health_reason = _apply_health_override(
+            _classify_health(
+                budget_pct, days_until_end, budget_amount, project.end_date,
+                cfg=health_cfg, has_blocked_task=(project.id in blocked_pids),
+            ),
+            project.health_override,
         )
+        # Not-started overlay: a project with no time logged ever reads as
+        # "not-started" — unless a manager has manually set its health.
+        if project.id not in worked_pids and not project.health_override:
+            health = "not-started"
+            health_reason = "No time logged yet."
 
         rows.append(
             ManagerProjectHealthRow(
                 project_id=project.id,
                 project_name=project.name,
+                code=project.code,
+                status=(project.status.value if hasattr(project.status, "value")
+                        else (project.status or None)),
                 client_id=project.client_id,
                 client_name=project.client.name if project.client else "",
                 days_until_end=days_until_end,
@@ -1317,9 +1430,9 @@ async def get_manager_project_health(
             )
         )
 
-    # Sort: needs-attention → at-risk → good → not-set, then by name.
-    health_order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
-    rows.sort(key=lambda r: (health_order.get(r.health, 9), r.project_name.lower()))
+    # Sort by severity (critical → blocked → at-risk → on-track → excellent →
+    # not-set), then by name.
+    rows.sort(key=lambda r: (HEALTH_RANK.get(r.health, 9), r.project_name.lower()))
     return ManagerProjectHealthResponse(rows=rows)
 
 
@@ -1378,6 +1491,24 @@ async def get_manager_financials(
         db, list(proj_ids), current_user.tenant_id
     ))
 
+    # Logged hours per project = submitted (awaiting approval) + approved. The
+    # `entries` above are APPROVED-only (revenue realizes on approval), so this
+    # extra grouped query supplies the "logged" total. pending_approval =
+    # logged - approved is derived on the frontend.
+    logged_rows = (await db.execute(
+        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(
+            TimeEntry.user_id.in_(team_ids),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
+            TimeEntry.project_id.in_(list(managed_ids) or [-1]),
+        )
+        .group_by(TimeEntry.project_id)
+    )).all()
+    logged_by_pid: dict[int, Decimal] = {
+        pid: Decimal(str(hrs or 0)) for pid, hrs in logged_rows
+    }
+
     # Aggregate per project.
     agg: dict[int, dict] = {}
     total_billable = Decimal("0")
@@ -1429,7 +1560,9 @@ async def get_manager_financials(
             project_id=pid, project_name=p.name,
             client_id=p.client_id, client_name=client_name.get(p.client_id, ""),
             currency=p.currency or "USD",
-            approved_hours=d["hours"], billable_hours=d["billable"], revenue=revenue,
+            approved_hours=d["hours"],
+            logged_hours=logged_by_pid.get(pid, d["hours"]),
+            billable_hours=d["billable"], revenue=revenue,
             cost=cost, margin=margin, margin_pct=margin_pct,
             budget_amount=budget, budget_used_pct=budget_pct, budget_remaining=budget_remaining,
             contract_id=ct.id if ct else None, contract_title=ct.title if ct else None,
@@ -2178,6 +2311,9 @@ async def get_portfolio(
     client_name = {cid: name for cid, name in (await db.execute(
         select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
     )).all()}
+    blocked_pids = await _projects_with_blocked_task(
+        db, list(managed_ids), current_user.tenant_id
+    )
 
     agg: dict[int, dict] = {}
     for e in entries:
@@ -2190,7 +2326,7 @@ async def get_portfolio(
             d["revenue"] += entry_billed_amount(e, projects.get(e.project_id))
 
     rows: list[PortfolioRow] = []
-    counts = {"good": 0, "at-risk": 0, "needs-attention": 0, "not-set": 0}
+    counts = {"excellent": 0, "on-track": 0, "at-risk": 0, "critical": 0, "blocked": 0, "not-set": 0}
     tot_rev = tot_cost = Decimal("0")
     for pid, d in agg.items():
         p = projects.get(pid)
@@ -2205,10 +2341,14 @@ async def get_portfolio(
         budget_pct = int(round(revenue / budget * 100)) if budget and budget > 0 else None
         days_until_end = (p.end_date - today).days if p.end_date else None
 
-        health, health_reason = _classify_health(
-            budget_pct, days_until_end, budget, p.end_date, cfg=health_cfg, margin_pct=margin_pct
+        health, health_reason = _apply_health_override(
+            _classify_health(
+                budget_pct, days_until_end, budget, p.end_date, cfg=health_cfg,
+                margin_pct=margin_pct, has_blocked_task=(pid in blocked_pids),
+            ),
+            p.health_override,
         )
-        counts[health] += 1
+        counts[health] = counts.get(health, 0) + 1
 
         rows.append(PortfolioRow(
             project_id=pid, project_name=p.name, client_id=p.client_id, client_name=client_name.get(p.client_id, ""),
@@ -2217,12 +2357,12 @@ async def get_portfolio(
             days_until_end=days_until_end, currency=p.currency or "USD",
         ))
 
-    order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
-    rows.sort(key=lambda r: (order.get(r.health, 9), -(r.margin_pct if r.margin_pct is not None else -999)))
+    rows.sort(key=lambda r: (HEALTH_RANK.get(r.health, 9), -(r.margin_pct if r.margin_pct is not None else -999)))
     tot_margin_pct = int(round((tot_rev - tot_cost) / tot_rev * 100)) if tot_rev > 0 else None
     return PortfolioResponse(
-        project_count=len(rows), good=counts["good"], at_risk=counts["at-risk"],
-        needs_attention=counts["needs-attention"], not_set=counts["not-set"],
+        project_count=len(rows),
+        excellent=counts["excellent"], on_track=counts["on-track"], at_risk=counts["at-risk"],
+        critical=counts["critical"], blocked=counts["blocked"], not_set=counts["not-set"],
         total_revenue=tot_rev, total_cost=tot_cost, total_margin_pct=tot_margin_pct, rows=rows,
     )
 
@@ -2233,6 +2373,7 @@ def _cfg_to_body(row) -> HealthConfigBody:
         budget_enabled=row.budget_enabled,
         over_budget_pct=float(row.over_budget_pct),
         high_burn_pct=float(row.high_burn_pct),
+        excellent_under_pct=float(getattr(row, "excellent_under_pct", None) or 50.0),
         schedule_enabled=row.schedule_enabled,
         ending_soon_days=int(row.ending_soon_days),
         overdue_days=int(row.overdue_days),
@@ -2302,6 +2443,7 @@ async def set_health_config(
         budget_enabled=body.budget_enabled,
         over_budget_pct=body.over_budget_pct,
         high_burn_pct=body.high_burn_pct,
+        excellent_under_pct=body.excellent_under_pct,
         schedule_enabled=body.schedule_enabled,
         ending_soon_days=body.ending_soon_days,
         overdue_days=body.overdue_days,
@@ -2337,6 +2479,61 @@ async def clear_health_override(
         )
     )
     await db.commit()
+
+
+@router.put("/project/{project_id}/health-override", response_model=ProjectHealthOverrideResponse)
+async def set_project_health_override(
+    project_id: int,
+    body: ProjectHealthOverrideBody,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually override one project's health tier (or clear it to fall back to
+    the auto-computed value). ``health=null`` clears. Settable values are
+    excellent | on-track | at-risk | critical (blocked is auto-derived from
+    tasks; not-set means 'no data'). The PM/manager must manage the project."""
+    from app.models.project import Project as ProjectModel
+
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    new_value = body.health
+    if new_value is not None and new_value not in MANUAL_HEALTH_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"health must be one of {sorted(MANUAL_HEALTH_VALUES)} or null.",
+        )
+
+    project = (await db.execute(
+        select(ProjectModel).where(
+            ProjectModel.id == project_id,
+            ProjectModel.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # ADMIN/VIEWER act tenant-wide; a MANAGER may only override projects they
+    # run (direct manager_id OR a project_managers row).
+    if current_user.role == UserRole.MANAGER:
+        from app.models.assignments import ProjectManager
+
+        owns = project.manager_id == current_user.id or (await db.execute(
+            select(ProjectManager.project_id).where(
+                ProjectManager.tenant_id == current_user.tenant_id,
+                ProjectManager.user_id == current_user.id,
+                ProjectManager.project_id == project_id,
+            ).limit(1)
+        )).scalar_one_or_none() is not None
+        if not owns:
+            raise HTTPException(status_code=403, detail="You don't manage this project.")
+
+    project.health_override = new_value
+    await db.commit()
+    return ProjectHealthOverrideResponse(
+        project_id=project_id,
+        health_override=new_value,
+    )
 
 
 @router.get("/manager-clients", response_model=ManagerClientsResponse)

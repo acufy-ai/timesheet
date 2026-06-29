@@ -872,13 +872,30 @@ function ProjectsTab({
   onEditTask: (p: FullProject, t: FullTask) => void;
   onDeleteTask: (t: FullTask) => void;
 }) {
+  const [search, setSearch] = useState('');
+  const q = search.trim().toLowerCase();
+  // Search any field: name, code (the PR#### id), description, status, and the
+  // names of tasks under the project (so finding a task surfaces its project).
+  const filtered = projects.filter((p) => {
+    if (!q) return true;
+    const taskNames = (tasksByProject.get(p.id) ?? []).map((t) => t.name).join(' ');
+    return [
+      p.name,
+      p.code ?? '',
+      p.description ?? '',
+      p.status ? PROJECT_STATUS_LABEL[p.status] : '',
+      taskNames,
+    ].some((field) => field.toLowerCase().includes(q));
+  });
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {projects.length} {projects.length === 1 ? 'project' : 'projects'} for {client.name}
-        </p>
-        <Button size="sm" onClick={onAddProject}>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9" placeholder="Search projects..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button size="sm" className="ml-auto" onClick={onAddProject}>
           <Plus className="h-4 w-4" /> Add project
         </Button>
       </div>
@@ -889,15 +906,17 @@ function ProjectsTab({
         <Empty
           Icon={FolderPlus}
           title="No projects yet"
-          description="Add a project so the team can log time and tasks against this client."
+          description={`Add a project so the team can log time and tasks against ${client.name}.`}
           action={
             <Button size="sm" onClick={onAddProject}>
               Add project
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <Empty Icon={FolderPlus} title="No projects match" description="Try a different search." />
       ) : (
-        projects.map((p) => (
+        filtered.map((p) => (
           <ProjectCard
             key={p.id}
             project={p}
@@ -1493,8 +1512,18 @@ function ContactsTab({
   onError: (msg: string) => void;
 }) {
   const del = useDeleteClientContact();
+  const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [modal, setModal] = useState<{ open: boolean; contact: ClientContact | null }>({ open: false, contact: null });
+
+  const q = search.trim().toLowerCase();
+  // Search any field: name, role, any email address, any phone number (+ its label).
+  const filtered = contacts.filter((ct) => {
+    if (!q) return true;
+    const channels = [...(ct.emails ?? []), ...(ct.phones ?? [])]
+      .flatMap((c) => [c.address ?? '', c.number ?? '', c.label ?? '']);
+    return [ct.name, ct.role ?? '', ...channels].some((f) => f.toLowerCase().includes(q));
+  });
 
   function removeContact(ct: ClientContact) {
     onConfirm({
@@ -1513,11 +1542,12 @@ function ContactsTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {contacts.length} {contacts.length === 1 ? 'contact' : 'contacts'}
-        </p>
-        <Button size="sm" onClick={() => setModal({ open: true, contact: null })}>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9" placeholder="Search contacts..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button size="sm" className="ml-auto" onClick={() => setModal({ open: true, contact: null })}>
           <Plus className="h-4 w-4" /> Add contact
         </Button>
       </div>
@@ -1535,8 +1565,10 @@ function ContactsTab({
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <Empty Icon={UserPlus} title="No contacts match" description="Try a different search." />
       ) : (
-        contacts.map((ct) => (
+        filtered.map((ct) => (
           <ContactCard
             key={ct.id}
             clientId={clientId}
@@ -1914,7 +1946,19 @@ function NotesTab({
   onError: (msg: string) => void;
 }) {
   const del = useDeleteClientNote();
+  const [search, setSearch] = useState('');
   const [modal, setModal] = useState<{ open: boolean; note: ClientNote | null }>({ open: false, note: null });
+
+  const q = search.trim().toLowerCase();
+  // Search any field: the author's name, the note text, or its date.
+  const filtered = notes.filter((n) => {
+    if (!q) return true;
+    return [
+      n.author ?? '',
+      n.body,
+      n.note_date ? fmtDate(n.note_date) : '',
+    ].some((f) => f.toLowerCase().includes(q));
+  });
 
   function removeNote(n: ClientNote) {
     onConfirm({
@@ -1933,11 +1977,12 @@ function NotesTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {notes.length} {notes.length === 1 ? 'note' : 'notes'}
-        </p>
-        <Button size="sm" onClick={() => setModal({ open: true, note: null })}>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9" placeholder="Search notes..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button size="sm" className="ml-auto" onClick={() => setModal({ open: true, note: null })}>
           <Plus className="h-4 w-4" /> Add note
         </Button>
       </div>
@@ -1955,8 +2000,10 @@ function NotesTab({
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <Empty Icon={StickyNote} title="No notes match" description="Try a different search." />
       ) : (
-        notes.map((n) => {
+        filtered.map((n) => {
           const author = n.author || 'Unknown';
           return (
             <Card key={n.id} className="p-4">

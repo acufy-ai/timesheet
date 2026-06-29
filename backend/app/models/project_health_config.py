@@ -41,6 +41,9 @@ class ProjectHealthConfig(Base, TimestampMixin):
     budget_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     over_budget_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, server_default="100")
     high_burn_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, server_default="80")
+    # Budget burn at/below which a healthy project is "excellent" rather than
+    # merely "on-track" (also requires schedule comfort). Default 50%.
+    excellent_under_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, server_default="50")
 
     # Schedule rules (days relative to the project end date).
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")

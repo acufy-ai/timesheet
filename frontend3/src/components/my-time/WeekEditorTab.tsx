@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { Button, Card, Toast } from '@/components/ui';
+import { Button, Card, Toast, useConfirm } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { timeApi } from '@/api/client';
 import {
@@ -154,6 +154,7 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
   const create = useCreateEntry();
   const update = useUpdateEntry();
   const del = useDeleteEntry();
+  const confirm = useConfirm();
   const submit = useSubmitEntries();
   const recall = useRecallEntries();
 
@@ -392,7 +393,7 @@ export function WeekEditorTab({ initialWeek, initialDay }: { initialWeek?: strin
   }
 
   async function removeRow(entryId: number) {
-    if (!window.confirm('Delete this entry?')) return;
+    if (!(await confirm({ title: 'Delete this entry?', message: 'This time entry will be permanently removed.' }))) return;
     try {
       await del.mutateAsync(entryId);
       flashAndFade('ok', 'Deleted.');
@@ -1128,8 +1129,9 @@ function EditRow({
           min={0}
           value={draft.hours}
           onChange={(e) => onPatch({ hours: e.target.value, hours_dirty: true })}
-          className={fieldClass + ' text-right tabular-nums'}
+          className={fieldClass + ' no-spinner text-right tabular-nums'}
           title="Auto-fills from Start/End when both are set. Edit to override."
+          aria-label="Hours"
         />
       </td>
       <td className="px-1.5 py-2 text-center">
@@ -1138,6 +1140,8 @@ function EditRow({
           checked={draft.is_billable}
           onChange={(e) => onPatch({ is_billable: e.target.checked })}
           className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]"
+          aria-label="Billable"
+          title="Billable"
         />
       </td>
       {/* Description is rendered in its own full-width row below; this inline cell stays hidden. */}
@@ -1157,6 +1161,7 @@ function EditRow({
             onClick={onSave}
             disabled={saving}
             title="Save"
+            aria-label={saving ? 'Saving' : 'Save entry'}
             className="inline-flex h-7 w-7 items-center justify-center rounded bg-primary text-primary-foreground hover:brightness-110 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
@@ -1165,6 +1170,7 @@ function EditRow({
             type="button"
             onClick={onCancel}
             title="Cancel"
+            aria-label="Cancel"
             className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />

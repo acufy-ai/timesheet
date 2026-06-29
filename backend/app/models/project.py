@@ -58,6 +58,12 @@ class Project(Base, TimestampMixin):
     status: Mapped[ProjectStatus] = mapped_column(
         SAEnum(ProjectStatus, name="projectstatus"), nullable=False,
         default=ProjectStatus.planning, server_default="planning")
+    # Manual project-HEALTH override (distinct from `status` lifecycle above).
+    # Null = use the auto-computed health tier; a set value
+    # (excellent | on-track | at-risk | critical) is a manager's deliberate
+    # override that wins over the computed value. Stored as a plain string for
+    # forgiving forward-compat; the settable set is validated app-side.
+    health_override: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # The internal user (a manager) who runs this project. Constrained in the
     # app to the client's assigned PMs; FK only enforces a real user.
     manager_id: Mapped[Optional[int]] = mapped_column(

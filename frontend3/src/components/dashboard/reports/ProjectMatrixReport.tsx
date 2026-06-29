@@ -154,8 +154,8 @@ export function ProjectMatrixReport({ data }: { data: TeamProjectMatrix }) {
   }) => (
     <th
       className={cn(
-        'sticky top-0 z-10 cursor-pointer select-none bg-card px-3 py-2 font-semibold whitespace-nowrap',
-        align === 'left' ? 'text-left' : 'text-right',
+        'table-header-cell table-header-cell-sticky sticky top-0 z-10 cursor-pointer select-none whitespace-nowrap',
+        align === 'right' && 'text-right',
       )}
       onClick={() => onSort(key)}
       title={title}
@@ -191,7 +191,7 @@ export function ProjectMatrixReport({ data }: { data: TeamProjectMatrix }) {
       <div className="overflow-auto rounded-lg border border-border">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+            <tr>
               <SortHead label="Person" sortKey="name" align="left" />
               {data.projects.map((p) => (
                 <SortHead

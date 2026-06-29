@@ -19,7 +19,7 @@ const VARIANTS: Record<Variant, string> = {
   ghost:
     'text-muted-foreground hover:bg-primary/10 hover:text-primary',
   destructive:
-    'bg-rose-500 text-white shadow-sm hover:bg-rose-600',
+    'bg-destructive text-destructive-foreground shadow-sm hover:brightness-110 active:brightness-95',
 };
 
 const SIZES: Record<Size, string> = {

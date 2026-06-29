@@ -32,11 +32,16 @@ export interface ManagerTeamOverview {
   capacity_next_week: unknown[];
 }
 
-export type ProjectHealth = 'good' | 'at-risk' | 'needs-attention' | 'not-set';
+// The health model lives in lib/projectHealth.ts (single source of truth for
+// labels/tones/sort). Re-exported here so existing type imports keep working.
+export type { ProjectHealth } from '@/lib/projectHealth';
+import type { ProjectHealth } from '@/lib/projectHealth';
 
 export interface ProjectHealthRow {
   project_id: number;
   project_name: string;
+  code?: string | null;
+  status?: string | null;
   client_id?: number | null;
   client_name: string;
   days_until_end: number | null;
@@ -59,6 +64,8 @@ export interface ProjectFinancialRow {
   client_name: string;
   currency: string;
   approved_hours: string | number;
+  // Logged = submitted (awaiting approval) + approved. pending approval = logged - approved.
+  logged_hours?: string | number | null;
   billable_hours: string | number;
   revenue: string | number;
   cost?: string | number;
@@ -112,7 +119,7 @@ export interface PortfolioRow {
   project_name: string;
   client_id?: number | null;
   client_name: string;
-  health: 'good' | 'at-risk' | 'needs-attention' | 'not-set';
+  health: ProjectHealth;
   health_reason?: string | null;
   approved_hours: string | number;
   revenue: string | number;
@@ -126,9 +133,11 @@ export interface PortfolioRow {
 }
 export interface Portfolio {
   project_count: number;
-  good: number;
+  excellent: number;
+  on_track: number;
   at_risk: number;
-  needs_attention: number;
+  critical: number;
+  blocked: number;
   not_set: number;
   total_revenue: string | number;
   total_cost: string | number;
@@ -182,6 +191,7 @@ export interface HealthConfigBody {
   budget_enabled: boolean;
   over_budget_pct: number;
   high_burn_pct: number;
+  excellent_under_pct: number;
   schedule_enabled: boolean;
   ending_soon_days: number;
   overdue_days: number;

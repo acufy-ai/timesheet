@@ -10,6 +10,7 @@ import { FinancialsReport } from '@/components/dashboard/reports/FinancialsRepor
 import { InfoLabel, HealthInfoLabel } from '@/components/dashboard/InfoLabel';
 import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
 import { fmtMoney } from '@/lib/format';
+import { healthMeta } from '@/lib/projectHealth';
 
 // A clickable client cell that routes to the client's page. Shared by the
 // Insights tables so client names behave consistently.
@@ -205,13 +206,6 @@ function EvmLegend() {
   );
 }
 
-const HEALTH_META: Record<string, { label: string; dot: string; text: string }> = {
-  'needs-attention': { label: 'Needs attention', dot: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' },
-  'at-risk': { label: 'At risk', dot: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400' },
-  good: { label: 'Good', dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' },
-  'not-set': { label: 'Not set', dot: 'bg-muted-foreground/40', text: 'text-muted-foreground' },
-};
-
 function marginColor(pct: number | null | undefined): string {
   if (pct == null) return 'text-muted-foreground';
   if (pct >= 40) return 'text-emerald-600 dark:text-emerald-400';
@@ -240,10 +234,12 @@ function PortfolioTab() {
   }
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <SummaryStat label="Needs attention" value={d.needs_attention} tone="rose" hint="over budget / overdue" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <SummaryStat label="Critical" value={d.critical} tone="rose" hint="over budget / overdue" />
+        <SummaryStat label="Blocked" value={d.blocked} tone="violet" hint="has a blocked task" />
         <SummaryStat label="At risk" value={d.at_risk} tone="amber" hint="near end / high burn" />
-        <SummaryStat label="Good" value={d.good} tone="emerald" hint="on track" />
+        <SummaryStat label="On track" value={d.on_track} tone="sky" hint="on budget & schedule" />
+        <SummaryStat label="Excellent" value={d.excellent} tone="emerald" hint="comfortably ahead" />
         <SummaryStat label="Total margin" value={d.total_margin_pct ?? 0} tone="sky" hint="across the portfolio" suffix="%" />
       </div>
       <div className="overflow-hidden rounded-2xl border border-border bg-card">
@@ -270,7 +266,7 @@ function PortfolioTab() {
             </thead>
             <tbody>
               {d.rows.map((r) => {
-                const h = HEALTH_META[r.health] ?? HEALTH_META['not-set'];
+                const h = healthMeta(r.health);
                 const pill = (
                   <span className="inline-flex cursor-help items-center gap-1.5">
                     <span className={cn('h-2 w-2 rounded-full', h.dot)} />
@@ -384,10 +380,11 @@ function ResourcingTab() {
   );
 }
 
-function SummaryStat({ label, value, tone, hint, suffix }: { label: string; value: number; tone: 'rose' | 'emerald' | 'sky' | 'amber'; hint: string; suffix?: string }) {
+function SummaryStat({ label, value, tone, hint, suffix }: { label: string; value: number; tone: 'rose' | 'emerald' | 'sky' | 'amber' | 'violet'; hint: string; suffix?: string }) {
   const toneCls = tone === 'rose' ? 'text-rose-600 dark:text-rose-400'
     : tone === 'emerald' ? 'text-emerald-600 dark:text-emerald-400'
     : tone === 'amber' ? 'text-amber-600 dark:text-amber-400'
+    : tone === 'violet' ? 'text-primary'
     : 'text-sky-600 dark:text-sky-400';
   return (
     <div className="rounded-2xl border border-border bg-card px-4 py-3">

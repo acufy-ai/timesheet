@@ -1112,6 +1112,10 @@ class ManagerProjectHealthRow(BaseModel):
 
     project_id: int
     project_name: str
+    # Project code (e.g. PR0007) and lifecycle status — extra metadata the
+    # dashboard widget search can match on.
+    code: Optional[str] = None
+    status: Optional[str] = None
     client_id: Optional[int] = None
     client_name: str
     # Days remaining until end_date. Negative when overdue. None when
@@ -1122,7 +1126,7 @@ class ManagerProjectHealthRow(BaseModel):
     budget_pct: Optional[int]
     # Hours remaining against the budget. Negative when over.
     budget_hours_remaining: Optional[Decimal]
-    # 'good' | 'at-risk' | 'needs-attention' | 'not-set'
+    # 'excellent'|'on-track'|'at-risk'|'critical'|'blocked'|'not-set'|'not-started'
     health: str
     # Plain-language explanation of the health state (for the pill tooltip).
     health_reason: Optional[str] = None
@@ -1140,6 +1144,9 @@ class ProjectFinancialRow(BaseModel):
     client_name: str
     currency: str = "USD"
     approved_hours: Decimal = Decimal("0")
+    # Logged hours = submitted (awaiting approval) + approved. Lets the UI derive
+    # pending-approval hours (logged - approved) without a second query.
+    logged_hours: Decimal = Decimal("0")
     billable_hours: Decimal = Decimal("0")
     revenue: Decimal = Decimal("0")          # sum(hours x billed rate)
     # PSA margin: cost = sum(hours x cost rate, all hours); margin = revenue-cost.
@@ -1199,7 +1206,7 @@ class PortfolioRow(BaseModel):
     project_name: str
     client_id: Optional[int] = None
     client_name: str
-    health: str  # good | at-risk | needs-attention | not-set
+    health: str  # excellent | on-track | at-risk | critical | blocked | not-set
     health_reason: Optional[str] = None
     approved_hours: Decimal = Decimal("0")
     revenue: Decimal = Decimal("0")
@@ -1214,10 +1221,14 @@ class PortfolioRow(BaseModel):
 
 class PortfolioResponse(BaseModel):
     project_count: int
-    good: int
-    at_risk: int
-    needs_attention: int
-    not_set: int
+    # Five-tier health counts (see _classify_health). 'blocked' is auto-derived
+    # from tasks; 'not_set' = no budget & no end date.
+    excellent: int = 0
+    on_track: int = 0
+    at_risk: int = 0
+    critical: int = 0
+    blocked: int = 0
+    not_set: int = 0
     total_revenue: Decimal = Decimal("0")
     total_cost: Decimal = Decimal("0")
     total_margin_pct: Optional[int] = None
@@ -1274,11 +1285,14 @@ class ManagerFinancialsResponse(BaseModel):
 
 # ── Configurable project-health thresholds ──────────────────────────────────
 class HealthConfigBody(BaseModel):
-    """The tunable rules behind the good / at-risk / needs-attention pills.
-    Used for both the workspace default and a per-manager override."""
+    """The tunable rules behind the five-tier health pills (critical / blocked /
+    at-risk / on-track / excellent). Used for both the workspace default and a
+    per-manager override."""
     budget_enabled: bool = True
     over_budget_pct: float = Field(100, ge=0, le=1000)
     high_burn_pct: float = Field(80, ge=0, le=1000)
+    # Budget burn below which a healthy project is "excellent" (vs "on-track").
+    excellent_under_pct: float = Field(50, ge=0, le=1000)
     schedule_enabled: bool = True
     ending_soon_days: int = Field(7, ge=0, le=365)
     overdue_days: int = Field(30, ge=0, le=3650)
@@ -1293,6 +1307,18 @@ class HealthConfigResponse(BaseModel):
     # 'override' if the manager has a personal config, else 'workspace'.
     effective_scope: str = "workspace"
     can_edit_workspace: bool = False
+
+
+class ProjectHealthOverrideBody(BaseModel):
+    """Set or clear one project's manual health override. ``health=None``
+    clears (falls back to the auto-computed tier). Settable values are
+    excellent | on-track | at-risk | critical (validated in the endpoint)."""
+    health: Optional[str] = None
+
+
+class ProjectHealthOverrideResponse(BaseModel):
+    project_id: int
+    health_override: Optional[str] = None
 
 
 # ── Project report: task-level "why" breakdown (existing data only) ─────────
