@@ -1283,8 +1283,6 @@ async def get_manager_project_health(
             tenant_timezone = tenant.timezone
 
     today = now_for_tenant(tenant_timezone).date()
-    week_start = today - timedelta(days=today.weekday())
-    prior_week_start = week_start - timedelta(days=7)
 
     # Team members drive the hours/revenue aggregation below. A manager may own
     # projects without having direct reports (or with reports who haven't logged
@@ -1343,24 +1341,25 @@ async def get_manager_project_health(
         db, project_ids, current_user.tenant_id
     )
 
-    # 3) Hours-this-week per project, only for entries that count
-    # against the budget (SUBMITTED + APPROVED).
-    # Include DRAFT so "Hours this week" reflects in-progress work the team has
-    # entered, not only what's been submitted (matches the roster's logged_days).
-    hours_week_result = await db.execute(
+    # 3) LOGGED HOURS per project (all-time, not week-scoped). This column used to
+    # be "hours this week", but at the start of a week it reads 0 even when the
+    # project has real budget/financials (which aggregate all-time), so it looked
+    # broken. It now sums all non-rejected logged time (DRAFT + SUBMITTED +
+    # APPROVED) over the project's life, so hours reconcile with the budget/health
+    # figures on the same row. (The schema/pref key stays `hours_this_week` to
+    # avoid breaking persisted column prefs; the UI label is "Logged hours".)
+    hours_logged_result = await db.execute(
         select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
         .where(
             TimeEntry.project_id.in_(project_ids),
             TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date >= week_start,
-            TimeEntry.entry_date <= today,
             TimeEntry.status.in_(
                 [TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
             ),
         )
         .group_by(TimeEntry.project_id)
     )
-    hours_week_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_week_result.all()}
+    hours_week_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_logged_result.all()}
 
     # 4) Dollar budget burn per project: approved/billable revenue (hours x the
     # frozen/resolved rate) against the project's dollar budget_amount. This is

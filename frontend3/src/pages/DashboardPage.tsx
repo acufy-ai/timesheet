@@ -503,7 +503,7 @@ function ProjectsWidget({
               onClick={() => onNavigate('/insights?tab=portfolio')}
               className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
             >
-              View report <ChevronRight className="h-3.5 w-3.5" />
+              View all projects <ChevronRight className="h-3.5 w-3.5" />
             </button>
           ) : null}
         </div>
@@ -530,7 +530,7 @@ function ProjectsWidget({
                 <tr className="table-header-row">
                   <th className="table-header-cell">Project</th>
                   {showCol('client') ? <th className="table-header-cell">Client</th> : null}
-                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Hours this week" /></th> : null}
+                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged hours" /></th> : null}
                   {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Budget burn" /></th> : null}
                   <th className="table-header-cell">
                     <span className="inline-flex items-center gap-1">

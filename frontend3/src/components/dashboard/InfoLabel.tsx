@@ -38,6 +38,7 @@ const GLOSSARY: Record<string, string | RichTipSpec> = {
   },
   budget: { lead: 'How much of the project’s budget has been earned so far (approved billable time only).', formula: 'approved revenue ÷ budget' },
   'hours this week': 'Approved hours logged against this project during the current week.',
+  'logged hours': 'All time logged against this project (draft, submitted, and approved), across its whole life. Reconciles with the budget and financial figures.',
   'team on track': 'Direct reports whose projects are healthy — not at-risk or behind.',
   'approvals pending': 'Weeks of submitted time from your reports that are waiting for your approval.',
   'pto this week': 'Direct reports with approved time off during the current week.',
@@ -93,7 +94,7 @@ export function infoFor(label: string): string | RichTipSpec | undefined {
 // contract billed, margin, and the EVM ratios (PV/EV/AC/CPI/SPI/EAC/EAC).
 const OBVIOUS_LABELS = new Set([
   'revenue', 'cost', 'hours', 'approved', 'approved hours', 'billable', 'total',
-  'budget tracked', 'budget used', 'budget', 'hours this week', 'recognized', 'billed',
+  'budget tracked', 'budget used', 'budget', 'hours this week', 'logged hours', 'recognized', 'billed',
 ]);
 
 function showsIcon(label: string): boolean {

@@ -34,7 +34,7 @@ export const MANAGER_TILES: ManagerTileDef[] = [
     columns: [
       { key: 'project', label: 'Project', locked: true },
       { key: 'client', label: 'Client' },
-      { key: 'hours_this_week', label: 'Hours this week' },
+      { key: 'hours_this_week', label: 'Logged hours' },
       { key: 'budget', label: 'Budget' },
       { key: 'health', label: 'Health', locked: true },
     ],
