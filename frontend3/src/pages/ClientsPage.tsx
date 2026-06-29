@@ -78,8 +78,8 @@ import {
   useUploadContractDocument,
   useCrossTeamStaffing,
 } from '@/hooks/useAdmin';
-import { useManagerProjectHealth } from '@/hooks/useDashboard';
-import { healthMeta } from '@/lib/projectHealth';
+import { useManagerProjectHealth, useSetProjectHealthOverride } from '@/hooks/useDashboard';
+import { healthMeta, MANUAL_HEALTH } from '@/lib/projectHealth';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import { staffingPool } from '@/lib/staffing';
@@ -256,8 +256,11 @@ export function ClientsPage() {
   // (MANAGER/VIEWER/ADMIN); other roles just get no pills (hook returns empty).
   const healthQ = useManagerProjectHealth(canManageClients);
   const healthByProject = useMemo(() => {
-    const m = new Map<number, string>();
-    (healthQ.data?.rows ?? []).forEach((r) => m.set(r.project_id, r.health));
+    // health + whether it's a manual override (reason is prefixed "Manually set"
+    // by the API) so the inline menu can show the active/clear state correctly.
+    const m = new Map<number, { health: string; isManual: boolean }>();
+    (healthQ.data?.rows ?? []).forEach((r) =>
+      m.set(r.project_id, { health: r.health, isManual: (r.health_reason ?? '').startsWith('Manually set') }));
     return m;
   }, [healthQ.data]);
   // Full tenant directory (all roles), not the caller's org-chart subtree.
@@ -874,7 +877,7 @@ function ProjectsTab({
   client: Client;
   projects: FullProject[];
   tasksByProject: Map<number, FullTask[]>;
-  healthByProject: Map<number, string>;
+  healthByProject: Map<number, { health: string; isManual: boolean }>;
   loading: boolean;
   expanded: Record<number, boolean>;
   nameOf: (uid: number) => string;
@@ -953,6 +956,67 @@ function ProjectsTab({
   );
 }
 
+// Clickable health pill on a project row: opens a small menu to set the manual
+// health override (Excellent / On track / At risk / Critical) or clear back to
+// auto. Same override + invalidation as the project detail page's "Set status";
+// the manager-project-health query is refetched on success so the pill updates.
+// stopPropagation keeps a click from toggling the project row open/closed.
+function ProjectHealthMenu({ projectId, health, isManual }: { projectId: number; health: string; isManual: boolean }) {
+  const meta = healthMeta(health);
+  const setOverride = useSetProjectHealthOverride();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const pick = (h: string | null) => { setOpen(false); setOverride.mutate({ projectId, health: h }); };
+
+  return (
+    <span ref={ref} className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={setOverride.isPending}
+        title={isManual ? 'Health set manually — click to change' : 'Set health'}
+        aria-label={`Set health for this project (currently ${meta.label})`}
+        className="inline-flex items-center gap-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-60"
+      >
+        <TonePill tone={meta.tone}>{meta.label}</TonePill>
+        {isManual ? <Pencil className="h-3 w-3 text-muted-foreground" aria-hidden /> : null}
+      </button>
+      {open ? (
+        <span className="absolute right-0 top-7 z-50 block w-44 rounded-xl border border-border bg-popover p-1 text-left text-popover-foreground shadow-xl">
+          <span className="block px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Set health</span>
+          {MANUAL_HEALTH.map((opt) => {
+            const m = healthMeta(opt.value);
+            const active = health === opt.value && isManual;
+            return (
+              <button key={opt.value} type="button" onClick={() => pick(opt.value)}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-primary/5">
+                <span className={cn('h-2 w-2 rounded-full', m.dot)} />
+                <span className="flex-1">{opt.label}</span>
+                {active ? <Check className="h-3.5 w-3.5 text-primary" /> : null}
+              </button>
+            );
+          })}
+          <span className="my-1 block h-px bg-border" />
+          <button type="button" onClick={() => pick(null)} disabled={!isManual}
+            className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-primary/5 disabled:opacity-40">
+            Clear override (auto)
+          </button>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function ProjectCard({
   project,
   tasks,
@@ -969,7 +1033,7 @@ function ProjectCard({
 }: {
   project: FullProject;
   tasks: FullTask[];
-  health?: string;
+  health?: { health: string; isManual: boolean };
   open: boolean;
   nameOf: (uid: number) => string;
   onToggle: () => void;
@@ -1049,11 +1113,10 @@ function ProjectCard({
           </div>
         ) : null}
         {/* Health (5-tier, auto/overridden) sits alongside the lifecycle status:
-            health = "how is it going", status = "what stage is it in". */}
+            health = "how is it going", status = "what stage is it in". Click the
+            pill to set it manually (same override as the project detail page). */}
         {health ? (
-          <span title={`Health: ${healthMeta(health).label}`}>
-            <TonePill tone={healthMeta(health).tone}>{healthMeta(health).label}</TonePill>
-          </span>
+          <ProjectHealthMenu projectId={project.id} health={health.health} isManual={health.isManual} />
         ) : null}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
