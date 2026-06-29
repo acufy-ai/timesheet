@@ -360,8 +360,10 @@ export const authApi = {
 };
 
 export const dashboardApi = {
-  managerTeamOverview: () =>
-    api.get<ManagerTeamOverview>('/dashboard/manager-team-overview'),
+  managerTeamOverview: (weekOffset = 0) =>
+    api.get<ManagerTeamOverview>('/dashboard/manager-team-overview', {
+      params: weekOffset ? { week_offset: weekOffset } : undefined,
+    }),
   managerProjectHealth: () =>
     api.get<ManagerProjectHealth>('/dashboard/manager-project-health'),
   managerFinancials: () =>

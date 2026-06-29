@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Search,
@@ -182,6 +183,62 @@ function BillableCard({ data }: { data: TeamBillableStats }) {
 }
 
 // One on-time week dot. Filled green = on time, red = late, hollow = no activity.
+// Week stepper for the team-at-a-glance stats. Steps back one week at a time
+// (◀), forward toward the present (▶, disabled at the current week since there's
+// no future to show), and the label doubles as a "back to this week" reset.
+function WeekToggle({
+  offset, onChange, weekStart, weekEnd,
+}: {
+  offset: number;
+  onChange: (o: number) => void;
+  weekStart?: string;
+  weekEnd?: string;
+}) {
+  const atCurrent = offset === 0;
+  const fmt = (iso?: string) =>
+    iso ? new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+  const label = atCurrent
+    ? 'This week'
+    : weekStart && weekEnd
+      ? `${fmt(weekStart)} – ${fmt(weekEnd)}`
+      : offset === -1 ? 'Last week' : `${-offset} weeks ago`;
+  const AT_LIMIT = -12;
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-full border border-border bg-card p-0.5 text-sm">
+      <button
+        type="button"
+        onClick={() => onChange(Math.max(AT_LIMIT, offset - 1))}
+        disabled={offset <= AT_LIMIT}
+        aria-label="Previous week"
+        className="grid h-7 w-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:opacity-40"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(0)}
+        disabled={atCurrent}
+        title={atCurrent ? undefined : 'Back to this week'}
+        className={cn(
+          'min-w-[6.5rem] rounded-full px-2 py-1 text-center text-xs font-medium tabular-nums transition-colors',
+          atCurrent ? 'text-foreground' : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground',
+        )}
+      >
+        {label}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(Math.min(0, offset + 1))}
+        disabled={atCurrent}
+        aria-label="Next week"
+        className="grid h-7 w-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:opacity-40"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
 function WeekDot({ status, label }: { status: 'on_time' | 'late' | 'none'; label: string }) {
   return (
     <span
@@ -766,7 +823,9 @@ function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; co
 export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const team = useManagerTeamOverview();
+  // Which week the team-at-a-glance stats show: 0 = current, -1 = last week, …
+  const [weekOffset, setWeekOffset] = useState(0);
+  const team = useManagerTeamOverview(true, weekOffset);
   const billable = useTeamBillableStats();
   const onTime = useTeamOnTimeStats();
   const projectMatrix = useTeamProjectMatrix();
@@ -875,6 +934,16 @@ export function DashboardPage() {
         primary={
           <>
             <QuickLogButton />
+            {/* Week stepper: look back at previous weeks' team stats. Team view
+                only — the per-week roster/tiles come from the team overview. */}
+            {!noTeamAccess && managerView === 'team' ? (
+              <WeekToggle
+                offset={weekOffset}
+                onChange={setWeekOffset}
+                weekStart={overview?.week_start}
+                weekEnd={overview?.week_end}
+              />
+            ) : null}
             {/* Customize: tailor which tiles show, their order, and columns. */}
             {!noTeamAccess && managerView === 'team' ? (
               <button
@@ -943,7 +1012,7 @@ export function DashboardPage() {
               value={`${onTrack}/${overview?.team_size ?? 0}`}
               label="Team on track"
               info={infoTextFor('Team on track')}
-              hint="as of today"
+              hint={weekOffset < 0 ? 'full week' : 'as of today'}
             />
             <StatTile
               Icon={Clock}
@@ -962,7 +1031,7 @@ export function DashboardPage() {
               Icon={TreePalm}
               tone="sky"
               value={ptoThisWeek}
-              label="PTO this week"
+              label={weekOffset < 0 ? 'PTO that week' : 'PTO this week'}
               info={infoTextFor('PTO this week')}
               hint={`${overview?.pending_time_off_count ?? 0} requests pending`}
             />
@@ -1080,9 +1149,9 @@ export function DashboardPage() {
                             {m.is_repeatedly_late ? <span className="ml-1.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-600 dark:text-amber-300">Late</span> : null}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {loggedDays}/{m.working_days_in_week} days logged this week
+                            {loggedDays}/{m.working_days_in_week} days logged {weekOffset < 0 ? 'that week' : 'this week'}
                             {loggedDays > m.submitted_days ? ` · ${m.submitted_days} submitted` : ''}
-                            {m.upcoming_pto_starts_at ? ` · PTO from ${m.upcoming_pto_starts_at}` : ''}
+                            {weekOffset === 0 && m.upcoming_pto_starts_at ? ` · PTO from ${m.upcoming_pto_starts_at}` : ''}
                           </p>
                         </div>
                         <TonePill tone={tone}>{label}</TonePill>

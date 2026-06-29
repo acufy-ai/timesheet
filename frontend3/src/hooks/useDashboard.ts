@@ -9,12 +9,14 @@ import { dashboardApi, dashboardSummaryApi, tasksApi } from '@/api/client';
 // dashboard reflects recent submissions; project health is cheaper to leave
 // cached longer.
 
-export function useManagerTeamOverview(enabled = true) {
+export function useManagerTeamOverview(enabled = true, weekOffset = 0) {
   return useQuery({
-    queryKey: ['dashboard', 'manager-team-overview'],
-    queryFn: () => dashboardApi.managerTeamOverview().then((r) => r.data),
+    queryKey: ['dashboard', 'manager-team-overview', weekOffset],
+    queryFn: () => dashboardApi.managerTeamOverview(weekOffset).then((r) => r.data),
     enabled,
-    staleTime: 5_000,
+    // Past weeks are immutable history, so they cache far longer; the current
+    // week stays fresh so recent submissions show up.
+    staleTime: weekOffset < 0 ? 5 * 60_000 : 5_000,
   });
 }
 

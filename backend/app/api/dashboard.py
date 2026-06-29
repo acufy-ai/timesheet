@@ -992,6 +992,11 @@ def _working_days_between(start: date, end_inclusive: date) -> int:
 
 @router.get("/manager-team-overview", response_model=ManagerTeamOverviewResponse)
 async def get_manager_team_overview(
+    week_offset: int = Query(
+        0, le=0, ge=-12,
+        description="Weeks back from the current week. 0 = current week "
+        "(counted week-to-date); negative = a past, fully-elapsed week.",
+    ),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -999,6 +1004,10 @@ async def get_manager_team_overview(
 
     Authorization mirrors `/dashboard/team-daily-overview`: MANAGER /
     MANAGER / VIEWER / ADMIN. EMPLOYEE and PLATFORM_ADMIN get 403.
+
+    `week_offset` lets the dashboard look back at previous weeks. For the
+    current week (offset 0) counts are week-to-date (bounded by today); for a
+    past week the whole Mon-Sun week is counted (it's already elapsed).
     """
     if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         raise HTTPException(
@@ -1018,10 +1027,15 @@ async def get_manager_team_overview(
     # Week starts Monday for the manager view. We don't read the
     # tenant week_start_day setting here — Mon-Fri working weeks are
     # the universal frame for "is the team on track this week".
-    week_start = today - timedelta(days=today.weekday())
+    current_week_start = today - timedelta(days=today.weekday())
+    week_start = current_week_start + timedelta(weeks=week_offset)
     week_end = week_start + timedelta(days=6)
     next_week_start = week_start + timedelta(days=7)
     next_week_end = next_week_start + timedelta(days=6)
+    # Upper bound for week-to-date counts: today for the current week (it's still
+    # in progress), the full week_end for a past, already-elapsed week.
+    is_past_week = week_offset < 0
+    count_upper = week_end if is_past_week else today
 
     team_member_ids = await _get_scoped_employee_ids(db, current_user)
     if not team_member_ids:
@@ -1052,7 +1066,7 @@ async def get_manager_team_overview(
         .where(
             TimeEntry.user_id.in_(team_member_ids),
             TimeEntry.entry_date >= week_start,
-            TimeEntry.entry_date <= today,
+            TimeEntry.entry_date <= count_upper,
             TimeEntry.status.in_(
                 [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
             ),
@@ -1071,7 +1085,7 @@ async def get_manager_team_overview(
         .where(
             TimeEntry.user_id.in_(team_member_ids),
             TimeEntry.entry_date >= week_start,
-            TimeEntry.entry_date <= today,
+            TimeEntry.entry_date <= count_upper,
             TimeEntry.status.in_(
                 [TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
             ),
@@ -1145,7 +1159,7 @@ async def get_manager_team_overview(
     for member in team_members:
         submitted_dates = submitted_dates_by_user.get(member.id, set())
         logged_dates = logged_dates_by_user.get(member.id, set())
-        working_days = _working_days_between(week_start, today)
+        working_days = _working_days_between(week_start, count_upper)
         is_repeatedly_late = member.id in late_user_ids
 
         members.append(
