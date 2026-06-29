@@ -36,10 +36,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { contractsApi, clientPortalApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Button, Card, Empty, Input, ListSkeleton, Modal, Toast, TonePill, WorkspaceHeader, RequiredMark, FieldError, errorBorder } from '@/components/ui';
+import { Button, Card, Empty, Input, ListSkeleton, Modal, Toast, TonePill, WorkspaceHeader, RequiredMark, FieldError } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
 import { ImportClientsModal } from '@/components/clients/ImportClientsModal';
+import { NoteModal, type NoteTarget } from '@/components/notes/NoteModal';
 import {
   useAllProjects,
   useAssignableUsers,
@@ -51,7 +52,6 @@ import {
   useContracts,
   useCreateClient,
   useCreateClientContact,
-  useCreateClientNote,
   useCreateContract,
   useCreateProject,
   useCreateRoleRate,
@@ -70,7 +70,6 @@ import {
   useSetClientTeam,
   useUpdateClient,
   useUpdateClientContact,
-  useUpdateClientNote,
   useUpdateContract,
   useUpdateProject,
   useUpdateRoleRate,
@@ -90,7 +89,6 @@ import type {
   ClientContactBody,
   ClientNote,
   ClientCapability,
-  ClientNoteBody,
   ClientPortalUser,
   ClientRoleRate,
   ClientRoleRateBody,
@@ -315,6 +313,16 @@ export function ClientsPage() {
   const [importing, setImporting] = useState(false);
   const [projectModal, setProjectModal] = useState<{ open: boolean; project: FullProject | null }>({ open: false, project: null });
   const [taskModal, setTaskModal] = useState<{ open: boolean; project: FullProject | null; task: FullTask | null }>({ open: false, project: null, task: null });
+  // Add-note launched from a project or task row (locked target).
+  const [noteModal, setNoteModal] = useState<{ open: boolean; target: NoteTarget | null }>({ open: false, target: null });
+  const openNoteFor = (project: FullProject, task?: FullTask) => setNoteModal({
+    open: true,
+    target: {
+      mode: 'locked',
+      projectId: project.id, projectName: project.name, projectCode: project.code,
+      taskId: task?.id ?? null, taskName: task?.name ?? null, taskStatus: task?.status ?? null,
+    },
+  });
 
   const flashAndFade = (tone: 'ok' | 'err', text: string) => {
     setFlash({ tone, text });
@@ -668,6 +676,7 @@ export function ClientsPage() {
                   onAddTask={(p) => setTaskModal({ open: true, project: p, task: null })}
                   onEditTask={(p, t) => setTaskModal({ open: true, project: p, task: t })}
                   onDeleteTask={(t) => void removeTask(t)}
+                  onAddNote={openNoteFor}
                 />
               ) : activeTab === 'contacts' ? (
                 <ContactsTab
@@ -774,6 +783,18 @@ export function ClientsPage() {
         />
       ) : null}
 
+      {/* Add-note launched from a project/task row (locked target). */}
+      {activeClient && noteModal.target ? (
+        <NoteModal
+          open={noteModal.open}
+          clientId={activeClient.id}
+          target={noteModal.target}
+          onClose={() => setNoteModal({ open: false, target: null })}
+          onSaved={(m) => { flashAndFade('ok', m); }}
+          onError={(m) => flashAndFade('err', m)}
+        />
+      ) : null}
+
       <ConfirmDialog
         confirm={confirm}
         onClose={() => setConfirm(null)}
@@ -875,6 +896,7 @@ function ProjectsTab({
   onAddTask,
   onEditTask,
   onDeleteTask,
+  onAddNote,
 }: {
   client: Client;
   projects: FullProject[];
@@ -891,6 +913,7 @@ function ProjectsTab({
   onAddTask: (p: FullProject) => void;
   onEditTask: (p: FullProject, t: FullTask) => void;
   onDeleteTask: (t: FullTask) => void;
+  onAddNote: (p: FullProject, t?: FullTask) => void;
 }) {
   const [search, setSearch] = useState('');
   const q = search.trim().toLowerCase();
@@ -951,6 +974,7 @@ function ProjectsTab({
             onAddTask={() => onAddTask(p)}
             onEditTask={(t) => onEditTask(p, t)}
             onDeleteTask={onDeleteTask}
+            onAddNote={(t) => onAddNote(p, t)}
           />
         ))
       )}
@@ -1014,6 +1038,7 @@ function ProjectCard({
   onAddTask,
   onEditTask,
   onDeleteTask,
+  onAddNote,
 }: {
   project: FullProject;
   tasks: FullTask[];
@@ -1027,6 +1052,7 @@ function ProjectCard({
   onAddTask: () => void;
   onEditTask: (t: FullTask) => void;
   onDeleteTask: (t: FullTask) => void;
+  onAddNote: (t?: FullTask) => void;
 }) {
   // "Progress" = done tasks over total, driven by the 3-state task status.
   const done = tasks.filter((t) => t.status === 'done').length;
@@ -1104,6 +1130,7 @@ function ProjectCard({
         ) : null}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton label="Add note to this project" onClick={() => onAddNote()} Icon={StickyNote} sm />
           <IconButton label="Edit project" onClick={onEdit} Icon={Pencil} sm />
           <IconButton
             label={project.is_active ? 'Archive project' : 'Unarchive project'}
@@ -1136,7 +1163,7 @@ function ProjectCard({
           ) : (
             <div className="space-y-1.5">
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} nameOf={nameOf} onEdit={() => onEditTask(t)} onDelete={() => onDeleteTask(t)} />
+                <TaskRow key={t.id} task={t} nameOf={nameOf} onEdit={() => onEditTask(t)} onDelete={() => onDeleteTask(t)} onAddNote={() => onAddNote(t)} />
               ))}
             </div>
           )}
@@ -1146,7 +1173,7 @@ function ProjectCard({
   );
 }
 
-function TaskRow({ task, nameOf, onEdit, onDelete }: { task: FullTask; nameOf: (uid: number) => string; onEdit: () => void; onDelete: () => void }) {
+function TaskRow({ task, nameOf, onEdit, onDelete, onAddNote }: { task: FullTask; nameOf: (uid: number) => string; onEdit: () => void; onDelete: () => void; onAddNote: () => void }) {
   const update = useUpdateTask();
   const assignees = task.assignee_ids ?? [];
   const shown = assignees.slice(0, 3);
@@ -1255,6 +1282,7 @@ function TaskRow({ task, nameOf, onEdit, onDelete }: { task: FullTask; nameOf: (
         </span>
       ) : null}
       <div className="flex shrink-0 items-center gap-0.5">
+        <IconButton label="Add note to this task" onClick={onAddNote} Icon={StickyNote} sm />
         <IconButton label="Edit task" onClick={onEdit} Icon={Pencil} sm />
         <IconButton label="Delete task" onClick={onDelete} Icon={Trash2} sm danger />
       </div>
@@ -2148,9 +2176,8 @@ function NotesTab({
       <NoteModal
         open={modal.open}
         clientId={clientId}
+        target={{ mode: 'free', projects, tasksByProject }}
         note={modal.note}
-        projects={projects}
-        tasksByProject={tasksByProject}
         onClose={() => setModal({ open: false, note: null })}
         onSaved={onSaved}
         onError={onError}
@@ -3711,188 +3738,6 @@ function RoleModal({
               'Save changes'
             ) : (
               'Create role'
-            )}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function NoteModal({
-  open,
-  clientId,
-  note,
-  projects,
-  tasksByProject,
-  onClose,
-  onSaved,
-  onError,
-}: {
-  open: boolean;
-  clientId: number;
-  note: ClientNote | null;
-  projects: FullProject[];
-  tasksByProject: Map<number, FullTask[]>;
-  onClose: () => void;
-  onSaved: (msg: string) => void;
-  onError: (msg: string) => void;
-}) {
-  const isEdit = !!note;
-  const create = useCreateClientNote();
-  const update = useUpdateClientNote();
-
-  const [date, setDate] = useState('');
-  const [body, setBody] = useState('');
-  // Optional target. '' = none. Picking a project filters the task list; the
-  // task is optional. The Status dropdown sets the picked task's status; only
-  // when it's 'blocked' does the note body become the task's blocked reason.
-  const [projectId, setProjectId] = useState('');
-  const [taskId, setTaskId] = useState('');
-  const [taskStatus, setTaskStatus] = useState<TaskStatus | ''>('');
-  const [error, setError] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // Tasks of the chosen project drive the task dropdown.
-  const projectTasks = projectId ? (tasksByProject.get(Number(projectId)) ?? []) : [];
-
-  useEffect(() => {
-    if (!open) return;
-    // Default a NEW note's date to today (local YYYY-MM-DD); editing keeps the
-    // existing date. A note is almost always recorded the day it's written.
-    const today = (() => {
-      const d = new Date();
-      const m = `${d.getMonth() + 1}`.padStart(2, '0');
-      const day = `${d.getDate()}`.padStart(2, '0');
-      return `${d.getFullYear()}-${m}-${day}`;
-    })();
-    setDate(note?.note_date ?? today);
-    setBody(note?.body ?? '');
-    setProjectId(note?.project_id != null ? String(note.project_id) : '');
-    setTaskId(note?.task_id != null ? String(note.task_id) : '');
-    setTaskStatus('');
-    setError(null);
-    setErrors({});
-  }, [open, note]);
-
-  // Prefill the Status dropdown with the selected task's CURRENT status, so
-  // adding a note doesn't accidentally change it (you only change it on purpose).
-  useEffect(() => {
-    if (!taskId) { setTaskStatus(''); return; }
-    const t = projectTasks.find((x) => x.id === Number(taskId));
-    setTaskStatus((t?.status as TaskStatus) ?? 'to_do');
-  }, [taskId, projectTasks]);
-
-  const saving = create.isPending || update.isPending;
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const nextErrors: Record<string, string> = {};
-    if (!body.trim()) nextErrors.body = 'Note body is required.';
-    if (Object.keys(nextErrors).length) {
-      setErrors(nextErrors);
-      return;
-    }
-    const data: ClientNoteBody = {
-      note_date: date || null,
-      body: body.trim(),
-      project_id: projectId ? Number(projectId) : null,
-      task_id: taskId ? Number(taskId) : null,
-      // Only send a status when a task is targeted; it drives the task's status.
-      task_status: taskId && taskStatus ? taskStatus : null,
-    };
-    try {
-      if (isEdit && note) {
-        await update.mutateAsync({ clientId, id: note.id, data });
-        onSaved('Note updated.');
-      } else {
-        await create.mutateAsync({ clientId, data });
-        onSaved('Note created.');
-      }
-      onClose();
-    } catch (err) {
-      onError(errText(err, 'Could not save the note.'));
-    }
-  }
-
-  return (
-    <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-2xl" flushBottom>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={labelClass}>Date</label>
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          <p className="mt-1 text-[11px] text-muted-foreground">The note is recorded under your name automatically.</p>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className={labelClass}>Project</label>
-            <select
-              value={projectId}
-              onChange={(e) => { setProjectId(e.target.value); setTaskId(''); }}
-              className={selectClass}
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}{p.code ? ` · ${p.code}` : ''}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className={labelClass}>Task</label>
-            <select
-              value={taskId}
-              onChange={(e) => setTaskId(e.target.value)}
-              disabled={!projectId}
-              className={cn(selectClass, !projectId && 'opacity-60')}
-            >
-              <option value="">{projectId ? 'No task' : 'Pick a project first'}</option>
-              {projectTasks.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-        {/* Task status: only appears once a task is picked. Sets the task's
-            status; choosing "Blocked" maps this note into its blocked reason. */}
-        {taskId ? (
-          <div className="sm:max-w-[50%]">
-            <label className={labelClass}>Task status</label>
-            <select
-              value={taskStatus}
-              onChange={(e) => setTaskStatus(e.target.value as TaskStatus)}
-              className={selectClass}
-            >
-              {(Object.keys(TASK_STATUS_LABEL) as TaskStatus[]).map((s) => (
-                <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-        <div>
-          <label className={labelClass}>Note<RequiredMark /></label>
-          <textarea value={body} onChange={(e) => { setBody(e.target.value); setErrors((p) => ({ ...p, body: '' })); }} rows={4} placeholder="Write your note..." className={cn(textareaClass, errorBorder(!!errors.body))} required />
-          <FieldError error={errors.body} />
-          {taskId && taskStatus === 'blocked' ? (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              The task status is "Blocked", so this note becomes its "Why is it blocked?" reason.
-            </p>
-          ) : null}
-        </div>
-        {error ? <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p> : null}
-        <div className="sticky bottom-0 -mx-4 mt-2 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
-          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" size="sm" disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
-              </>
-            ) : isEdit ? (
-              'Save changes'
-            ) : (
-              'Create note'
             )}
           </Button>
         </div>

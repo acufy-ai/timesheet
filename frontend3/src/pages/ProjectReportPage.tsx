@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, Loader2, Pencil } from 'lucide-react';
+import { ArrowLeft, Check, Loader2, Pencil, StickyNote } from 'lucide-react';
 
-import { WorkspaceHeader } from '@/components/ui';
+import { Toast, WorkspaceHeader } from '@/components/ui';
+import { NoteModal } from '@/components/notes/NoteModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
 import { useEvm, useManagerFinancials, usePortfolio, useProjectTaskBreakdown, useRevenueRecognition, useSetProjectHealthOverride } from '@/hooks/useDashboard';
@@ -32,6 +33,8 @@ export function ProjectReportPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const projectId = Number(id);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [toast, setToast] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
   // Where "Back" returns: the tab/screen the user came from. Defaults to the
   // Projects tab. 'dashboard' = the manager dashboard (e.g. clients widget).
@@ -98,14 +101,37 @@ export function ProjectReportPage() {
             )
           ) : null}
         </div>
-        {canOverride ? (
-          <HealthOverrideMenu
-            projectId={projectId}
-            current={header.health}
-            isManual={header.isManualOverride}
-          />
-        ) : null}
+        <div className="flex items-center gap-2">
+          {header.clientId ? (
+            <button
+              type="button"
+              onClick={() => setNoteOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <StickyNote className="h-3.5 w-3.5" /> Add note
+            </button>
+          ) : null}
+          {canOverride ? (
+            <HealthOverrideMenu
+              projectId={projectId}
+              current={header.health}
+              isManual={header.isManualOverride}
+            />
+          ) : null}
+        </div>
       </div>
+
+      {header.clientId ? (
+        <NoteModal
+          open={noteOpen}
+          clientId={header.clientId}
+          target={{ mode: 'locked', projectId, projectName: header.projectName }}
+          onClose={() => setNoteOpen(false)}
+          onSaved={(m) => setToast({ tone: 'ok', text: m })}
+          onError={(m) => setToast({ tone: 'err', text: m })}
+        />
+      ) : null}
+      {toast ? <Toast tone={toast.tone} message={toast.text} onDismiss={() => setToast(null)} /> : null}
 
       {loading ? (
         <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>

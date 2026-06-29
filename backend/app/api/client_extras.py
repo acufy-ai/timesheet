@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.crud.client import get_client_by_id
+from app.models.assignments import TaskAssignee
 from app.models.client_extras import ClientContact, ClientNote, ClientRoleRate
 from app.models.project import Project
 from app.models.task import Task, TaskStatus
@@ -174,6 +175,26 @@ async def delete_role_rate(
 
 # ── Notes ────────────────────────────────────────────────────────────────────
 
+async def _is_task_assignee(db: AsyncSession, user_id: int, task_id: int) -> bool:
+    """True if the user is assigned to the task (mirrors the /tasks/{id}/progress
+    assignee check). The authorization basis for a resource adding their own note."""
+    return (await db.execute(
+        select(TaskAssignee.user_id).where(
+            TaskAssignee.task_id == task_id, TaskAssignee.user_id == user_id)
+    )).first() is not None
+
+
+async def _assert_note_write_access(db: AsyncSession, user: User, client_id: int, task_id) -> None:
+    """Who may write a note: a client manager / PM / admin (full access, any
+    note), OR a resource ASSIGNED to the target task (their own task note). The
+    assignee path is gated on the specific task_id; the task's project/client
+    link is validated separately by _resolve_note_link, so an assignee can't post
+    to an arbitrary client. Raises 403 otherwise."""
+    if task_id is not None and await _is_task_assignee(db, user.id, task_id):
+        return
+    await assert_client_access(db, user, client_id)
+
+
 async def _resolve_note_link(db: AsyncSession, tenant_id: int, client_id: int,
                              project_id, task_id) -> tuple:
     """Validate the optional project/task link and return (project, task).
@@ -261,7 +282,11 @@ async def create_note(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    await _require_client(db, client_id, current_user.tenant_id, current_user)
+    # Client must exist (404). Access is checked by _assert_note_write_access
+    # below (manager/PM/admin OR an assignee of the target task) rather than the
+    # client-manager-only gate, so resources can add notes on their own tasks.
+    await _require_client(db, client_id, current_user.tenant_id, None)
+    await _assert_note_write_access(db, current_user, client_id, payload.task_id)
     _, task = await _resolve_note_link(
         db, current_user.tenant_id, client_id, payload.project_id, payload.task_id)
     # Authorship is stamped from the logged-in user; never caller-supplied.
@@ -286,10 +311,14 @@ async def update_note(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    row = await _get_scoped(db, ClientNote, client_id, row_id, current_user.tenant_id, current_user)
+    row = await _get_scoped(db, ClientNote, client_id, row_id, current_user.tenant_id, None)
     sent = payload.model_dump(exclude_unset=True)
     # task_status is transient (drives the linked task, not a column on the note).
     task_status = sent.pop("task_status", None)
+    # Write access: a manager/PM/admin, OR an assignee of the note's task (its
+    # existing task before any patch, so an assignee can't re-target to a task
+    # they're not on). Checked against the pre-patch task_id.
+    await _assert_note_write_access(db, current_user, client_id, row.task_id)
     for field, value in sent.items():
         setattr(row, field, value)
     # Validate the (possibly new) link and apply status/reason to the task. Use

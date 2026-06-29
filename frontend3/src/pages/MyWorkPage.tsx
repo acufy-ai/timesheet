@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Briefcase, Check, ChevronRight, Folder, Loader2, Pencil, X } from 'lucide-react';
+import { Briefcase, Check, ChevronRight, Folder, Loader2, Pencil, StickyNote, X } from 'lucide-react';
 
 import { Card, Empty, TonePill } from '@/components/ui';
+import { NoteModal, type NoteTarget } from '@/components/notes/NoteModal';
 import { useMyWork, useUpdateTaskProgress } from '@/hooks/useDashboard';
-import type { MyWorkTask } from '@/types/dashboard';
+import type { MyWorkProject, MyWorkTask } from '@/types/dashboard';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 
@@ -22,7 +23,7 @@ const num = (v: string | number) => Math.round(Number(v));
 // An assignee's task row in My Work: status is an inline dropdown and the
 // description is editable (scoped /tasks/{id}/progress). Read-only fallback if
 // the task isn't editable by the caller.
-function TaskRow({ task, onFlash }: { task: MyWorkTask; onFlash: (tone: 'ok' | 'err', text: string) => void }) {
+function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (tone: 'ok' | 'err', text: string) => void; onAddNote: () => void }) {
   const update = useUpdateTaskProgress();
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description ?? '');
@@ -74,6 +75,14 @@ function TaskRow({ task, onFlash }: { task: MyWorkTask; onFlash: (tone: 'ok' | '
               <Pencil className="h-3.5 w-3.5" />
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={onAddNote}
+            className="rounded-md p-1 text-muted-foreground hover:bg-primary/10 hover:text-foreground"
+            title="Add a note to this task"
+          >
+            <StickyNote className="h-3.5 w-3.5" />
+          </button>
         </span>
       </div>
       {editingDesc ? (
@@ -129,6 +138,19 @@ export function MyWorkPage() {
     setFlash({ tone, text });
     window.setTimeout(() => setFlash(null), 2500);
   };
+  // Add-note from a task row: a locked target (this client/project/task), the
+  // note authored by the current resource. The backend allows it because they're
+  // an assignee on the task.
+  const [noteModal, setNoteModal] = useState<{ open: boolean; clientId: number; target: NoteTarget } | null>(null);
+  const addNote = (clientId: number, p: MyWorkProject, t: MyWorkTask) => setNoteModal({
+    open: true,
+    clientId,
+    target: {
+      mode: 'locked',
+      projectId: p.project_id, projectName: p.project_name, projectCode: p.code,
+      taskId: t.task_id, taskName: t.name, taskStatus: t.status ?? null,
+    },
+  });
 
   // Default-select the first client once data lands (or if the URL points at a
   // client this person no longer has work under).
@@ -256,7 +278,7 @@ export function MyWorkPage() {
                               {/* Indented + ruled so the tasks clearly belong to the project above. */}
                               <div className="space-y-1 border-l-2 border-primary/20 pl-2.5">
                                 {p.tasks.map((t) => (
-                                  <TaskRow key={t.task_id} task={t} onFlash={flashAndFade} />
+                                  <TaskRow key={t.task_id} task={t} onFlash={flashAndFade} onAddNote={() => addNote(activeClient.client_id, p, t)} />
                                 ))}
                               </div>
                             </>
@@ -273,6 +295,17 @@ export function MyWorkPage() {
           </div>
         </div>
       )}
+
+      {noteModal ? (
+        <NoteModal
+          open={noteModal.open}
+          clientId={noteModal.clientId}
+          target={noteModal.target}
+          onClose={() => setNoteModal(null)}
+          onSaved={(m) => { flashAndFade('ok', m); }}
+          onError={(m) => flashAndFade('err', m)}
+        />
+      ) : null}
     </div>
   );
 }
