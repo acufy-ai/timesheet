@@ -70,7 +70,7 @@ function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (ton
               type="button"
               onClick={() => { setDescDraft(task.description ?? ''); setEditingDesc(true); }}
               className="rounded-md p-1 text-muted-foreground hover:bg-primary/10 hover:text-foreground"
-              title="Edit description"
+              title="Edit task description"
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -85,13 +85,17 @@ function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (ton
           </button>
         </span>
       </div>
+      {/* Description: the single "what this task is" field, ALWAYS visible (no
+          need to open edit to read it). Distinct from the note icon above, which
+          adds dated, authored notes. Editing it overwrites the one description. */}
       {editingDesc ? (
         <div className="mt-1.5 space-y-1.5">
+          <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Description</label>
           <textarea
             value={descDraft}
             onChange={(e) => setDescDraft(e.target.value)}
             rows={2}
-            placeholder="Add notes / details for this task"
+            placeholder="Describe what this task involves…"
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[12.5px] text-foreground"
           />
           <div className="flex items-center gap-1.5">
@@ -106,7 +110,17 @@ function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (ton
           </div>
         </div>
       ) : task.description ? (
-        <p className="mt-1 text-[12px] text-muted-foreground">{task.description}</p>
+        <p className="mt-1 text-[12px] text-muted-foreground">
+          <span className="font-medium text-foreground/70">Description: </span>{task.description}
+        </p>
+      ) : canEdit ? (
+        <button
+          type="button"
+          onClick={() => { setDescDraft(''); setEditingDesc(true); }}
+          className="mt-1 text-[12px] italic text-muted-foreground/70 hover:text-primary"
+        >
+          Add a description
+        </button>
       ) : null}
     </div>
   );
