@@ -15,6 +15,7 @@ import { PortalRouter } from '@/pages/PortalRouter';
 import { ClientProjectDetailPage } from '@/pages/ClientProjectDetailPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { InsightsPage } from '@/pages/InsightsPage';
+import { PublicDashboardPage } from '@/pages/PublicDashboardPage';
 import { ProjectReportPage } from '@/pages/ProjectReportPage';
 import { InboxPage } from '@/pages/InboxPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -80,6 +81,8 @@ export default function App() {
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/set-password" element={<SetPasswordPage />} />
               <Route path="/verify-account" element={<VerifyAccountPage />} />
+              {/* Public read-only shared dashboard (no login) */}
+              <Route path="/shared/:token" element={<PublicDashboardPage />} />
 
               {/* Dev-only design playground */}
               <Route path="/primitives" element={<PrimitivesPage />} />

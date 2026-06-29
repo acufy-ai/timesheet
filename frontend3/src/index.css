@@ -231,3 +231,26 @@ main h2 {
 }
 .lever-range:focus-visible::-webkit-slider-thumb { outline: 2px solid hsl(var(--ring, var(--primary))); outline-offset: 2px; }
 .lever-range:focus-visible::-moz-range-thumb { outline: 2px solid hsl(var(--ring, var(--primary))); outline-offset: 2px; }
+
+/* ── Dashboard export (print) ────────────────────────────────────────────────
+   "Export / print" on a custom dashboard sets body.printing-dashboard, then
+   calls window.print(). These rules collapse the whole app to just the dashboard
+   region marked [data-print-dashboard]: everything else is hidden, and that
+   region is lifted out of the layout to fill the printed page. Edit handles
+   ([data-print-hide] / .print:hidden) are removed so the export is clean. */
+@media print {
+  body.printing-dashboard * { visibility: hidden !important; }
+  body.printing-dashboard [data-print-dashboard],
+  body.printing-dashboard [data-print-dashboard] * { visibility: visible !important; }
+  body.printing-dashboard [data-print-dashboard] {
+    position: absolute !important;
+    inset: 0 !important;
+    margin: 0 !important;
+    padding: 16px !important;
+    width: 100% !important;
+    background: #fff !important;
+  }
+  body.printing-dashboard [data-print-hide] { display: none !important; }
+  /* Keep widget cards from being split across pages. */
+  body.printing-dashboard [data-print-dashboard] .rounded-2xl { break-inside: avoid; }
+}

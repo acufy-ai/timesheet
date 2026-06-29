@@ -37,6 +37,9 @@ import type {
   TenantStatsEntry,
 } from '@/types/platform';
 import type {
+  CustomDashboard, CustomDashboardBody, DashboardShareResult, PublicDashboard,
+} from '@/types/customDashboard';
+import type {
   CreateTimeEntry,
   HistoryGroup,
   ListEntriesParams,
@@ -662,6 +665,27 @@ export const clientNotesApi = {
   // Authorized for assignees / project members as well as client managers.
   listForTask: (taskId: number) => api.get<ClientNote[]>(`/tasks/${taskId}/notes`),
   listForProject: (projectId: number) => api.get<ClientNote[]>(`/projects/${projectId}/notes`),
+};
+
+export const customDashboardsApi = {
+  list: () => api.get<CustomDashboard[]>('/dashboards'),
+  get: (id: number) => api.get<CustomDashboard>(`/dashboards/${id}`),
+  create: (data: CustomDashboardBody) => api.post<CustomDashboard>('/dashboards', data),
+  update: (id: number, data: CustomDashboardBody) => api.put<CustomDashboard>(`/dashboards/${id}`, data),
+  remove: (id: number) => api.delete(`/dashboards/${id}`),
+  // Public sharing (owner-only).
+  share: (id: number, mode: 'live' | 'snapshot') =>
+    api.post<DashboardShareResult>(`/dashboards/${id}/share`, { mode }),
+  refreshSnapshot: (id: number) =>
+    api.post<DashboardShareResult>(`/dashboards/${id}/share/refresh`),
+  revokeShare: (id: number) => api.delete(`/dashboards/${id}/share`),
+};
+
+// The public, unauthenticated read-only view of a shared dashboard. Uses a bare
+// axios call (NO auth interceptor) since the viewer may have no account.
+export const publicDashboardApi = {
+  get: (shareToken: string) =>
+    axios.get<PublicDashboard>(`${API_BASE}/public/dashboards/${encodeURIComponent(shareToken)}`),
 };
 
 export const auditApi = {

@@ -1196,6 +1196,62 @@ class FinancialSummary(BaseModel):
     currency: str = "USD"
 
 
+# ── Configurable Insights dashboards ─────────────────────────────────────────
+# `layout` is an opaque list of widget instances owned by the frontend:
+#   [{ "id", "type", "x", "y", "w", "h", "title"?, "config"? }]
+
+class CustomDashboardCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    is_shared: bool = False
+    layout: Optional[List[dict[str, Any]]] = None
+
+
+class CustomDashboardUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    is_shared: Optional[bool] = None
+    layout: Optional[List[dict[str, Any]]] = None
+
+
+class CustomDashboardResponse(BaseModel):
+    id: int
+    name: str
+    is_shared: bool
+    owner_user_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    is_owner: bool = False
+    layout: List[dict[str, Any]] = Field(default_factory=list)
+    # Public-share state (owner-facing). share_token is None when not published.
+    share_token: Optional[str] = None
+    share_mode: str = "live"
+    share_snapshot_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = {"from_attributes": True}
+
+
+class DashboardShareRequest(BaseModel):
+    """Publish (or re-publish) a dashboard behind a public no-login link."""
+    mode: str = Field("live", pattern="^(live|snapshot)$")
+
+
+class DashboardShareResponse(BaseModel):
+    share_token: str
+    share_mode: str
+    share_snapshot_at: Optional[datetime] = None
+
+
+class PublicDashboardResponse(BaseModel):
+    """What an unauthenticated viewer of a shared dashboard sees."""
+    name: str
+    layout: List[dict[str, Any]] = Field(default_factory=list)
+    owner_name: Optional[str] = None
+    mode: str = "live"
+    # Shared metric bundles the widgets read from (portfolio, financials, evm,
+    # revrec, resourcing, on-time). Mirrors what the live metric endpoints return.
+    data: dict[str, Any] = Field(default_factory=dict)
+    captured_at: Optional[datetime] = None
+
+
 class ResourcingAllocRow(BaseModel):
     project_id: int
     project_name: str

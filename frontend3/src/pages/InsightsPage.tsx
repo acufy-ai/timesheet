@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { BarChart3, CalendarRange, Layers, Loader2, SlidersHorizontal, TrendingUp } from 'lucide-react';
+import { BarChart3, CalendarRange, Layers, LayoutDashboard, Loader2, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
 import { Tooltip, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
 import { useEvm, useManagerFinancials, usePortfolio, useRevenueRecognition, useTeamResourcing } from '@/hooks/useDashboard';
+import { DashboardsTab } from '@/components/insights/DashboardsTab';
 import { FinancialsReport } from '@/components/dashboard/reports/FinancialsReport';
 import { InfoLabel, HealthInfoLabel } from '@/components/dashboard/InfoLabel';
 import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
@@ -32,7 +33,7 @@ function ClientLink({ clientId, name }: { clientId?: number | null; name: string
 // Resourcing, Portfolio, and Forecasts as the program builds them out. Admin
 // is intentionally excluded (they manage the workspace, not the money), and
 // employees never see it. Gated again here in case of direct navigation.
-export type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts';
+export type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts' | 'dashboards';
 
 const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   // Projects is the primary/first tab. key stays 'portfolio' (route/deep-link
@@ -41,6 +42,7 @@ const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   { key: 'financials', label: 'Financials', Icon: BarChart3 },
   { key: 'resourcing', label: 'Resourcing', Icon: Layers },
   { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
+  { key: 'dashboards', label: 'Dashboards', Icon: LayoutDashboard },
 ];
 
 const VALID_TABS = new Set<InsightTab>(TABS.map((t) => t.key));
@@ -87,6 +89,7 @@ export function InsightsPage() {
       {tab === 'financials' ? <FinancialsTab />
         : tab === 'resourcing' ? <ResourcingTab />
         : tab === 'portfolio' ? <PortfolioTab />
+        : tab === 'dashboards' ? <DashboardsTab />
         : <ForecastsTab />}
     </div>
   );

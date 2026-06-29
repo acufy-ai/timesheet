@@ -41,6 +41,7 @@ from .holiday import Holiday, HolidayType
 from .project_baseline import ProjectBaseline
 from .resource_allocation import ResourceAllocation
 from .project_health_config import ProjectHealthConfig
+from .dashboard import CustomDashboard
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserTaskAccess", "TaskAssignee", "ProjectManager", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
@@ -51,4 +52,5 @@ __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "
            "DismissedAttentionSignal", "UserEmailAlias", "UserClientAssignment",
            "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
            "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview",
-           "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig", "TaskDependency"]
+           "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig", "TaskDependency",
+           "CustomDashboard"]

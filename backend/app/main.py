@@ -20,6 +20,8 @@ from app.api import (
     client_portal,
     contracts,
     dashboard,
+    dashboards,
+    dashboards_public,
     departments,
     titles,
     holidays,
@@ -269,6 +271,8 @@ app.include_router(approvals.router)
 app.include_router(time_off.router)
 app.include_router(time_off_approvals.router)
 app.include_router(dashboard.router)
+app.include_router(dashboards.router)
+app.include_router(dashboards_public.router)  # unauthenticated public share view
 app.include_router(notifications.router)
 app.include_router(tenants.router)
 app.include_router(platform_settings.router)
