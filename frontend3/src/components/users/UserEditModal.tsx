@@ -32,6 +32,9 @@ interface FormState {
   // user reports to, and which is primary. manager_id mirrors the primary.
   manager_ids: number[];
   primary_manager_id: number | null;
+  // Top-of-org users (CEO/President) have no manager. When set, the reports-to
+  // requirement is bypassed and the user is saved with no manager.
+  no_manager: boolean;
   title: string;
   department: string;
   cost_rate: string; // PSA loaded hourly cost; '' = not set. Admin-editable.
@@ -55,6 +58,7 @@ function blankForm(): FormState {
     manager_id: '',
     manager_ids: [],
     primary_manager_id: null,
+    no_manager: false,
     title: '',
     department: '',
     cost_rate: '',
@@ -80,6 +84,9 @@ function fromUser(u: ManagedUser): FormState {
     manager_id: u.manager_id ?? '',
     manager_ids: u.manager_ids ?? (u.manager_id != null ? [u.manager_id] : []),
     primary_manager_id: u.primary_manager_id ?? u.manager_id ?? null,
+    // An existing INTERNAL user with no manager is treated as "no manager" so
+    // the box reflects reality and editing them doesn't suddenly require one.
+    no_manager: !u.is_external && u.manager_id == null && (u.manager_ids ?? []).length === 0,
     title: u.title ?? '',
     department: u.department ?? '',
     cost_rate: u.cost_rate != null ? String(u.cost_rate) : '',
@@ -277,11 +284,12 @@ export function UserEditModal({
       if (!form.department.trim()) {
         fieldErrors.department = 'A department is required.';
       }
+      // Top-of-org users (CEO/President) are exempt via the "no manager" box.
       const hasManager = multiManager
         ? form.manager_ids.length > 0
         : form.manager_id !== '';
-      if (!hasManager) {
-        fieldErrors.manager_id = 'Select who this user reports to.';
+      if (!form.no_manager && !hasManager) {
+        fieldErrors.manager_id = 'Select who this user reports to, or mark them as having no manager.';
       }
     }
     if (Object.keys(fieldErrors).length) {
@@ -295,7 +303,7 @@ export function UserEditModal({
     // Manager payload. External users have no manager. With multi-manager on,
     // send the full set + primary; otherwise the single manager_id (legacy).
     const managerFields: Pick<UpdateUserBody, 'manager_id' | 'manager_ids' | 'primary_manager_id'> =
-      form.is_external
+      form.is_external || form.no_manager
         ? { manager_id: null, manager_ids: [], primary_manager_id: null }
         : multiManager
           ? {
@@ -611,8 +619,21 @@ export function UserEditModal({
                     <FieldError error={errors.role} />
                   </div>
                   <div>
-                    <label className={labelClass}>Reports to<RequiredMark /></label>
-                    {multiManager ? (
+                    <label className={labelClass}>Reports to{form.no_manager ? null : <RequiredMark />}</label>
+                    {/* Top-of-org users (CEO/President) have no manager. Checking
+                        this hides the picker and bypasses the requirement. */}
+                    <label className="mb-1.5 flex cursor-pointer items-center gap-2 text-[13px] text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={form.no_manager}
+                        onChange={(e) => { patch({ no_manager: e.target.checked }); clearError('manager_id'); }}
+                        className="h-4 w-4 rounded border-border accent-primary"
+                      />
+                      This user has no manager (e.g. CEO or President)
+                    </label>
+                    {form.no_manager ? (
+                      <p className="text-[12px] italic text-muted-foreground">No reporting manager required.</p>
+                    ) : multiManager ? (
                       <ManagerMultiSelect
                         managers={managers}
                         selected={form.manager_ids}
