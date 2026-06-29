@@ -39,7 +39,12 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.db_tenant import tenant_session
-from app.models.assignments import ProjectManager, TaskAssignee, UserProjectAccess
+from app.models.assignments import (
+    EmployeeManagerAssignment,
+    ProjectManager,
+    TaskAssignee,
+    UserProjectAccess,
+)
 from app.models.client import Client, ClientStatus, ClientType
 from app.models.project import Project, ProjectStatus
 from app.models.task import Task, TaskStatus
@@ -112,8 +117,14 @@ async def main() -> None:
                            for r in (await db.execute(select(UserProjectAccess))).scalars().all()}
         existing_assignee = {(a.task_id, a.user_id)
                              for a in (await db.execute(select(TaskAssignee))).scalars().all()}
+        # Reporting lines to pm1: the portfolio/financials surfaces scope to the
+        # manager's TEAM (direct reports), so an author who logs time but doesn't
+        # report to pm1 has their hours excluded -> health burn reads low. Mirror
+        # seed_psa_nexillo: add each author as a report of pm1 (additive).
+        existing_rep = {(a.employee_id, a.manager_id)
+                        for a in (await db.execute(select(EmployeeManagerAssignment))).scalars().all()}
 
-        created = {"clients": 0, "projects": 0, "tasks": 0, "pm": 0,
+        created = {"clients": 0, "projects": 0, "tasks": 0, "pm": 0, "report": 0,
                    "roster": 0, "assignee": 0, "entries": 0, "skipped": 0}
 
         for (cname, pname, code, _health, budget, end_off, bill_hours, blocked, task_names) in PLAN:
@@ -199,6 +210,13 @@ async def main() -> None:
                     if h <= 0:
                         break
 
+                    # reporting line to pm1 (additive) so the author's hours fall
+                    # inside pm1's scoped team and count toward project burn.
+                    if (uid, pm.id) not in existing_rep:
+                        db.add(EmployeeManagerAssignment(employee_id=uid, manager_id=pm.id, is_primary=False))
+                        existing_rep.add((uid, pm.id))
+                        created["report"] += 1
+
                     # roster + task assignment (additive).
                     if (uid, project.id) not in existing_roster:
                         db.add(UserProjectAccess(user_id=uid, project_id=project.id))
@@ -234,7 +252,7 @@ async def main() -> None:
         print(
             f"nexillo dashboard demo: +{created['clients']} clients, "
             f"+{created['projects']} projects, +{created['tasks']} tasks, "
-            f"+{created['pm']} PM links, +{created['roster']} roster, "
+            f"+{created['pm']} PM links, +{created['report']} reports, +{created['roster']} roster, "
             f"+{created['assignee']} task-assignees, +{created['entries']} approved entries "
             f"({created['skipped']} already present)."
         )
