@@ -48,6 +48,7 @@ from app.models.assignments import (
 from app.models.client import Client, ClientStatus, ClientType
 from app.models.project import Project, ProjectStatus
 from app.models.task import Task, TaskStatus
+from app.models.user_client_assignment import UserClientAssignment, ClientAssignmentRole
 from app.models.time_entry import TimeEntry, TimeEntryStatus
 from app.models.user import User
 
@@ -128,9 +129,15 @@ async def main() -> None:
         # seed_psa_nexillo: add each author as a report of pm1 (additive).
         existing_rep = {(a.employee_id, a.manager_id)
                         for a in (await db.execute(select(EmployeeManagerAssignment))).scalars().all()}
+        # Client-level assignments: a MANAGER only sees clients they're a PM on
+        # (user_client_assignments), so without this the demo clients show on the
+        # dashboard (project-scoped) but are INVISIBLE in Client Management
+        # (client-scoped) — an inconsistency. pm1 must be a client PM too.
+        existing_client_assign = {(a.user_id, a.client_id)
+                                  for a in (await db.execute(select(UserClientAssignment))).scalars().all()}
 
-        created = {"clients": 0, "projects": 0, "tasks": 0, "pm": 0, "report": 0,
-                   "roster": 0, "assignee": 0, "entries": 0, "skipped": 0}
+        created = {"clients": 0, "projects": 0, "tasks": 0, "pm": 0, "client_assign": 0,
+                   "report": 0, "roster": 0, "assignee": 0, "entries": 0, "skipped": 0}
 
         for (cname, pname, code, _health, budget, end_off, bill_hours, blocked, task_names) in PLAN:
             # Client (idempotent on unique tenant+name).
@@ -169,6 +176,15 @@ async def main() -> None:
                 db.add(ProjectManager(project_id=project.id, user_id=pm.id, tenant_id=tenant_id))
                 existing_pm.add((project.id, pm.id))
                 created["pm"] += 1
+
+            # pm1 as client PM (additive) so the client is visible in Client
+            # Management, consistent with it appearing on the dashboard.
+            if (pm.id, client.id) not in existing_client_assign:
+                db.add(UserClientAssignment(
+                    tenant_id=tenant_id, user_id=pm.id, client_id=client.id,
+                    assignment_role=ClientAssignmentRole.pm))
+                existing_client_assign.add((pm.id, client.id))
+                created["client_assign"] += 1
 
             # Tasks (idempotent on name). First in_progress; one 'blocked' if the
             # project targets the blocked state; rest to_do.
@@ -217,7 +233,11 @@ async def main() -> None:
 
                     # reporting line to pm1 (additive) so the author's hours fall
                     # inside pm1's scoped team and count toward project burn.
-                    if (uid, pm.id) not in existing_rep:
+                    # CYCLE GUARD: never add uid -> pm1 if pm1 already reports to
+                    # uid (a senior manager). A 2-cycle makes the org-chart tree
+                    # recurse infinitely and crashes the user-management page.
+                    would_cycle = (pm.id, uid) in existing_rep
+                    if uid != pm.id and not would_cycle and (uid, pm.id) not in existing_rep:
                         db.add(EmployeeManagerAssignment(employee_id=uid, manager_id=pm.id, is_primary=False))
                         existing_rep.add((uid, pm.id))
                         created["report"] += 1
@@ -257,7 +277,8 @@ async def main() -> None:
         print(
             f"nexillo dashboard demo: +{created['clients']} clients, "
             f"+{created['projects']} projects, +{created['tasks']} tasks, "
-            f"+{created['pm']} PM links, +{created['report']} reports, +{created['roster']} roster, "
+            f"+{created['pm']} PM links, +{created['client_assign']} client assigns, "
+            f"+{created['report']} reports, +{created['roster']} roster, "
             f"+{created['assignee']} task-assignees, +{created['entries']} approved entries "
             f"({created['skipped']} already present)."
         )
