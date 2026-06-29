@@ -420,6 +420,9 @@ export interface ClientNoteBody {
   note_date?: string | null;
   project_id?: number | null;
   task_id?: number | null;
+  // Sets the linked task's status. Only when 'blocked' does the note body
+  // become the task's blocked_reason. Transient (not stored on the note).
+  task_status?: TaskStatus | null;
 }
 
 // Project lifecycle status (migration 071). Wire values are snake_case.

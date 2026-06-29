@@ -471,10 +471,12 @@ class ClientNoteCreate(BaseModel):
     # logged-in user so a note can't claim someone else's name.
     body: str
     note_date: Optional[date] = None
-    # Optional target. When task_id is set, the note body is mirrored into that
-    # task's blocked_reason; a non-empty body also flips the task to 'blocked'.
+    # Optional target. When task_id is set, task_status sets the task's status;
+    # only when that status is 'blocked' does the note body become the task's
+    # blocked_reason. task_status is transient (not stored on the note).
     project_id: Optional[int] = None
     task_id: Optional[int] = None
+    task_status: Optional[str] = None
 
 
 class ClientNoteUpdate(BaseModel):
@@ -483,6 +485,7 @@ class ClientNoteUpdate(BaseModel):
     note_date: Optional[date] = None
     project_id: Optional[int] = None
     task_id: Optional[int] = None
+    task_status: Optional[str] = None
 
 
 class ClientNoteResponse(BaseModel):

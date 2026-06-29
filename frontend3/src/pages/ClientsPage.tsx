@@ -3745,12 +3745,16 @@ function NoteModal({
   const [date, setDate] = useState('');
   const [body, setBody] = useState('');
   // Optional target. '' = none. Picking a project filters the task list; the
-  // task is optional. When a task is set with body text, the backend mirrors the
-  // body into the task's "Why is it blocked?" reason and marks it blocked.
+  // task is optional. The Status dropdown sets the picked task's status; only
+  // when it's 'blocked' does the note body become the task's blocked reason.
   const [projectId, setProjectId] = useState('');
   const [taskId, setTaskId] = useState('');
+  const [taskStatus, setTaskStatus] = useState<TaskStatus | ''>('');
   const [error, setError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Tasks of the chosen project drive the task dropdown.
+  const projectTasks = projectId ? (tasksByProject.get(Number(projectId)) ?? []) : [];
 
   useEffect(() => {
     if (!open) return;
@@ -3766,12 +3770,18 @@ function NoteModal({
     setBody(note?.body ?? '');
     setProjectId(note?.project_id != null ? String(note.project_id) : '');
     setTaskId(note?.task_id != null ? String(note.task_id) : '');
+    setTaskStatus('');
     setError(null);
     setErrors({});
   }, [open, note]);
 
-  // Tasks of the chosen project drive the task dropdown.
-  const projectTasks = projectId ? (tasksByProject.get(Number(projectId)) ?? []) : [];
+  // Prefill the Status dropdown with the selected task's CURRENT status, so
+  // adding a note doesn't accidentally change it (you only change it on purpose).
+  useEffect(() => {
+    if (!taskId) { setTaskStatus(''); return; }
+    const t = projectTasks.find((x) => x.id === Number(taskId));
+    setTaskStatus((t?.status as TaskStatus) ?? 'to_do');
+  }, [taskId, projectTasks]);
 
   const saving = create.isPending || update.isPending;
 
@@ -3789,6 +3799,8 @@ function NoteModal({
       body: body.trim(),
       project_id: projectId ? Number(projectId) : null,
       task_id: taskId ? Number(taskId) : null,
+      // Only send a status when a task is targeted; it drives the task's status.
+      task_status: taskId && taskStatus ? taskStatus : null,
     };
     try {
       if (isEdit && note) {
@@ -3841,13 +3853,29 @@ function NoteModal({
             </select>
           </div>
         </div>
+        {/* Task status: only appears once a task is picked. Sets the task's
+            status; choosing "Blocked" maps this note into its blocked reason. */}
+        {taskId ? (
+          <div className="sm:max-w-[50%]">
+            <label className={labelClass}>Task status</label>
+            <select
+              value={taskStatus}
+              onChange={(e) => setTaskStatus(e.target.value as TaskStatus)}
+              className={selectClass}
+            >
+              {(Object.keys(TASK_STATUS_LABEL) as TaskStatus[]).map((s) => (
+                <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <div>
           <label className={labelClass}>Note<RequiredMark /></label>
           <textarea value={body} onChange={(e) => { setBody(e.target.value); setErrors((p) => ({ ...p, body: '' })); }} rows={4} placeholder="Write your note..." className={cn(textareaClass, errorBorder(!!errors.body))} required />
           <FieldError error={errors.body} />
-          {taskId ? (
+          {taskId && taskStatus === 'blocked' ? (
             <p className="mt-1 text-[11px] text-muted-foreground">
-              This note becomes the selected task's "Why is it blocked?" reason and marks the task blocked.
+              The task status is "Blocked", so this note becomes its "Why is it blocked?" reason.
             </p>
           ) : null}
         </div>

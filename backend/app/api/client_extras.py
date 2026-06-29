@@ -200,14 +200,25 @@ async def _resolve_note_link(db: AsyncSession, tenant_id: int, client_id: int,
     return project, task
 
 
-def _mirror_note_to_task(task, body: str) -> None:
-    """Mirror a note's body into the task's blocked_reason. A non-empty body also
-    flips the task to 'blocked' (so the reason actually shows); an empty body
-    just clears the reason text and leaves the status untouched."""
-    text = (body or "").strip()
-    task.blocked_reason = text or None
-    if text:
-        task.status = TaskStatus.blocked
+def _apply_note_to_task(task, body: str, task_status) -> None:
+    """Apply a note's chosen status to the task, and map the note text into the
+    task's blocked_reason ONLY when the chosen status is 'blocked' (a note is not
+    always about why a task is blocked).
+
+    - task_status given -> set the task's status to it.
+    - status == blocked  -> the note body becomes the task's blocked_reason.
+    - status != blocked  -> leave blocked_reason untouched (note is just attached).
+    - task_status None   -> don't touch the task's status at all.
+    """
+    if task_status is None:
+        return
+    try:
+        status_enum = TaskStatus(task_status)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid task status.")
+    task.status = status_enum
+    if status_enum == TaskStatus.blocked:
+        task.blocked_reason = (body or "").strip() or None
 
 
 async def _note_response(db: AsyncSession, row: ClientNote) -> dict:
@@ -262,7 +273,7 @@ async def create_note(
     )
     db.add(row)
     if task is not None:
-        _mirror_note_to_task(task, payload.body)
+        _apply_note_to_task(task, payload.body, payload.task_status)
         db.add(task)
     await db.commit()
     await db.refresh(row)
@@ -277,15 +288,17 @@ async def update_note(
 ):
     row = await _get_scoped(db, ClientNote, client_id, row_id, current_user.tenant_id, current_user)
     sent = payload.model_dump(exclude_unset=True)
+    # task_status is transient (drives the linked task, not a column on the note).
+    task_status = sent.pop("task_status", None)
     for field, value in sent.items():
         setattr(row, field, value)
-    # Validate the (possibly new) link and mirror the body into the task. Use the
-    # row's effective values after applying the patch.
+    # Validate the (possibly new) link and apply status/reason to the task. Use
+    # the row's effective values after applying the patch.
     _, task = await _resolve_note_link(
         db, current_user.tenant_id, client_id, row.project_id, row.task_id)
     db.add(row)
     if task is not None:
-        _mirror_note_to_task(task, row.body)
+        _apply_note_to_task(task, row.body, task_status)
         db.add(task)
     await db.commit()
     await db.refresh(row)
