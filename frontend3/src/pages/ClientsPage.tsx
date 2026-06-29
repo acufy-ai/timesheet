@@ -956,63 +956,45 @@ function ProjectsTab({
   );
 }
 
-// Clickable health pill on a project row: opens a small menu to set the manual
-// health override (Excellent / On track / At risk / Critical) or clear back to
-// auto. Same override + invalidation as the project detail page's "Set status";
-// the manager-project-health query is refetched on success so the pill updates.
-// stopPropagation keeps a click from toggling the project row open/closed.
-function ProjectHealthMenu({ projectId, health, isManual }: { projectId: number; health: string; isManual: boolean }) {
+// Project health as an inline native <select>, MATCHING the task-status select
+// so "set a status" is one consistent interaction across the page (no custom
+// popover that clips inside the row). Options are the 4 manual tiers + "Auto"
+// (clears the override). The leading dot shows the current health color; a
+// pencil marks a manual override. The native option list renders in the
+// browser's top layer, so it never gets clipped by the row's overflow.
+function ProjectHealthSelect({ projectId, health, isManual }: { projectId: number; health: string; isManual: boolean }) {
   const meta = healthMeta(health);
   const setOverride = useSetProjectHealthOverride();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
+  // Value the select shows: a manual tier when overridden, else 'auto'.
+  const value = isManual ? health : 'auto';
 
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
-  }, [open]);
-
-  const pick = (h: string | null) => { setOpen(false); setOverride.mutate({ projectId, health: h }); };
+  const onChange = (next: string) => {
+    if (next === value) return;
+    // 'auto' clears the override; any tier sets it.
+    setOverride.mutate({ projectId, health: next === 'auto' ? null : next });
+  };
 
   return (
-    <span ref={ref} className="relative inline-flex" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
+    <span className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+      <span className={cn('pointer-events-none absolute left-2 h-2 w-2 rounded-full', meta.dot)} />
+      <select
+        value={value}
         disabled={setOverride.isPending}
-        title={isManual ? 'Health set manually — click to change' : 'Set health'}
-        aria-label={`Set health for this project (currently ${meta.label})`}
-        className="inline-flex items-center gap-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-60"
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Set project health"
+        title={isManual ? 'Health set manually — change or pick Auto' : 'Set project health'}
+        className={cn(
+          'cursor-pointer rounded-full border bg-card py-0.5 pl-6 text-[11px] font-semibold uppercase tracking-wider text-foreground transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60',
+          isManual ? 'border-primary/40 pr-7' : 'border-border pr-6',
+        )}
       >
-        <TonePill tone={meta.tone}>{meta.label}</TonePill>
-        {isManual ? <Pencil className="h-3 w-3 text-muted-foreground" aria-hidden /> : null}
-      </button>
-      {open ? (
-        <span className="absolute right-0 top-7 z-50 block w-44 rounded-xl border border-border bg-popover p-1 text-left text-popover-foreground shadow-xl">
-          <span className="block px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Set health</span>
-          {MANUAL_HEALTH.map((opt) => {
-            const m = healthMeta(opt.value);
-            const active = health === opt.value && isManual;
-            return (
-              <button key={opt.value} type="button" onClick={() => pick(opt.value)}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-primary/5">
-                <span className={cn('h-2 w-2 rounded-full', m.dot)} />
-                <span className="flex-1">{opt.label}</span>
-                {active ? <Check className="h-3.5 w-3.5 text-primary" /> : null}
-              </button>
-            );
-          })}
-          <span className="my-1 block h-px bg-border" />
-          <button type="button" onClick={() => pick(null)} disabled={!isManual}
-            className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-primary/5 disabled:opacity-40">
-            Clear override (auto)
-          </button>
-        </span>
-      ) : null}
+        {/* Auto: shows the computed health so you still see the current state. */}
+        <option value="auto">{`Auto · ${meta.label}`}</option>
+        {MANUAL_HEALTH.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+      {isManual ? <Pencil className="pointer-events-none absolute right-2 h-3 w-3 text-muted-foreground" aria-hidden /> : null}
     </span>
   );
 }
@@ -1113,10 +1095,10 @@ function ProjectCard({
           </div>
         ) : null}
         {/* Health (5-tier, auto/overridden) sits alongside the lifecycle status:
-            health = "how is it going", status = "what stage is it in". Click the
-            pill to set it manually (same override as the project detail page). */}
+            health = "how is it going", status = "what stage is it in". Inline
+            select (matching the task-status pattern) sets the manual override. */}
         {health ? (
-          <ProjectHealthMenu projectId={project.id} health={health.health} isManual={health.isManual} />
+          <ProjectHealthSelect projectId={project.id} health={health.health} isManual={health.isManual} />
         ) : null}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
