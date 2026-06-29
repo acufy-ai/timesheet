@@ -62,29 +62,34 @@ TODAY = date.today()
 # Per demo client: (client_name, project_name, code, target_health, budget,
 # end_offset_days, billable_hours_to_log, blocked, [task names]). Hours are split
 # across real nexillo employees below. budget/hours/end land the target health.
+#
+# NAMING follows the existing nexillo convention exactly: clients are "Client N"
+# and projects are "Project <clientNumber>-<index>". The tenant already has
+# Client 1-3 / Project 1-1.. so the demo clients continue from Client 4. Each
+# demo client owns a single project (-1).
 PLAN = [
     # at-risk: ~90% burn (between high_burn 80 and over_budget 100), end far.
-    ("Brightwave Health", "Member Portal Rebuild", "BMP", "at-risk",
+    ("Client 4", "Project 4-1", "P41", "at-risk",
      Decimal("60000"), 120, Decimal("360"), False,
      ["Portal UX", "Auth integration", "Claims view"]),     # 360h*150 = 54000 = 90%
     # on-track: ~65% burn, end far.
-    ("Sterling Logistics", "Fleet Routing Upgrade", "SFR", "on-track",
+    ("Client 5", "Project 5-1", "P51", "on-track",
      Decimal("80000"), 150, Decimal("347"), False,
      ["Routing engine", "Telemetry sync", "Driver app"]),   # 347*150 = 52050 ~ 65%
     # excellent: ~30% burn, end far out.
-    ("Cobalt Bank", "Fraud Detection Platform", "CFD", "excellent",
+    ("Client 6", "Project 6-1", "P61", "excellent",
      Decimal("120000"), 200, Decimal("240"), False,
      ["Model training", "Rules engine", "Alerting"]),       # 240*150 = 36000 = 30%
     # not-set: no budget, no end date (still has logged hours so it's "started").
-    ("Harborline Retail", "POS Refresh", "HPR", "not-set",
+    ("Client 7", "Project 7-1", "P71", "not-set",
      None, None, Decimal("80"), False,
      ["Terminal firmware", "Inventory sync"]),
     # blocked: healthy burn but a blocked task.
-    ("Aurora Energy", "Grid Analytics", "AGA", "blocked",
+    ("Client 8", "Project 8-1", "P81", "blocked",
      Decimal("90000"), 140, Decimal("200"), True,
      ["Sensor ingest", "Vendor data feed", "Dashboard"]),   # 200*150 = 30000 ~ 33% + blocked
     # not-started: a project with NO time logged at all.
-    ("Cedar Freight Co", "Tracking Rollout", "CTR", "not-started",
+    ("Client 9", "Project 9-1", "P91", "not-started",
      Decimal("40000"), 90, Decimal("0"), False,
      ["Discovery", "Pilot integration"]),
 ]
