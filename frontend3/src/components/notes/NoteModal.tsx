@@ -3,8 +3,15 @@ import { Loader2 } from 'lucide-react';
 
 import { Button, Input, Modal, FieldError, RequiredMark } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { useCreateClientNote, useUpdateClientNote } from '@/hooks/useAdmin';
+import { useCreateClientNote, useProjectNotes, useTaskNotes, useUpdateClientNote } from '@/hooks/useAdmin';
+import { avatarTone, initials } from '@/lib/avatar';
 import type { ClientNote, ClientNoteBody, FullProject, FullTask, TaskStatus } from '@/types/admin';
+
+function fmtNoteDate(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 // Shared note authoring modal. Two launch modes:
 //  - 'free'   : full Project + Task dropdowns (the client Notes tab). Pass the
@@ -60,11 +67,24 @@ export function NoteModal({
   const [taskId, setTaskId] = useState('');
   const [taskStatus, setTaskStatus] = useState<TaskStatus | ''>('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Tabs: the form, or the read-only note history for this task/project. History
+  // is only meaningful for a locked (single task or project) target.
+  const [tab, setTab] = useState<'add' | 'history'>('add');
 
   // Tasks of the chosen project (free mode only).
   const projectTasks = !locked && projectId
     ? (target.tasksByProject.get(Number(projectId)) ?? [])
     : [];
+
+  // Note history: every note attached to this task (preferred) or project, any
+  // author/source. Fetched only when the history tab is open on a locked target.
+  const lockedTaskId = locked && target.taskId != null ? target.taskId : null;
+  const lockedProjectId = locked ? target.projectId : null;
+  const showHistory = locked;
+  const taskHistory = useTaskNotes(lockedTaskId, showHistory && tab === 'history' && lockedTaskId != null);
+  const projectHistory = useProjectNotes(
+    lockedProjectId, showHistory && tab === 'history' && lockedTaskId == null && lockedProjectId != null);
+  const history = lockedTaskId != null ? taskHistory : projectHistory;
 
   useEffect(() => {
     if (!open) return;
@@ -77,6 +97,7 @@ export function NoteModal({
     setDate(note?.note_date ?? today);
     setBody(note?.body ?? '');
     setErrors({});
+    setTab('add');
     if (locked) {
       setProjectId(String(target.projectId));
       setTaskId(target.taskId != null ? String(target.taskId) : '');
@@ -123,6 +144,26 @@ export function NoteModal({
 
   return (
     <Modal open={open} onClose={onClose} title={isEdit ? 'Edit note' : 'New note'} className="max-w-2xl" flushBottom>
+      {/* Tabs (locked target only): the form, and the read-only note history for
+          this task/project — every note attached to it, from any source. */}
+      {showHistory ? (
+        <div className="mb-3 flex gap-1 rounded-lg border border-border p-0.5 text-sm">
+          <button type="button" onClick={() => setTab('add')}
+            className={cn('flex-1 rounded-md px-3 py-1.5 font-medium transition-colors',
+              tab === 'add' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+            {isEdit ? 'Edit note' : 'Add note'}
+          </button>
+          <button type="button" onClick={() => setTab('history')}
+            className={cn('flex-1 rounded-md px-3 py-1.5 font-medium transition-colors',
+              tab === 'history' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+            Notes history
+          </button>
+        </div>
+      ) : null}
+
+      {showHistory && tab === 'history' ? (
+        <NoteHistory query={history} scope={lockedTaskId != null ? 'task' : 'project'} />
+      ) : (
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Target: locked chips, or free dropdowns. */}
         {locked ? (
@@ -202,6 +243,50 @@ export function NoteModal({
           </Button>
         </div>
       </form>
+      )}
     </Modal>
+  );
+}
+
+// Read-only note history for a task / project: every note attached to it, any
+// author or source (a resource on My Work, a manager in Client Management, or a
+// client with access). Newest first.
+function NoteHistory({ query, scope }: { query: { data?: ClientNote[]; isLoading: boolean; isError: boolean }; scope: 'task' | 'project' }) {
+  if (query.isLoading) {
+    return <div className="grid place-items-center py-10 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /></div>;
+  }
+  if (query.isError) {
+    return <p className="py-10 text-center text-sm text-muted-foreground">Couldn't load the note history.</p>;
+  }
+  const notes = query.data ?? [];
+  if (notes.length === 0) {
+    return <p className="py-10 text-center text-sm text-muted-foreground">No notes on this {scope} yet.</p>;
+  }
+  return (
+    <div className="max-h-[60vh] space-y-2 overflow-y-auto pb-2">
+      {notes.map((n) => {
+        const author = n.author || 'Unknown';
+        return (
+          <div key={n.id} className="rounded-xl border border-border bg-card p-3">
+            <div className="flex items-start gap-2.5">
+              <span className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[10px] font-semibold', avatarTone(author))}>
+                {initials(author)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span className="text-[13px] font-semibold text-foreground">{author}</span>
+                  {n.note_date ? <span className="text-[11px] text-muted-foreground">{fmtNoteDate(n.note_date)}</span> : null}
+                </div>
+                {/* For a project-scope history, show which task each note is on. */}
+                {scope === 'project' && n.task_name ? (
+                  <span className="mt-0.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{n.task_name}</span>
+                ) : null}
+                <p className="mt-1 whitespace-pre-wrap text-[13px] text-foreground">{n.body}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }

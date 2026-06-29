@@ -393,14 +393,36 @@ export function useClientNotes(clientId: number | null) {
     enabled: clientId != null, staleTime: 30_000,
   });
 }
+// Read-only note history for one task / project (for the modal's history tab).
+// Keyed so creating a note (which invalidates ['client-notes'] AND ['tasks'])
+// also re-runs these — see the note mutations below which add task-notes keys.
+export function useTaskNotes(taskId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['task-notes', taskId],
+    queryFn: () => clientNotesApi.listForTask(taskId as number).then((r) => r.data),
+    enabled: enabled && taskId != null, staleTime: 10_000,
+  });
+}
+export function useProjectNotes(projectId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['project-notes', projectId],
+    queryFn: () => clientNotesApi.listForProject(projectId as number).then((r) => r.data),
+    enabled: enabled && projectId != null, staleTime: 10_000,
+  });
+}
 export function useCreateClientNote() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ clientId, data }: { clientId: number; data: NoteBody }) =>
       clientNotesApi.create(clientId, data).then((r) => r.data),
     // A note can target a task (mirrors body -> blocked_reason + marks blocked),
-    // so refresh tasks too.
-    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }); invalidateTasks(qc); },
+    // so refresh tasks too, plus the per-task/project note-history lists.
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] });
+      invalidateTasks(qc);
+      qc.invalidateQueries({ queryKey: ['task-notes'] });
+      qc.invalidateQueries({ queryKey: ['project-notes'] });
+    },
   });
 }
 export function useUpdateClientNote() {
@@ -408,7 +430,12 @@ export function useUpdateClientNote() {
   return useMutation({
     mutationFn: ({ clientId, id, data }: { clientId: number; id: number; data: NoteBody }) =>
       clientNotesApi.update(clientId, id, data).then((r) => r.data),
-    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] }); invalidateTasks(qc); },
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['client-notes', v.clientId] });
+      invalidateTasks(qc);
+      qc.invalidateQueries({ queryKey: ['task-notes'] });
+      qc.invalidateQueries({ queryKey: ['project-notes'] });
+    },
   });
 }
 export function useDeleteClientNote() {

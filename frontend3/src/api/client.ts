@@ -654,6 +654,10 @@ export const clientNotesApi = {
   create: (cid: number, data: ClientNoteBody) => api.post<ClientNote>(`/clients/${cid}/notes`, data),
   update: (cid: number, id: number, data: ClientNoteBody) => api.put<ClientNote>(`/clients/${cid}/notes/${id}`, data),
   remove: (cid: number, id: number) => api.delete(`/clients/${cid}/notes/${id}`),
+  // Read-only note history scoped to one task / project (any author / source).
+  // Authorized for assignees / project members as well as client managers.
+  listForTask: (taskId: number) => api.get<ClientNote[]>(`/tasks/${taskId}/notes`),
+  listForProject: (projectId: number) => api.get<ClientNote[]>(`/projects/${projectId}/notes`),
 };
 
 export const auditApi = {

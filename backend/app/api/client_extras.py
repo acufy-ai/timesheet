@@ -276,6 +276,79 @@ async def list_notes(
     return [await _note_response(db, r) for r in rows]
 
 
+# ── Notes history (per task / per project) ───────────────────────────────────
+# A second router (no /clients prefix) for READ-ONLY note history scoped to one
+# task or project, so the note modal's "Notes history" tab can show every note
+# attached to it regardless of who/where it was authored. Authorized for the
+# people who work on it (assignee / project roster) OR a client manager.
+
+notes_router = APIRouter(tags=["notes-history"])
+
+
+async def _on_project(db: AsyncSession, user_id: int, project_id: int) -> bool:
+    """True if the user works on the project: on its roster, or assigned to any
+    of its tasks. (The read basis for project note history.)"""
+    from app.models.assignments import UserProjectAccess
+    on_roster = (await db.execute(
+        select(UserProjectAccess.user_id).where(
+            UserProjectAccess.project_id == project_id, UserProjectAccess.user_id == user_id)
+    )).first() is not None
+    if on_roster:
+        return True
+    return (await db.execute(
+        select(TaskAssignee.user_id)
+        .join(Task, Task.id == TaskAssignee.task_id)
+        .where(Task.project_id == project_id, TaskAssignee.user_id == user_id)
+    )).first() is not None
+
+
+@notes_router.get("/tasks/{task_id}/notes", response_model=list[ClientNoteResponse])
+async def list_task_notes(
+    task_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every note attached to this task, any author/source. Read access: an
+    assignee of the task, OR a manager of its client."""
+    task = (await db.execute(
+        select(Task).where(Task.id == task_id, Task.tenant_id == current_user.tenant_id)
+    )).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not await _is_task_assignee(db, current_user.id, task_id):
+        project = await db.get(Project, task.project_id)
+        await assert_client_access(db, current_user, project.client_id)
+    rows = (await db.execute(
+        select(ClientNote)
+        .where(ClientNote.task_id == task_id, ClientNote.tenant_id == current_user.tenant_id)
+        .order_by(ClientNote.note_date.desc().nullslast(), ClientNote.id.desc())
+    )).scalars().all()
+    return [await _note_response(db, r) for r in rows]
+
+
+@notes_router.get("/projects/{project_id}/notes", response_model=list[ClientNoteResponse])
+async def list_project_notes(
+    project_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every note attached to this project (project-level + any of its tasks).
+    Read access: someone who works on the project, OR a manager of its client."""
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id, Project.tenant_id == current_user.tenant_id)
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not await _on_project(db, current_user.id, project_id):
+        await assert_client_access(db, current_user, project.client_id)
+    rows = (await db.execute(
+        select(ClientNote)
+        .where(ClientNote.project_id == project_id, ClientNote.tenant_id == current_user.tenant_id)
+        .order_by(ClientNote.note_date.desc().nullslast(), ClientNote.id.desc())
+    )).scalars().all()
+    return [await _note_response(db, r) for r in rows]
+
+
 @router.post("/notes", response_model=ClientNoteResponse, status_code=status.HTTP_201_CREATED)
 async def create_note(
     client_id: int, payload: ClientNoteCreate,
