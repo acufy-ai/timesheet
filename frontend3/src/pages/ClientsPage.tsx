@@ -78,6 +78,8 @@ import {
   useUploadContractDocument,
   useCrossTeamStaffing,
 } from '@/hooks/useAdmin';
+import { useManagerProjectHealth } from '@/hooks/useDashboard';
+import { healthMeta } from '@/lib/projectHealth';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import { staffingPool } from '@/lib/staffing';
@@ -215,11 +217,12 @@ const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   blocked: 'Blocked',
   done: 'Done',
 };
-const TASK_STATUS_TONE: Record<TaskStatus, Tone> = {
-  to_do: 'neutral',
-  in_progress: 'brand',
-  blocked: 'danger',
-  done: 'success',
+// Dot colors for the inline status select (mirror the tone palette).
+const TASK_STATUS_DOT: Record<TaskStatus, string> = {
+  to_do: 'bg-muted-foreground/40',
+  in_progress: 'bg-primary',
+  blocked: 'bg-rose-500',
+  done: 'bg-emerald-500',
 };
 const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {
   low: 'Low',
@@ -248,6 +251,15 @@ export function ClientsPage() {
   const clientsQ = useClients();
   const projectsQ = useAllProjects();
   const tasksQ = useAllTasks();
+  // Project health (5-tier) keyed by project_id, from the same source the
+  // dashboard/portfolio use so the status reconciles. Role-gated server-side
+  // (MANAGER/VIEWER/ADMIN); other roles just get no pills (hook returns empty).
+  const healthQ = useManagerProjectHealth(canManageClients);
+  const healthByProject = useMemo(() => {
+    const m = new Map<number, string>();
+    (healthQ.data?.rows ?? []).forEach((r) => m.set(r.project_id, r.health));
+    return m;
+  }, [healthQ.data]);
   // Full tenant directory (all roles), not the caller's org-chart subtree.
   // GET /users scopes a MANAGER to their reports only, which starved the
   // client/project pickers (no peer managers, unresolved PM names -> "#5").
@@ -641,6 +653,7 @@ export function ClientsPage() {
                   client={activeClient}
                   projects={projectsByClient.get(activeClient.id) ?? []}
                   tasksByProject={tasksByProject}
+                  healthByProject={healthByProject}
                   loading={projectsQ.isLoading}
                   expanded={expanded}
                   nameOf={nameOf}
@@ -845,6 +858,7 @@ function ProjectsTab({
   client,
   projects,
   tasksByProject,
+  healthByProject,
   loading,
   expanded,
   nameOf,
@@ -860,6 +874,7 @@ function ProjectsTab({
   client: Client;
   projects: FullProject[];
   tasksByProject: Map<number, FullTask[]>;
+  healthByProject: Map<number, string>;
   loading: boolean;
   expanded: Record<number, boolean>;
   nameOf: (uid: number) => string;
@@ -921,6 +936,7 @@ function ProjectsTab({
             key={p.id}
             project={p}
             tasks={tasksByProject.get(p.id) ?? []}
+            health={healthByProject.get(p.id)}
             open={!!expanded[p.id]}
             nameOf={nameOf}
             onToggle={() => onToggle(p.id)}
@@ -940,6 +956,7 @@ function ProjectsTab({
 function ProjectCard({
   project,
   tasks,
+  health,
   open,
   nameOf,
   onToggle,
@@ -952,6 +969,7 @@ function ProjectCard({
 }: {
   project: FullProject;
   tasks: FullTask[];
+  health?: string;
   open: boolean;
   nameOf: (uid: number) => string;
   onToggle: () => void;
@@ -1030,6 +1048,13 @@ function ProjectCard({
             ) : null}
           </div>
         ) : null}
+        {/* Health (5-tier, auto/overridden) sits alongside the lifecycle status:
+            health = "how is it going", status = "what stage is it in". */}
+        {health ? (
+          <span title={`Health: ${healthMeta(health).label}`}>
+            <TonePill tone={healthMeta(health).tone}>{healthMeta(health).label}</TonePill>
+          </span>
+        ) : null}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton label="Edit project" onClick={onEdit} Icon={Pencil} sm />
@@ -1088,6 +1113,13 @@ function TaskRow({ task, nameOf, onEdit, onDelete }: { task: FullTask; nameOf: (
     void update.mutateAsync({ id: task.id, data: { project_id: task.project_id, status: next } });
   };
 
+  // Change status straight from the row (no edit modal). Mirrors the My Work
+  // inline pattern: select fires the partial {status} update immediately.
+  const setStatus = (next: TaskStatus) => {
+    if (update.isPending || next === status) return;
+    void update.mutateAsync({ id: task.id, data: { project_id: task.project_id, status: next } });
+  };
+
   return (
     <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2">
       <button
@@ -1119,7 +1151,23 @@ function TaskRow({ task, nameOf, onEdit, onDelete }: { task: FullTask; nameOf: (
         <span className={cn('h-2 w-2 rounded-full', TASK_PRIORITY_DOT[priority])} />
         {TASK_PRIORITY_LABEL[priority]}
       </span>
-      <TonePill tone={TASK_STATUS_TONE[status]}>{TASK_STATUS_LABEL[status]}</TonePill>
+      {/* Inline status: edit the task's status directly on the row. The colored
+          dot mirrors the status tone so it still reads as a pill at a glance. */}
+      <span className="relative inline-flex items-center">
+        <span className={cn('pointer-events-none absolute left-2 h-2 w-2 rounded-full', TASK_STATUS_DOT[status])} />
+        <select
+          value={status}
+          disabled={update.isPending}
+          onChange={(e) => setStatus(e.target.value as TaskStatus)}
+          aria-label={`Status for ${task.name}`}
+          title="Change status"
+          className="cursor-pointer rounded-full border border-border bg-card py-0.5 pl-6 pr-6 text-[11px] font-semibold uppercase tracking-wider text-foreground transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+        >
+          {(Object.keys(TASK_STATUS_LABEL) as TaskStatus[]).map((s) => (
+            <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>
+          ))}
+        </select>
+      </span>
       {assignees.length ? (
         <div className="flex items-center">
           {shown.map((id, i) => {
