@@ -35,10 +35,11 @@ function ClientLink({ clientId, name }: { clientId?: number | null; name: string
 export type InsightTab = 'financials' | 'resourcing' | 'portfolio' | 'forecasts';
 
 const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
+  // Projects is the primary/first tab. key stays 'portfolio' (route/deep-link
+  // stability); label is "Projects".
+  { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
   { key: 'financials', label: 'Financials', Icon: BarChart3 },
   { key: 'resourcing', label: 'Resourcing', Icon: Layers },
-  // key stays 'portfolio' (route/deep-link stability); label is "Projects".
-  { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
   { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
 ];
 
@@ -50,7 +51,7 @@ export function InsightsPage() {
   // land on the right tab AND the project-report "Back" can return to it.
   const [params, setParams] = useSearchParams();
   const raw = params.get('tab') as InsightTab | null;
-  const tab: InsightTab = raw && VALID_TABS.has(raw) ? raw : 'financials';
+  const tab: InsightTab = raw && VALID_TABS.has(raw) ? raw : 'portfolio';
   const setTab = (key: InsightTab) => setParams({ tab: key }, { replace: true });
 
   // Manager + viewer only.
@@ -62,7 +63,7 @@ export function InsightsPage() {
     <div className="space-y-5">
       <WorkspaceHeader
         title="Insights"
-        description="Financial, resourcing and portfolio analytics for your projects."
+        description="Project, financial and resourcing analytics for your projects."
       />
 
       <div className="flex gap-1 border-b border-border">
