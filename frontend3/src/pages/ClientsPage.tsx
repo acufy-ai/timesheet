@@ -41,6 +41,7 @@ import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
 import { ImportClientsModal } from '@/components/clients/ImportClientsModal';
 import { NoteModal, type NoteTarget } from '@/components/notes/NoteModal';
+import { ProjectTaskViews } from '@/components/project-views/ProjectTaskViews';
 import {
   useAllProjects,
   useAssignableUsers,
@@ -1150,23 +1151,25 @@ function ProjectCard({
               <p className="whitespace-pre-wrap text-sm text-foreground">{project.description}</p>
             </div>
           ) : null}
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2 flex items-center">
             <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Tasks</p>
-            <Button size="sm" variant="secondary" onClick={onAddTask}>
-              <Plus className="h-3.5 w-3.5" /> Add task
-            </Button>
           </div>
-          {tasks.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-              No tasks yet. Add one and assign it to your team.
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} nameOf={nameOf} onEdit={() => onEditTask(t)} onDelete={() => onDeleteTask(t)} onAddNote={() => onAddNote(t)} />
-              ))}
-            </div>
-          )}
+          {/* Flexible views: List (default) / Grid / Board / Calendar / Timeline.
+              The List rendering is passed through unchanged. */}
+          <ProjectTaskViews
+            project={project}
+            tasks={tasks}
+            nameOf={nameOf}
+            onAddTask={onAddTask}
+            onEditTask={onEditTask}
+            renderList={() => (
+              <div className="space-y-1.5">
+                {tasks.map((t) => (
+                  <TaskRow key={t.id} task={t} nameOf={nameOf} onEdit={() => onEditTask(t)} onDelete={() => onDeleteTask(t)} onAddNote={() => onAddNote(t)} />
+                ))}
+              </div>
+            )}
+          />
         </div>
       ) : null}
     </Card>

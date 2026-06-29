@@ -495,6 +495,16 @@ export interface FullTask {
   client_assignees?: { user_id: number; full_name: string }[]; // client employees on this task
 }
 
+// A dependency edge: `task_id` depends on (is blocked by) `depends_on_task_id`.
+export interface TaskDependency {
+  id: number;
+  task_id: number;
+  depends_on_task_id: number;
+  reason?: string | null;
+  task_name?: string | null;
+  depends_on_task_name?: string | null;
+}
+
 // POST/PUT /tasks body.
 export interface TaskBody {
   project_id?: number;

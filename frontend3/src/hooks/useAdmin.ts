@@ -504,6 +504,14 @@ export function useUpdateTask() {
     onSuccess: () => invalidateTasks(qc),
   });
 }
+// Dependency edges for a project's tasks (the Gantt view). Cheap; cached a bit.
+export function useTaskDependencies(projectId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['task-dependencies', projectId],
+    queryFn: () => tasksApi.dependencies(projectId as number).then((r) => r.data),
+    enabled: enabled && projectId != null, staleTime: 30_000,
+  });
+}
 export function useDeleteTask() {
   const qc = useQueryClient();
   return useMutation({

@@ -107,6 +107,7 @@ import type {
   SettingValue,
   SystemHealthCheck,
   TaskBody,
+  TaskDependency,
   TimeOffRequest,
   TimeOffRequestWithUser,
   TimeOffUsageRow,
@@ -454,6 +455,9 @@ export const tasksApi = {
   // Scoped edit for an assignee: status and/or description only (My Work).
   updateProgress: (id: number, body: { status?: string; description?: string }) =>
     api.patch<{ id: number; status: string | null; description: string | null }>(`/tasks/${id}/progress`, body),
+  // Dependency edges for a project (for the Gantt view's arrows + critical path).
+  dependencies: (projectId: number) =>
+    api.get<TaskDependency[]>(`/tasks/dependencies/project/${projectId}`),
 };
 
 export const approvalsApi = {
