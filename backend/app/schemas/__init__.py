@@ -161,7 +161,11 @@ class UserResponse(UserBase):
     @field_validator("preferences", mode="before")
     @classmethod
     def _coerce_preferences(cls, value: object) -> object:
-        return value if value is not None else {}
+        # Read-path coercion: preferences is JSONB with no DB-level shape
+        # guarantee. None (PA adapter / pre-migration rows) and any non-dict
+        # (a malformed/legacy row) must degrade to {} rather than 500 every
+        # endpoint that returns this user. A real dict passes through.
+        return value if isinstance(value, dict) else {}
     created_at: datetime
     updated_at: datetime
 
