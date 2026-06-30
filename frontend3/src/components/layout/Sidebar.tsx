@@ -21,7 +21,6 @@ import {
   type NavItem,
   type NavSection,
 } from './navigation';
-import { UserMenu } from './UserMenu';
 
 // Vertical primary navigation with two click-to-pin states:
 //   pinned (w-64)  — full panel: section headers, collapsible groups, labels
@@ -119,27 +118,8 @@ export function Sidebar({
         {/* Client users get their granted projects listed beneath "My Projects". */}
         {isClient && expanded ? <ClientProjectsNav /> : null}
       </nav>
-
-      {/* Footer: account. Hidden for client users — they have the account menu
-          in the top nav already, so the sidebar avatar is redundant for them. */}
-      <div className={cn('border-t border-border p-2.5', expanded ? '' : 'flex justify-center')}>
-        {isClient ? null : expanded ? (
-          <UserMenu align="left" side="top" />
-        ) : canSwitch ? (
-          <Tooltip label="Pin sidebar open" side="right">
-            <button
-              type="button"
-              onClick={onToggleCollapsed}
-              aria-label="Pin sidebar open"
-              className="grid h-9 w-9 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-          </Tooltip>
-        ) : (
-          <span className="h-9 w-9" />
-        )}
-      </div>
+      {/* No footer: the account menu lives in the top nav, and the collapsed-rail
+          expand control is the toggle at the top of the sidebar. */}
     </aside>
   );
 }
