@@ -332,7 +332,7 @@ function FinancialsWidget({
             onClick={() => onNavigate('/insights?tab=financials')}
             className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
           >
-            View report <ChevronRight className="h-3.5 w-3.5" />
+            View all <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -365,9 +365,16 @@ function FinancialsWidget({
           </thead>
           <tbody>
             {pageItems.map((row) => (
-              <tr key={row.project_id} className="border-b border-border last:border-0">
+              <tr
+                key={row.project_id}
+                role="link"
+                tabIndex={0}
+                onClick={() => onNavigate(`/insights/project/${row.project_id}?from=dashboard`)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onNavigate(`/insights/project/${row.project_id}?from=dashboard`); }}
+                className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-foreground/[0.03] focus:bg-foreground/[0.03] focus:outline-none"
+              >
                 <td className="px-4 py-3">
-                  <div className="font-medium text-foreground">{row.project_name}</div>
+                  <div className="font-medium text-foreground hover:text-primary">{row.project_name}</div>
                   <div className="text-[11px] text-muted-foreground">{row.client_name}</div>
                 </td>
                 {showCol('hours') ? <td className="px-4 py-3 tabular-nums text-foreground">{Math.round(Number(row.approved_hours))}h</td> : null}

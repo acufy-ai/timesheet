@@ -39,7 +39,7 @@ export function Donut({ slices, size = 140, thickness = 18, format = String, pie
           offset += dash;
           return el;
         })}
-        {!pie ? <text x={cx} y={cx} textAnchor="middle" dominantBaseline="central" className="fill-foreground text-lg font-bold">{total}</text> : null}
+        {!pie ? <text x={cx} y={cx} textAnchor="middle" dominantBaseline="central" className="fill-foreground text-lg font-bold">{format(total)}</text> : null}
       </svg>
       <ul className="space-y-1 text-xs">
         {slices.filter((s) => s.value > 0).map((s) => (
@@ -87,19 +87,32 @@ export function Bars({ bars, color = 'hsl(var(--primary))', format }: { bars: Ba
   );
 }
 
-// Vertical bars (columns). Heights scale to the max; labels sit beneath, value
-// on top. Hovering a column reveals its label + value (or a richer `tip`).
+// Vertical bars (columns). The VALUE (top) and LABEL (bottom) are HTML so text
+// stays crisp; the BARS in between are an SVG with a non-distorting viewBox that
+// fills the available height. The whole thing is a fill-height flex column, but
+// the bar band has its own min-height so it can never collapse to nothing even
+// if the parent height chain is ambiguous — that was the old bug (a percentage
+// height resolving against a content-sized parent → zero-height bars).
 export function Columns({ bars, color = 'hsl(var(--primary))', format }: { bars: Bar[]; color?: string; format?: (v: number) => string }) {
   const max = Math.max(1, ...bars.map((b) => b.value));
   const fmt = (v: number) => (format ? format(v) : String(v));
   return (
-    <div className="flex h-36 items-end gap-2">
+    <div className="flex h-full min-h-[8rem] w-full items-end gap-2">
       {bars.map((b) => (
         <ValueRow key={b.label} tip={b.tip ?? `${b.label}: ${fmt(b.value)}`}>
-          <div className="flex min-w-0 flex-1 cursor-help flex-col items-center justify-end gap-1">
-            <span className="text-[10px] tabular-nums text-muted-foreground">{fmt(b.value)}</span>
-            <div className="w-full rounded-t-md" style={{ height: `${Math.max(4, (b.value / max) * 100)}%`, background: color }} />
-            <span className="w-full truncate text-center text-[10px] text-muted-foreground" title={b.label}>{b.label}</span>
+          <div className="flex h-full min-w-0 flex-1 cursor-help flex-col items-center gap-1">
+            {/* value */}
+            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{fmt(b.value)}</span>
+            {/* bar band: grows to fill, draws a bottom-anchored rect via SVG so
+                height is intrinsic (no percentage-vs-content-parent ambiguity) */}
+            <div className="min-h-[3rem] w-full flex-1">
+              <svg viewBox="0 0 10 100" preserveAspectRatio="none" className="h-full w-full">
+                <rect x="1.5" y={100 - Math.max(2, (b.value / max) * 100)} width="7"
+                  height={Math.max(2, (b.value / max) * 100)} rx="0.6" fill={color} />
+              </svg>
+            </div>
+            {/* label */}
+            <span className="w-full shrink-0 truncate text-center text-[10px] text-muted-foreground" title={b.label}>{b.label}</span>
           </div>
         </ValueRow>
       ))}

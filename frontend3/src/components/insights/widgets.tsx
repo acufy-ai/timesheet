@@ -7,6 +7,7 @@ import { healthMeta, type ProjectHealth } from '@/lib/projectHealth';
 import type { WidgetConfig, WidgetInstance, WidgetScope, WidgetType } from '@/types/customDashboard';
 import { Donut, Bars, Columns, Line, type Slice } from './svgCharts';
 import { useWidgetBundles } from './WidgetDataContext';
+import { useDashboardScopeOptions } from '@/hooks/useCustomDashboards';
 import { InfoLabel, infoTextFor } from '@/components/dashboard/InfoLabel';
 
 // Loosely-typed views of the metric bundles. The widgets only touch a handful
@@ -101,6 +102,7 @@ function KpiWidget({ config, widgetId }: WidgetProps) {
       <Tooltip label={valueTip} side="top" maxWidth={280}>
         <p className={cn('mt-0.5 inline-block cursor-help text-2xl font-bold leading-tight tabular-nums', tone)}>{value}</p>
       </Tooltip>
+      <ScopeLine scope={config?.scope} />
     </div>
   );
 }
@@ -237,7 +239,9 @@ function ChartWidget({ config, widgetId }: WidgetProps) {
   }
 
   if (!data.slices.length) return <Centered><span className="text-xs">No data for this scope.</span></Centered>;
-  return <div className="px-1 py-1">{renderChart(kind, data)}</div>;
+  // h-full so a column chart can fill the tile body and scale its bars to the
+  // available height; bar/donut/line are intrinsically sized and ignore it.
+  return <div className="h-full px-1 py-1">{renderChart(kind, data)}</div>;
 }
 
 const CHART_PALETTE = ['#0ea5e9', '#8b5cf6', '#10b981', '#f59e0b', '#f43f5e', '#14b8a6'];
@@ -435,6 +439,35 @@ function KpiValueTip({ metric, label, value, projCount, scope }: {
       {def ? <p className="text-[11px] text-muted-foreground">{def}</p> : null}
       <p className="text-[11px] text-muted-foreground">Live: recomputed from approved time, not a single project or client.</p>
     </div>
+  );
+}
+
+// A short, always-visible line under a scoped tile's value that names what the
+// tile covers (which clients/projects/task/resource), so the number isn't
+// ambiguous without hovering. Renders nothing for a whole-portfolio tile.
+function ScopeLine({ scope }: { scope?: WidgetScope }) {
+  const clientIds = [...(scope?.clientIds ?? []), ...(scope?.clientId ? [scope.clientId] : [])];
+  const projectIds = [...(scope?.projectIds ?? []), ...(scope?.projectId ? [scope.projectId] : [])];
+  const hasScope = clientIds.length || projectIds.length || scope?.taskId || scope?.userId;
+  // Only fetch the name directory when this tile is actually scoped.
+  const { data } = useDashboardScopeOptions(!!hasScope);
+  if (!hasScope) {
+    return <p className="truncate text-[10px] text-muted-foreground">Whole portfolio</p>;
+  }
+  const nameOf = (list: any[] | undefined, id: number, key: 'name' | 'title', fallback: string) =>
+    list?.find((x) => x.id === id)?.[key] ?? fallback;
+  const parts: string[] = [];
+  if (clientIds.length === 1) parts.push(nameOf(data?.clients, clientIds[0], 'name', 'client'));
+  else if (clientIds.length > 1) parts.push(`${clientIds.length} clients`);
+  if (projectIds.length === 1) parts.push(nameOf(data?.projects, projectIds[0], 'name', 'project'));
+  else if (projectIds.length > 1) parts.push(`${projectIds.length} projects`);
+  if (scope?.taskId) parts.push(nameOf(data?.tasks, scope.taskId, 'title', 'task'));
+  if (scope?.userId) parts.push(nameOf(data?.people, scope.userId, 'name', 'resource'));
+  const text = parts.join(' · ');
+  return (
+    <Tooltip label={text} side="top" maxWidth={260}>
+      <p className="truncate text-[10px] text-muted-foreground">{text}</p>
+    </Tooltip>
   );
 }
 
