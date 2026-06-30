@@ -5,6 +5,20 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects.postgresql import JSONB
+
+
+# SQLite (the test DB) can't render the Postgres JSONB type, so Base.metadata
+# .create_all in the db_session fixture fails for any model with a JSONB column
+# (users.preferences, setting_definitions, etc.). Individual test files used to
+# declare this shim themselves, but ~45 of them didn't — and because @compiles
+# registers globally on first import, whether a shim-less file errored at setup
+# depended on run order. Declaring it here in conftest (imported before any
+# test) registers it once for the whole suite, killing that flakiness.
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover
+    return "JSON"
 
 from app.api import approvals, auth, clients, notifications, projects, tasks, timesheets, dashboard, time_off, time_off_approvals, users
 from app.db import get_db
