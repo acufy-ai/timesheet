@@ -723,14 +723,17 @@ class TimeEntryBase(BaseModel):
     notes: Optional[str] = None
     is_billable: bool = True
 
+
+class TimeEntryCreate(TimeEntryBase):
+    # Write-time validation only. The check lives here (not on TimeEntryBase) so
+    # TimeEntryResponse, which also inherits the base, serializes already-stored
+    # rows faithfully. A legacy/odd row with a reversed time block must still be
+    # readable in approval queues; rejecting it on the response path would 500
+    # the whole list for one bad row.
     @model_validator(mode="after")
     def _check_time_block(self):
         _validate_time_block(self.start_time, self.end_time)
         return self
-
-
-class TimeEntryCreate(TimeEntryBase):
-    pass
 
 
 class TimeEntryUpdate(BaseModel):
