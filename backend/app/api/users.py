@@ -91,6 +91,27 @@ async def _get_descendant_user_ids(
     return descendant_ids
 
 
+async def _get_direct_report_ids(
+    db: AsyncSession, manager_id: int, tenant_id: int
+) -> set[int]:
+    """The manager's DIRECT reports only (one level), not the full chain.
+
+    Used by the 'My Team' management list so a senior manager sees the people
+    who report straight to them (their own managers/leads), not every person
+    transitively below them. Dashboard metrics + access checks still use the
+    full-chain `_get_descendant_user_ids` so a manager remains accountable for
+    their whole sub-org. The transitive structure stays visible per-person in
+    the Reporting tree tile.
+    """
+    result = await db.execute(
+        select(EmployeeManagerAssignment.employee_id)
+        .join(User, User.id == EmployeeManagerAssignment.employee_id)
+        .where(EmployeeManagerAssignment.manager_id == manager_id)
+        .where(User.tenant_id == tenant_id)
+    )
+    return set(result.scalars().all())
+
+
 async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: int) -> list[User]:
     descendant_ids = await _get_descendant_user_ids(db, manager_id, tenant_id)
     if not descendant_ids:
@@ -113,13 +134,19 @@ async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: i
 
 
 async def _get_managed_users(db: AsyncSession, manager_id: int, tenant_id: int) -> list[User]:
-    """The internal reports under a manager, for the 'My Team' management view.
+    """The manager's DIRECT internal reports, for the 'My Team' management view.
+
+    Shows direct reports only (one level), not the full transitive chain: a
+    senior manager's team list would otherwise flatten their whole sub-org into
+    one unwieldy roster. The full downstream chain is still visible per-person
+    in the Reporting tree tile, and dashboard metrics + access checks still walk
+    the whole chain (`_get_descendant_user_ids`).
 
     External users (clients / contractors) are excluded: they're not part of a
     manager's internal org and shouldn't appear in their team-management screen,
     even if an employee_manager_assignment exists for routing purposes elsewhere.
     """
-    descendant_ids = await _get_descendant_user_ids(db, manager_id, tenant_id)
+    descendant_ids = await _get_direct_report_ids(db, manager_id, tenant_id)
     if not descendant_ids:
         return []
 
