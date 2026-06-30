@@ -81,6 +81,12 @@ const GLOSSARY: Record<string, string | RichTipSpec> = {
   },
   recognized: 'Revenue recognised per the project’s method: as-billed (hours × rate) or % complete (budget × work done).',
   billed: { lead: 'What has been billed so far.', formula: 'approved billable hours × rate' },
+  // Resourcing terms (utilization widget)
+  'team size': 'Number of people in the team this widget covers.',
+  'over-allocated': 'People planned above 100% of their weekly capacity — at risk of burnout or slipping.',
+  'under-utilized': 'People planned below 60% of capacity — bench time that could take on more.',
+  // On-time submissions
+  'on-time submissions': { lead: 'Share of weekly timesheets submitted by their deadline, across the team.', formula: 'on-time weeks ÷ submitted weeks' },
 };
 
 export function infoFor(label: string): string | RichTipSpec | undefined {
@@ -116,16 +122,20 @@ export function infoTextFor(label: string): string | undefined {
 // A metric label with a small info icon that reveals a plain-English definition
 // on hover/focus. Falls back to a plain label when there's no glossary entry.
 export function InfoLabel({
-  label, side = 'top', className,
+  label, side = 'top', className, infoKey,
 }: {
   label: string;
   side?: 'top' | 'bottom' | 'left' | 'right';
   className?: string;
+  // When the visible label differs from the glossary key (e.g. a KPI shows
+  // "Total revenue" but the entry is keyed "revenue"), pass the key here.
+  infoKey?: string;
 }) {
-  const desc = infoFor(label);
+  const lookup = infoKey ?? label;
+  const desc = infoFor(lookup);
   if (!desc) return <span className={className}>{label}</span>;
   const content = typeof desc === 'string' ? desc : <RichTip {...desc} />;
-  const withIcon = showsIcon(label);
+  const withIcon = showsIcon(lookup);
   return (
     <Tooltip label={content} side={side} maxWidth={typeof desc === 'string' ? 260 : undefined}>
       <span className={cn('inline-flex cursor-help items-center gap-1', className)}>

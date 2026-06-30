@@ -123,9 +123,13 @@ export function ShareDashboardModal({ dashboard, open, onClose }: {
 
         {/* Email and PDF export are disabled for now. */}
 
-        <div className="sticky bottom-0 -mx-4 flex justify-end border-t border-border bg-card px-4 pb-4 pt-3">
-          <Button type="button" size="sm" onClick={onClose}>Done</Button>
-        </div>
+        {/* Done only appears once a link exists; before that there's nothing to
+            confirm (the header X still closes the dialog). */}
+        {token ? (
+          <div className="sticky bottom-0 -mx-4 flex justify-end border-t border-border bg-card px-4 pb-4 pt-3">
+            <Button type="button" size="sm" onClick={onClose}>Done</Button>
+          </div>
+        ) : null}
       </div>
       {toast ? <Toast tone={toast.tone} message={toast.text} onDismiss={() => setToast(null)} /> : null}
     </Modal>

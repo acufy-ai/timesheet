@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Plus, Share2, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Share2 } from 'lucide-react';
 
-import { Button, Card, Input, Empty, Toast } from '@/components/ui';
-import { cn } from '@/lib/cn';
+import { Button, Empty, Toast } from '@/components/ui';
 import {
   useCustomDashboards, useCreateCustomDashboard, useUpdateCustomDashboard, useDeleteCustomDashboard,
 } from '@/hooks/useCustomDashboards';
 import type { CustomDashboard, WidgetInstance } from '@/types/customDashboard';
 import { DashboardGrid } from './DashboardGrid';
+import { DashboardSwitcher } from './DashboardSwitcher';
 import { WidgetLibrary } from './WidgetLibrary';
 import { WidgetConfigModal } from './WidgetConfigModal';
 import { NewDashboardModal } from './NewDashboardModal';
@@ -99,89 +99,63 @@ export function DashboardsTab() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-      {/* Left: dashboard list (each row carries its own delete) */}
-      <Card className="h-fit p-2">
-        <div className="flex items-center justify-between px-2 pb-1.5 pt-1">
-          <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Dashboards</span>
-          <button type="button" onClick={() => setNewOpen(true)} title="New dashboard" className="rounded-md p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary">
-            <Plus className="h-4 w-4" />
-          </button>
+    <div className="min-w-0">
+      {/* Toolbar: the dashboard title on the left; the switcher dropdown sits
+          with the Add widget / Share actions on the right. Renaming lives in the
+          dropdown menu (no separate field), but the name is shown here clearly. */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {selected ? (
+            <h2 className="truncate text-lg font-bold text-foreground">{name || selected.name}</h2>
+          ) : null}
+          {selected && !isOwner ? (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Shared by {selected.owner_name ?? 'someone'}</span>
+          ) : null}
         </div>
-        {dashboards.length === 0 ? (
-          <p className="px-2 py-4 text-xs text-muted-foreground">No dashboards yet. Create one.</p>
-        ) : dashboards.map((d) => (
-          <div key={d.id}
-            className={cn('group flex items-center gap-1 rounded-lg pr-1',
-              d.id === selectedId ? 'bg-primary/10' : 'hover:bg-primary/5')}>
-            <button type="button" onClick={() => setSelectedId(d.id)}
-              className={cn('flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm',
-                d.id === selectedId ? 'text-foreground' : 'text-muted-foreground')}>
-              <span className="min-w-0 flex-1 truncate">{d.name}</span>
-              {d.share_token ? <Share2 className="h-3 w-3 shrink-0 text-primary" aria-label="Shared via link" /> : null}
-            </button>
-            {d.is_owner ? (
-              <button type="button" onClick={() => void removeDashboard(d)} title="Delete dashboard"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground opacity-0 hover:bg-rose-500/10 hover:text-rose-600 group-hover:opacity-100">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </Card>
-
-      {/* Right: selected dashboard (owner = always editable; else read-only) */}
-      <div className="min-w-0">
-        {!selected ? (
-          <Empty Icon={Plus} title="No dashboard selected" description="Create a dashboard or pick one from the list."
-            action={<Button size="sm" onClick={() => setNewOpen(true)}>New dashboard</Button>} />
-        ) : (
-          <>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                {isOwner ? (
-                  <Input value={name} onChange={(e) => saveName(e.target.value)} className="h-8 max-w-xs text-sm font-semibold" aria-label="Dashboard name" />
-                ) : (
-                  <h2 className="truncate text-lg font-bold text-foreground">{selected.name}</h2>
-                )}
-                {!isOwner ? (
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Shared by {selected.owner_name ?? 'someone'}</span>
-                ) : null}
-              </div>
-              {isOwner ? (
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="secondary" onClick={() => setLibOpen(true)}><Plus className="h-3.5 w-3.5" /> Add widget</Button>
-                  <Button
-                    size="sm"
-                    variant={selected.share_token ? 'primary' : 'ghost'}
-                    onClick={() => setShareOpen(true)}
-                    title={selected.share_token ? 'Shared via public link — manage sharing' : 'Share this dashboard'}
-                  >
-                    <Share2 className="h-3.5 w-3.5" /> {selected.share_token ? 'Shared' : 'Share'}
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-
-            {/* data-print-dashboard marks the only region kept when exporting
-                (printing) a dashboard — see the @media print rules in index.css.
-                The title above it is included via the print rule too. */}
-            <div data-print-dashboard>
-              <h2 className="mb-3 hidden text-lg font-bold text-foreground print:block">{selected.name}</h2>
-              <AuthedWidgetData>
-                <DashboardGrid
-                  layout={isOwner ? layout : (selected.layout ?? [])}
-                  editing={isOwner}
-                  onChange={saveLayout}
-                  onRemove={(id) => saveLayout(layout.filter((w) => w.id !== id), true)}
-                  onConfigure={(w) => setConfigWidget(w)}
-                  onAdd={() => setLibOpen(true)}
-                />
-              </AuthedWidgetData>
-            </div>
-          </>
-        )}
+        <div className="flex items-center gap-1.5">
+          <DashboardSwitcher
+            dashboards={dashboards}
+            selectedId={selectedId}
+            onSelect={(id) => setSelectedId(id)}
+            onNew={() => setNewOpen(true)}
+            onDelete={(d) => void removeDashboard(d)}
+            onRename={isOwner ? (next) => saveName(next) : undefined}
+          />
+          {selected && isOwner ? (
+            <>
+              <Button size="sm" variant="secondary" onClick={() => setLibOpen(true)}><Plus className="h-3.5 w-3.5" /> Add widget</Button>
+              <Button
+                size="sm"
+                variant={selected.share_token ? 'primary' : 'ghost'}
+                onClick={() => setShareOpen(true)}
+                title={selected.share_token ? 'Shared via public link — manage sharing' : 'Share this dashboard'}
+              >
+                <Share2 className="h-3.5 w-3.5" /> {selected.share_token ? 'Shared' : 'Share'}
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
+
+      {!selected ? (
+        <Empty Icon={Plus} title="No dashboard selected" description="Create a dashboard or pick one from the menu."
+          action={<Button size="sm" onClick={() => setNewOpen(true)}>New dashboard</Button>} />
+      ) : (
+        // data-print-dashboard marks the only region kept when exporting.
+        <div data-print-dashboard>
+          <h2 className="mb-3 hidden text-lg font-bold text-foreground print:block">{selected.name}</h2>
+          <AuthedWidgetData>
+            <DashboardGrid
+              layout={isOwner ? layout : (selected.layout ?? [])}
+              editing={isOwner}
+              onChange={saveLayout}
+              onRemove={(id) => saveLayout(layout.filter((w) => w.id !== id), true)}
+              onConfigure={(w) => setConfigWidget(w)}
+              onAdd={() => setLibOpen(true)}
+            />
+          </AuthedWidgetData>
+        </div>
+      )}
 
       <NewDashboardModal
         open={newOpen}

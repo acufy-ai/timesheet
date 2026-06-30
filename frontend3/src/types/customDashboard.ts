@@ -6,16 +6,48 @@ export type WidgetType =
   | 'kpi' | 'chart' | 'table' | 'health'
   | 'evm' | 'revrec' | 'utilization' | 'ontime';
 
+// How a resource (person) scope is interpreted.
+export type ResourceMode = 'contribution' | 'projects';
+
+// Narrows a widget to clients / projects / a task / a resource. clientIds and
+// projectIds are UNIONED (all those clients' projects, plus those projects), so
+// one widget can consolidate several clients/projects into a single metric. An
+// empty scope = the whole portfolio. resourceMode only applies when userId is
+// set. (clientId/projectId are legacy singulars kept readable for old configs.)
+export interface WidgetScope {
+  clientIds?: number[];
+  projectIds?: number[];
+  taskId?: number;
+  userId?: number;
+  resourceMode?: ResourceMode;
+  // Legacy single-id fields (pre multi-select). Read-only fallback.
+  clientId?: number;
+  projectId?: number;
+}
+
 // Per-type config. Loosely typed; each widget validates what it needs.
 export interface WidgetConfig {
   // kpi
   metric?: string;        // 'revenue' | 'margin_pct' | 'at_risk' | 'utilization' | 'hours' | 'cost' | 'projects'
   // chart
   source?: string;        // 'health' | 'revenue_by_project' | 'margin_by_project'
-  chartKind?: 'donut' | 'bar' | 'line';
+  chartKind?: 'bar' | 'column' | 'donut' | 'pie' | 'line';
   // table
   table?: string;         // 'top_projects' | 'financials' | 'overdue'
+  // health summary view
+  view?: string;          // 'cards' | 'donut' | 'bar'
+  // optional scope (client/project/task/resource)
+  scope?: WidgetScope;
   [k: string]: unknown;
+}
+
+// The pickers the widget-config scope selector offers (from the backend,
+// access-checked).
+export interface DashboardScopeOptions {
+  clients: { id: number; name: string }[];
+  projects: { id: number; name: string; client_id?: number | null }[];
+  tasks: { id: number; title: string; project_id: number }[];
+  people: { id: number; name: string }[];
 }
 
 export interface WidgetInstance {

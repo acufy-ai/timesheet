@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
 
 import { Button, Input, Modal } from '@/components/ui';
-import type { WidgetInstance } from '@/types/customDashboard';
-import { KPI_METRICS, CHART_SOURCES, TABLE_SOURCES, WIDGET_REGISTRY, defaultWidgetTitle } from './widgets';
+import type { WidgetInstance, WidgetScope } from '@/types/customDashboard';
+import { KPI_METRICS, CHART_SOURCES, TABLE_SOURCES, WIDGET_REGISTRY, defaultWidgetTitle, chartKindsFor, HEALTH_VIEWS, type ChartKind, type HealthView } from './widgets';
+import { ScopePicker } from './ScopePicker';
+
+const CHART_KIND_LABEL: Record<ChartKind, string> = {
+  bar: 'Bars', column: 'Columns', donut: 'Donut', pie: 'Pie', line: 'Line',
+};
 
 // Configure a placed widget IN PLACE: its title, and (for kpi/chart/table) the
 // metric / source / table it shows. config-less types (health/evm/revrec/...)
@@ -19,7 +24,10 @@ export function WidgetConfigModal({ widget, onClose, onSave }: {
   const [title, setTitle] = useState('');
   const [metric, setMetric] = useState(KPI_METRICS[0].key);
   const [source, setSource] = useState(CHART_SOURCES[0].key);
+  const [chartKind, setChartKind] = useState<ChartKind>('bar');
+  const [healthView, setHealthView] = useState<HealthView>('cards');
   const [table, setTable] = useState(TABLE_SOURCES[0].key);
+  const [scope, setScope] = useState<WidgetScope>({});
   // Whether the user has overridden the title (else it tracks the metric/source).
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -29,16 +37,23 @@ export function WidgetConfigModal({ widget, onClose, onSave }: {
     setTitleTouched(true); // keep an existing title as-is until changed
     setMetric((widget.config?.metric as string) ?? KPI_METRICS[0].key);
     setSource((widget.config?.source as string) ?? CHART_SOURCES[0].key);
+    setChartKind((widget.config?.chartKind as ChartKind) ?? chartKindsFor(widget.config?.source as string)[0]);
+    setHealthView((widget.config?.view as HealthView) ?? 'cards');
     setTable((widget.config?.table as string) ?? TABLE_SOURCES[0].key);
+    setScope((widget.config?.scope as WidgetScope) ?? {});
   }, [widget]);
 
   if (!widget) return null;
   const meta = WIDGET_REGISTRY[widget.type];
 
-  const nextConfig = widget.type === 'kpi' ? { metric }
-    : widget.type === 'chart' ? { source }
+  const scopeHasAny = (scope.clientIds?.length || scope.projectIds?.length || scope.clientId || scope.projectId || scope.taskId || scope.userId);
+  const scopeClean = scopeHasAny ? scope : undefined;
+  const base = widget.type === 'kpi' ? { metric }
+    : widget.type === 'chart' ? { source, chartKind }
       : widget.type === 'table' ? { table }
-        : (widget.config ?? {});
+        : widget.type === 'health' ? { view: healthView }
+          : {};
+  const nextConfig = { ...base, ...(scopeClean ? { scope: scopeClean } : {}) };
   // Auto title (when the user hasn't typed their own) reflects the selection.
   const autoTitle = defaultWidgetTitle(widget.type, nextConfig);
   const effectiveTitle = titleTouched && title.trim() ? title.trim() : autoTitle;
@@ -55,18 +70,53 @@ export function WidgetConfigModal({ widget, onClose, onSave }: {
             </select>
           </Field>
         ) : widget.type === 'chart' ? (
-          <Field label="Chart">
-            <select value={source} onChange={(e) => { setSource(e.target.value); setTitleTouched(false); }} className={selectClass}>
-              {CHART_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-            </select>
-          </Field>
+          <>
+            <Field label="Data">
+              <select value={source}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setSource(next); setTitleTouched(false);
+                  // Keep the chart kind valid for the new data source.
+                  const allowed = chartKindsFor(next);
+                  if (!allowed.includes(chartKind)) setChartKind(allowed[0]);
+                }}
+                className={selectClass}>
+                {CHART_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </Field>
+            <Field label="Chart type">
+              <div className="inline-flex rounded-lg border border-border p-0.5">
+                {chartKindsFor(source).map((k) => (
+                  <button key={k} type="button" onClick={() => setChartKind(k)}
+                    className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${chartKind === k
+                      ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                    {CHART_KIND_LABEL[k]}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          </>
         ) : widget.type === 'table' ? (
           <Field label="Table">
             <select value={table} onChange={(e) => { setTable(e.target.value); setTitleTouched(false); }} className={selectClass}>
               {TABLE_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
           </Field>
+        ) : widget.type === 'health' ? (
+          <Field label="View">
+            <div className="inline-flex rounded-lg border border-border p-0.5">
+              {HEALTH_VIEWS.map((v) => (
+                <button key={v.key} type="button" onClick={() => setHealthView(v.key)}
+                  className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${healthView === v.key
+                    ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </Field>
         ) : null}
+
+        <ScopePicker type={widget.type} scope={scope} onChange={(s) => { setScope(s); setTitleTouched(false); }} />
 
         <Field label="Title">
           <Input value={titleTouched ? title : autoTitle} onChange={(e) => { setTitle(e.target.value); setTitleTouched(true); }} placeholder={autoTitle} />

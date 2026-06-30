@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Button, Modal } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import type { WidgetInstance, WidgetType } from '@/types/customDashboard';
+import type { WidgetInstance, WidgetScope, WidgetType } from '@/types/customDashboard';
 import { WIDGET_REGISTRY, KPI_METRICS, CHART_SOURCES, TABLE_SOURCES, WIDGET_TYPE_ORDER, WIDGET_DESC, makeWidget } from './widgets';
+import { ScopePicker } from './ScopePicker';
 
-// Pick a widget type + its config, then add it to the dashboard. Returns a fully
-// formed WidgetInstance to the parent.
+// Pick a widget type, its metric/source, AND its scope — the widget is fully
+// configured here, before it's placed. Returns a finished WidgetInstance.
 
 const TYPE_ORDER = WIDGET_TYPE_ORDER;
 
@@ -19,9 +20,17 @@ export function WidgetLibrary({ open, onClose, onAdd }: {
   const [metric, setMetric] = useState(KPI_METRICS[0].key);
   const [source, setSource] = useState(CHART_SOURCES[0].key);
   const [table, setTable] = useState(TABLE_SOURCES[0].key);
+  const [scope, setScope] = useState<WidgetScope>({});
+
+  // Reset everything when the dialog reopens.
+  useEffect(() => {
+    if (!open) return;
+    setType('kpi'); setMetric(KPI_METRICS[0].key); setSource(CHART_SOURCES[0].key);
+    setTable(TABLE_SOURCES[0].key); setScope({});
+  }, [open]);
 
   const add = () => {
-    onAdd(makeWidget(type, { metric, source, table }));
+    onAdd(makeWidget(type, { metric, source, table, scope }));
     onClose();
   };
 
@@ -32,7 +41,7 @@ export function WidgetLibrary({ open, onClose, onAdd }: {
           <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Widget type</label>
           <div className="grid grid-cols-2 gap-2">
             {TYPE_ORDER.map((t) => (
-              <button key={t} type="button" onClick={() => setType(t)}
+              <button key={t} type="button" onClick={() => { setType(t); setScope({}); }}
                 className={cn('rounded-xl border px-3 py-2 text-left text-sm transition-colors',
                   type === t ? 'border-primary bg-primary/5 text-foreground' : 'border-border text-muted-foreground hover:text-foreground')}>
                 <span className="font-medium">{WIDGET_REGISTRY[t].label}</span>
@@ -62,6 +71,8 @@ export function WidgetLibrary({ open, onClose, onAdd }: {
         ) : (
           <p className="text-[13px] text-muted-foreground">{WIDGET_DESC[type] ?? 'Adds this widget with its default configuration.'}</p>
         )}
+
+        <ScopePicker type={type} scope={scope} onChange={setScope} />
 
         <div className="sticky bottom-0 -mx-4 flex justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>

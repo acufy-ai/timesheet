@@ -1,7 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { customDashboardsApi } from '@/api/client';
+import { customDashboardsApi, dashboardApi } from '@/api/client';
 import type { CustomDashboardBody } from '@/types/customDashboard';
+
+// The clients/projects/tasks/people a user may scope a widget to (access-checked
+// server-side). Loaded once and reused by every widget's scope picker.
+export function useDashboardScopeOptions(enabled = true) {
+  return useQuery({
+    queryKey: ['dashboard-scope-options'],
+    queryFn: () => dashboardApi.scopeOptions().then((r) => r.data),
+    enabled, staleTime: 300_000,
+  });
+}
 
 // Configurable Insights dashboards: list (own + shared), create, update
 // (layout/name/share), delete. Mutations invalidate the list.

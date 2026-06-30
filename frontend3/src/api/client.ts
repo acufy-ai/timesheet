@@ -19,6 +19,7 @@ import type {
   HealthConfigResponse,
   ManagerClients,
   ProjectTaskBreakdown,
+  ResourceDetail,
   TeamRejectionStats,
 } from '@/types/dashboard';
 import type {
@@ -38,6 +39,7 @@ import type {
 } from '@/types/platform';
 import type {
   CustomDashboard, CustomDashboardBody, DashboardShareResult, PublicDashboard,
+  WidgetScope, DashboardScopeOptions,
 } from '@/types/customDashboard';
 import type {
   CreateTimeEntry,
@@ -363,6 +365,23 @@ export const authApi = {
     api.post<{ access_token: string; user: unknown }>('/auth/switch-role', { role }),
 };
 
+// Map a WidgetScope to the backend's scope_* query params (only the set keys).
+// clientIds/projectIds go as comma-separated lists; legacy singulars merge in.
+function scopeParams(scope?: WidgetScope): Record<string, unknown> | undefined {
+  if (!scope) return undefined;
+  const clients = [...(scope.clientIds ?? []), ...(scope.clientId ? [scope.clientId] : [])];
+  const projects = [...(scope.projectIds ?? []), ...(scope.projectId ? [scope.projectId] : [])];
+  const p: Record<string, unknown> = {};
+  if (clients.length) p.scope_client_ids = [...new Set(clients)].join(',');
+  if (projects.length) p.scope_project_ids = [...new Set(projects)].join(',');
+  if (scope.taskId) p.scope_task_id = scope.taskId;
+  if (scope.userId) {
+    p.scope_user_id = scope.userId;
+    p.scope_resource_mode = scope.resourceMode ?? 'contribution';
+  }
+  return Object.keys(p).length ? p : undefined;
+}
+
 export const dashboardApi = {
   managerTeamOverview: (weekOffset = 0) =>
     api.get<ManagerTeamOverview>('/dashboard/manager-team-overview', {
@@ -393,12 +412,24 @@ export const dashboardApi = {
     }),
   teamResourcing: (weeks_ahead = 4) =>
     api.get<TeamResourcing>('/dashboard/team-resourcing', { params: { weeks_ahead } }),
-  portfolio: () => api.get<Portfolio>('/dashboard/portfolio'),
-  evm: () => api.get<EvmData>('/dashboard/evm'),
-  revenueRecognition: () => api.get<RevRec>('/dashboard/revenue-recognition'),
+  portfolio: (scope?: WidgetScope) => api.get<Portfolio>('/dashboard/portfolio', { params: scopeParams(scope) }),
+  evm: (scope?: WidgetScope) => api.get<EvmData>('/dashboard/evm', { params: scopeParams(scope) }),
+  revenueRecognition: (scope?: WidgetScope) =>
+    api.get<RevRec>('/dashboard/revenue-recognition', { params: scopeParams(scope) }),
+  // Scope-aware variants for custom-dashboard widgets (the manager-dashboard
+  // calls above pass no scope = whole portfolio, unchanged).
+  scopedFinancials: (scope?: WidgetScope) =>
+    api.get<ManagerFinancials>('/dashboard/manager-financials', { params: scopeParams(scope) }),
+  scopedResourcing: (scope?: WidgetScope, weeks_ahead = 4) =>
+    api.get<TeamResourcing>('/dashboard/team-resourcing', { params: { weeks_ahead, ...scopeParams(scope) } }),
+  scopedOnTime: (scope?: WidgetScope, days_back = 90) =>
+    api.get<TeamOnTimeStats>('/dashboard/team-on-time-stats', { params: { days_back, ...scopeParams(scope) } }),
+  scopeOptions: () => api.get<DashboardScopeOptions>('/dashboard/scope-options'),
   managerClients: () => api.get<ManagerClients>('/dashboard/manager-clients'),
   projectTaskBreakdown: (projectId: number) =>
     api.get<ProjectTaskBreakdown>(`/dashboard/project/${projectId}/task-breakdown`),
+  resourceDetail: (userId: number, days_back = 90) =>
+    api.get<ResourceDetail>(`/dashboard/resource/${userId}`, { params: { days_back } }),
   healthConfig: () => api.get<HealthConfigResponse>('/dashboard/health-config'),
   setHealthConfig: (scope: 'workspace' | 'override', body: HealthConfigBody) =>
     api.put<HealthConfigResponse>('/dashboard/health-config', body, { params: { scope } }),
