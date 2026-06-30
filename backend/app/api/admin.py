@@ -397,7 +397,7 @@ async def upload_tenant_logo(
         )
     if len(content) > _LOGO_MAX_BYTES:
         raise HTTPException(
-            status_code=http_status.HTTP_413_CONTENT_TOO_LARGE,
+            status_code=http_status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"Logo must be at most {_LOGO_MAX_BYTES // 1024 // 1024} MB.",
         )
 
