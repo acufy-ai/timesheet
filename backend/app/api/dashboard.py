@@ -70,6 +70,17 @@ from app.schemas import (
     TeamRejectionRow,
     TeamRejectionStatsResponse,
     UserResponse,
+    DashboardScopeOptions,
+    ScopeClientOption,
+    ScopeProjectOption,
+    ScopeTaskOption,
+    ScopePersonOption,
+    ResourceDetailResponse,
+    ResourceProjectRow,
+    ResourceTaskRow,
+)
+from app.api._dashboard_scope import (
+    DashboardScope, ResolvedScope, get_dashboard_scope, resolve_scope,
 )
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -1451,6 +1462,7 @@ async def get_manager_project_health(
 
 @router.get("/manager-financials", response_model=ManagerFinancialsResponse)
 async def get_manager_financials(
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1467,18 +1479,27 @@ async def get_manager_financials(
     from app.models.contract import Contract
     from app.services.billing_rates import entry_billed_amount, entry_cost_amount
 
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return ManagerFinancialsResponse(summary=FinancialSummary(), projects=[])
+
     team_ids = await _get_scoped_employee_ids(db, current_user)
+    if resolved.user_ids is not None:
+        team_ids = [u for u in team_ids if u in set(resolved.user_ids)]
     if not team_ids:
         return ManagerFinancialsResponse(summary=FinancialSummary(), projects=[])
 
     # All APPROVED entries for the team (revenue is realized on approval).
-    entries = (await db.execute(
-        select(TimeEntry).where(
-            TimeEntry.user_id.in_(team_ids),
-            TimeEntry.tenant_id == current_user.tenant_id,
-            TimeEntry.status == TimeEntryStatus.APPROVED,
-        )
-    )).scalars().all()
+    fin_where = [
+        TimeEntry.user_id.in_(team_ids),
+        TimeEntry.tenant_id == current_user.tenant_id,
+        TimeEntry.status == TimeEntryStatus.APPROVED,
+    ]
+    if resolved.project_ids is not None:
+        fin_where.append(TimeEntry.project_id.in_(resolved.project_ids or [-1]))
+    if resolved.task_id is not None:
+        fin_where.append(TimeEntry.task_id == resolved.task_id)
+    entries = (await db.execute(select(TimeEntry).where(*fin_where))).scalars().all()
     if not entries:
         return ManagerFinancialsResponse(summary=FinancialSummary(), projects=[])
 
@@ -1508,14 +1529,17 @@ async def get_manager_financials(
     # `entries` above are APPROVED-only (revenue realizes on approval), so this
     # extra grouped query supplies the "logged" total. pending_approval =
     # logged - approved is derived on the frontend.
+    logged_where = [
+        TimeEntry.user_id.in_(team_ids),
+        TimeEntry.tenant_id == current_user.tenant_id,
+        TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
+        TimeEntry.project_id.in_(list(managed_ids) or [-1]),
+    ]
+    if resolved.task_id is not None:
+        logged_where.append(TimeEntry.task_id == resolved.task_id)
     logged_rows = (await db.execute(
         select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
-        .where(
-            TimeEntry.user_id.in_(team_ids),
-            TimeEntry.tenant_id == current_user.tenant_id,
-            TimeEntry.status.in_([TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]),
-            TimeEntry.project_id.in_(list(managed_ids) or [-1]),
-        )
+        .where(*logged_where)
         .group_by(TimeEntry.project_id)
     )).all()
     logged_by_pid: dict[int, Decimal] = {
@@ -1923,6 +1947,7 @@ _DEADLINE_WEEKDAYS = {
 @router.get("/team-on-time-stats", response_model=TeamOnTimeStatsResponse)
 async def get_team_on_time_stats(
     days_back: int = Query(90, ge=7, le=365),
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1973,7 +1998,13 @@ async def get_team_on_time_stats(
     today = now_for_tenant(tenant_timezone).date()
     window_start = today - timedelta(days=days_back)
 
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return TeamOnTimeStatsResponse(days_back=days_back, rows=[], team_on_time_pct=None)
+
     team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if resolved.user_ids is not None:
+        team_member_ids = [u for u in team_member_ids if u in set(resolved.user_ids)]
     if not team_member_ids:
         return TeamOnTimeStatsResponse(days_back=days_back, rows=[], team_on_time_pct=None)
 
@@ -1987,14 +2018,19 @@ async def get_team_on_time_stats(
     # Pull the entries we need: any entry in the window that was ever submitted
     # (submitted_at not null). A draft-only week is not counted as "activity"
     # for the on-time measure since there is nothing to be on time about.
+    ontime_where = [
+        TimeEntry.user_id.in_(team_member_ids),
+        TimeEntry.entry_date >= window_start,
+        TimeEntry.entry_date <= today,
+        TimeEntry.submitted_at.is_not(None),
+    ]
+    if resolved.project_ids is not None:
+        ontime_where.append(TimeEntry.project_id.in_(resolved.project_ids or [-1]))
+    if resolved.task_id is not None:
+        ontime_where.append(TimeEntry.task_id == resolved.task_id)
     entries_result = await db.execute(
         select(TimeEntry.user_id, TimeEntry.entry_date, TimeEntry.submitted_at)
-        .where(
-            TimeEntry.user_id.in_(team_member_ids),
-            TimeEntry.entry_date >= window_start,
-            TimeEntry.entry_date <= today,
-            TimeEntry.submitted_at.is_not(None),
-        )
+        .where(*ontime_where)
     )
 
     # Bucket by (user, week-Monday) -> latest submitted_at for that week.
@@ -2204,6 +2240,7 @@ async def get_team_project_matrix(
 @router.get("/team-resourcing", response_model=TeamResourcingResponse)
 async def get_team_resourcing(
     weeks_ahead: int = Query(4, ge=1, le=26),
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2220,7 +2257,15 @@ async def get_team_resourcing(
 
     from app.models.resource_allocation import ResourceAllocation
 
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return TeamResourcingResponse(
+            weeks_ahead=weeks_ahead, team_size=0, over_allocated=0, under_utilized=0, rows=[],
+        )
+
     team_ids = await _get_scoped_employee_ids(db, current_user)
+    if resolved.user_ids is not None:
+        team_ids = [u for u in team_ids if u in set(resolved.user_ids)]
     today = date.today()
     window_end = today + timedelta(weeks=weeks_ahead)
 
@@ -2228,14 +2273,15 @@ async def get_team_resourcing(
         select(User).where(User.id.in_(team_ids or [-1]))
     )).scalars().all()}
 
-    allocs = (await db.execute(
-        select(ResourceAllocation).where(
-            ResourceAllocation.user_id.in_(team_ids or [-1]),
-            ResourceAllocation.tenant_id == current_user.tenant_id,
-            ResourceAllocation.start_date <= window_end,
-            ResourceAllocation.end_date >= today,
-        )
-    )).scalars().all()
+    alloc_where = [
+        ResourceAllocation.user_id.in_(team_ids or [-1]),
+        ResourceAllocation.tenant_id == current_user.tenant_id,
+        ResourceAllocation.start_date <= window_end,
+        ResourceAllocation.end_date >= today,
+    ]
+    if resolved.project_ids is not None:
+        alloc_where.append(ResourceAllocation.project_id.in_(resolved.project_ids or [-1]))
+    allocs = (await db.execute(select(ResourceAllocation).where(*alloc_where))).scalars().all()
 
     proj_name = {pid: name for pid, name in (await db.execute(
         select(Project.id, Project.name).where(Project.tenant_id == current_user.tenant_id)
@@ -2288,8 +2334,194 @@ async def get_team_resourcing(
     )
 
 
+@router.get("/resource/{user_id}", response_model=ResourceDetailResponse)
+async def get_resource_detail(
+    user_id: int,
+    days_back: int = Query(90, ge=7, le=365),
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-employee detail for the resourcing slide-over: billing rate, submitted
+    vs approved hours, billed/cost, and a per-project + per-task hours breakdown
+    (including which tasks they're assigned to). The target must be in the
+    caller's team scope."""
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.project import Project as ProjectModel
+    from app.models.task import Task as TaskModel
+    from app.models.assignments import TaskAssignee
+    from app.services.billing_rates import entry_billed_amount, entry_cost_amount
+
+    # Access gate: the person must be one the caller already manages/sees.
+    scoped = set(await _get_scoped_employee_ids(db, current_user))
+    if user_id not in scoped:
+        raise HTTPException(status_code=404, detail="Employee not found in your team.")
+
+    person = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if person is None:
+        raise HTTPException(status_code=404, detail="Employee not found.")
+
+    today = date.today()
+    window_start = today - timedelta(days=days_back)
+
+    entries = (await db.execute(
+        select(TimeEntry).where(
+            TimeEntry.user_id == user_id,
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.entry_date >= window_start,
+            TimeEntry.entry_date <= today,
+        )
+    )).scalars().all()
+
+    proj_ids = {e.project_id for e in entries}
+    projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(proj_ids) or [-1]))
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+    task_ids = {e.task_id for e in entries if e.task_id is not None}
+    # Tasks the person is assigned to (even with no logged time).
+    assigned_task_ids = set((await db.execute(
+        select(TaskAssignee.task_id).where(TaskAssignee.user_id == user_id, TaskAssignee.tenant_id == current_user.tenant_id)
+    )).scalars().all())
+    all_task_ids = task_ids | assigned_task_ids
+    tasks = {t.id: t for t in (await db.execute(
+        select(TaskModel).where(TaskModel.id.in_(list(all_task_ids) or [-1]))
+    )).scalars().all()}
+
+    # Totals.
+    submitted = approved = billable = Decimal("0")
+    billed = cost = Decimal("0")
+    proj_agg: dict[int, dict] = {}
+    task_agg: dict[int, Decimal] = {}
+    for e in entries:
+        hrs = e.hours or Decimal("0")
+        if e.status in (TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED):
+            submitted += hrs
+        if e.status == TimeEntryStatus.APPROVED:
+            approved += hrs
+            cost += entry_cost_amount(e)
+            d = proj_agg.setdefault(e.project_id, {"hours": Decimal("0"), "billable": Decimal("0"), "billed": Decimal("0"), "untasked": Decimal("0")})
+            d["hours"] += hrs
+            if e.is_billable:
+                billable += hrs
+                amt = entry_billed_amount(e, projects.get(e.project_id))
+                billed += amt
+                d["billable"] += hrs
+                d["billed"] += amt
+            if e.task_id is not None:
+                task_agg[e.task_id] = task_agg.get(e.task_id, Decimal("0")) + hrs
+            else:
+                d["untasked"] += hrs
+
+    proj_rows = []
+    for pid, d in proj_agg.items():
+        p = projects.get(pid)
+        proj_rows.append(ResourceProjectRow(
+            project_id=pid, project_name=p.name if p else f"Project {pid}",
+            client_name=client_name.get(p.client_id) if p else None,
+            hours=d["hours"], billable_hours=d["billable"], billed=d["billed"],
+            untasked_hours=d["untasked"],
+        ))
+    proj_rows.sort(key=lambda r: -float(r.hours))
+
+    task_rows = []
+    for tid in all_task_ids:
+        t = tasks.get(tid)
+        if t is None:
+            continue
+        p = projects.get(t.project_id)
+        task_rows.append(ResourceTaskRow(
+            task_id=tid, task_name=t.name, project_id=t.project_id,
+            project_name=p.name if p else f"Project {t.project_id}",
+            client_name=client_name.get(p.client_id) if p else None,
+            hours=task_agg.get(tid, Decimal("0")),
+            assigned=tid in assigned_task_ids,
+        ))
+    task_rows.sort(key=lambda r: (-float(r.hours), r.task_name.lower()))
+
+    return ResourceDetailResponse(
+        user_id=user_id, full_name=person.full_name, title=person.title,
+        cost_rate=person.cost_rate,
+        submitted_hours=submitted, approved_hours=approved, billable_hours=billable,
+        billed=billed, cost=cost, days_back=days_back,
+        projects=proj_rows, tasks=task_rows,
+    )
+
+
+@router.get("/scope-options", response_model=DashboardScopeOptions)
+async def get_scope_options(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The clients / projects / tasks / people a caller may scope a widget to.
+
+    Built from the caller's MANAGED projects (so the pickers can't reference a
+    project they don't own) + their scoped team. Tasks come from those projects;
+    clients from those projects' client ids.
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+
+    from app.models.task import Task as TaskModel
+
+    tenant_id = current_user.tenant_id
+    team_ids = await _get_scoped_employee_ids(db, current_user)
+
+    # Projects the caller has approved time across, narrowed to the ones they manage.
+    proj_ids_all = set((await db.execute(
+        select(TimeEntry.project_id).where(
+            TimeEntry.user_id.in_(team_ids or [-1]),
+            TimeEntry.tenant_id == tenant_id,
+        ).distinct()
+    )).scalars().all())
+    managed_ids = await _filter_managed_project_ids(db, list(proj_ids_all), tenant_id)
+    projects = (await db.execute(
+        select(Project).where(Project.id.in_(managed_ids or [-1]))
+    )).scalars().all()
+    projects.sort(key=lambda p: (p.name or "").lower())
+
+    client_ids = {p.client_id for p in projects if p.client_id is not None}
+    clients = (await db.execute(
+        select(Client.id, Client.name).where(
+            Client.id.in_(client_ids or [-1]), Client.tenant_id == tenant_id,
+        )
+    )).all()
+
+    tasks = (await db.execute(
+        select(TaskModel.id, TaskModel.name, TaskModel.project_id).where(
+            TaskModel.project_id.in_(managed_ids or [-1]),
+            TaskModel.tenant_id == tenant_id,
+            TaskModel.is_active.is_(True),
+        )
+    )).all()
+
+    people = (await db.execute(
+        select(User.id, User.full_name).where(User.id.in_(team_ids or [-1]))
+    )).all()
+
+    return DashboardScopeOptions(
+        clients=sorted(
+            [ScopeClientOption(id=c.id, name=c.name) for c in clients],
+            key=lambda c: c.name.lower(),
+        ),
+        projects=[ScopeProjectOption(id=p.id, name=p.name, client_id=p.client_id) for p in projects],
+        tasks=sorted(
+            [ScopeTaskOption(id=t.id, title=t.name, project_id=t.project_id) for t in tasks],
+            key=lambda t: t.title.lower(),
+        ),
+        people=sorted(
+            [ScopePersonOption(id=u.id, name=u.full_name or f"User {u.id}") for u in people],
+            key=lambda u: u.name.lower(),
+        ),
+    )
+
+
 @router.get("/portfolio", response_model=PortfolioResponse)
 async def get_portfolio(
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2300,22 +2532,34 @@ async def get_portfolio(
     financials, so the numbers reconcile."""
     if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         raise HTTPException(status_code=403, detail="This endpoint is not available for your role")
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return PortfolioResponse(
+            project_count=0, excellent=0, on_track=0, at_risk=0, critical=0, blocked=0,
+            not_set=0, total_revenue=Decimal("0"), total_cost=Decimal("0"),
+            total_margin_pct=None, rows=[],
+        )
 
     from app.models.project import Project as ProjectModel
     from app.models.client import Client
     from app.services.billing_rates import entry_billed_amount, entry_cost_amount
 
     team_ids = await _get_scoped_employee_ids(db, current_user)
+    if resolved.user_ids is not None:
+        team_ids = [u for u in team_ids if u in set(resolved.user_ids)]
     today = date.today()
     health_cfg = await _load_health_config(db, current_user.tenant_id, current_user.id)
 
-    entries = (await db.execute(
-        select(TimeEntry).where(
-            TimeEntry.user_id.in_(team_ids or [-1]),
-            TimeEntry.tenant_id == current_user.tenant_id,
-            TimeEntry.status == TimeEntryStatus.APPROVED,
-        )
-    )).scalars().all()
+    entry_where = [
+        TimeEntry.user_id.in_(team_ids or [-1]),
+        TimeEntry.tenant_id == current_user.tenant_id,
+        TimeEntry.status == TimeEntryStatus.APPROVED,
+    ]
+    if resolved.project_ids is not None:
+        entry_where.append(TimeEntry.project_id.in_(resolved.project_ids or [-1]))
+    if resolved.task_id is not None:
+        entry_where.append(TimeEntry.task_id == resolved.task_id)
+    entries = (await db.execute(select(TimeEntry).where(*entry_where))).scalars().all()
     proj_ids = {e.project_id for e in entries}
     managed_ids = set(await _filter_managed_project_ids(db, list(proj_ids), current_user.tenant_id))
     projects = {p.id: p for p in (await db.execute(
@@ -2849,6 +3093,7 @@ async def get_project_task_breakdown(
 
 @router.get("/evm", response_model=EvmResponse)
 async def get_evm(
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2870,15 +3115,22 @@ async def get_evm(
     from app.models.project_baseline import ProjectBaseline
     from app.services.billing_rates import entry_cost_amount
 
+    # EVM is per-project; only the client/project scope axes apply (a CPI for a
+    # single task or one person isn't meaningful), so we filter the project set.
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return EvmResponse(rows=[])
+
     team_ids = await _get_scoped_employee_ids(db, current_user)
     today = date.today()
 
-    baselines = (await db.execute(
-        select(ProjectBaseline).where(
-            ProjectBaseline.tenant_id == current_user.tenant_id,
-            ProjectBaseline.is_active == True,  # noqa: E712
-        )
-    )).scalars().all()
+    bl_where = [
+        ProjectBaseline.tenant_id == current_user.tenant_id,
+        ProjectBaseline.is_active == True,  # noqa: E712
+    ]
+    if resolved.project_ids is not None:
+        bl_where.append(ProjectBaseline.project_id.in_(resolved.project_ids or [-1]))
+    baselines = (await db.execute(select(ProjectBaseline).where(*bl_where))).scalars().all()
     if not baselines:
         return EvmResponse(rows=[])
     bl_by_proj = {b.project_id: b for b in baselines}
@@ -2967,6 +3219,7 @@ async def get_evm(
 
 @router.get("/revenue-recognition", response_model=RevRecResponse)
 async def get_revenue_recognition(
+    scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2984,14 +3237,23 @@ async def get_revenue_recognition(
     from app.models.project_baseline import ProjectBaseline
     from app.services.billing_rates import entry_billed_amount
 
+    resolved = await resolve_scope(db, current_user, scope)
+    if resolved.empty:
+        return RevRecResponse(rows=[])
+
     team_ids = await _get_scoped_employee_ids(db, current_user)
-    entries = (await db.execute(
-        select(TimeEntry).where(
-            TimeEntry.user_id.in_(team_ids or [-1]),
-            TimeEntry.tenant_id == current_user.tenant_id,
-            TimeEntry.status == TimeEntryStatus.APPROVED,
-        )
-    )).scalars().all()
+    if resolved.user_ids is not None:
+        team_ids = [u for u in team_ids if u in set(resolved.user_ids)]
+    rr_where = [
+        TimeEntry.user_id.in_(team_ids or [-1]),
+        TimeEntry.tenant_id == current_user.tenant_id,
+        TimeEntry.status == TimeEntryStatus.APPROVED,
+    ]
+    if resolved.project_ids is not None:
+        rr_where.append(TimeEntry.project_id.in_(resolved.project_ids or [-1]))
+    if resolved.task_id is not None:
+        rr_where.append(TimeEntry.task_id == resolved.task_id)
+    entries = (await db.execute(select(TimeEntry).where(*rr_where))).scalars().all()
     proj_ids = {e.project_id for e in entries}
     managed_ids = set(await _filter_managed_project_ids(db, list(proj_ids), current_user.tenant_id))
     projects = {p.id: p for p in (await db.execute(

@@ -1252,6 +1252,76 @@ class PublicDashboardResponse(BaseModel):
     captured_at: Optional[datetime] = None
 
 
+# ── Resourcing: per-employee detail (slide-over panel) ───────────────────────
+class ResourceTaskRow(BaseModel):
+    task_id: Optional[int] = None
+    task_name: str
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    hours: Decimal = Decimal("0")        # approved hours on this task
+    assigned: bool = False               # is the person a TaskAssignee?
+
+
+class ResourceProjectRow(BaseModel):
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    hours: Decimal = Decimal("0")
+    billable_hours: Decimal = Decimal("0")
+    billed: Decimal = Decimal("0")
+    # Approved hours on this project NOT logged against any task (so per-task +
+    # untasked reconciles with the project total).
+    untasked_hours: Decimal = Decimal("0")
+
+
+class ResourceDetailResponse(BaseModel):
+    user_id: int
+    full_name: str
+    title: Optional[str] = None
+    cost_rate: Optional[Decimal] = None
+    # Totals across the window.
+    submitted_hours: Decimal = Decimal("0")
+    approved_hours: Decimal = Decimal("0")
+    billable_hours: Decimal = Decimal("0")
+    billed: Decimal = Decimal("0")       # approved billable × rate
+    cost: Decimal = Decimal("0")         # approved hours × cost rate
+    days_back: int = 90
+    projects: List[ResourceProjectRow] = Field(default_factory=list)
+    tasks: List[ResourceTaskRow] = Field(default_factory=list)
+
+
+# ── Dashboard widget scope options (the pickers in the widget config) ─────────
+class ScopeClientOption(BaseModel):
+    id: int
+    name: str
+
+
+class ScopeProjectOption(BaseModel):
+    id: int
+    name: str
+    client_id: Optional[int] = None
+
+
+class ScopeTaskOption(BaseModel):
+    id: int
+    title: str
+    project_id: int
+
+
+class ScopePersonOption(BaseModel):
+    id: int
+    name: str
+
+
+class DashboardScopeOptions(BaseModel):
+    """Everything the caller may scope a widget to, access-checked server-side."""
+    clients: List[ScopeClientOption] = Field(default_factory=list)
+    projects: List[ScopeProjectOption] = Field(default_factory=list)
+    tasks: List[ScopeTaskOption] = Field(default_factory=list)
+    people: List[ScopePersonOption] = Field(default_factory=list)
+
+
 class ResourcingAllocRow(BaseModel):
     project_id: int
     project_name: str

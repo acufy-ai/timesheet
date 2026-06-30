@@ -84,32 +84,73 @@ async def compute_dashboard_data(
     renders its own empty state.
     """
     from app.api import dashboard as dash  # local import avoids a cycle at load
+    from app.api._dashboard_scope import DashboardScope
 
-    need = _which_bundles(layout)
-    out: dict[str, Any] = {}
+    async def bundle_for(keys: set[str], scope: DashboardScope) -> dict[str, Any]:
+        """Compute the given metric bundles for one scope, AS the owner."""
+        out: dict[str, Any] = {}
 
-    async def run(key: str, coro):
-        try:
-            res = await coro
-            out[key] = res.model_dump(mode="json") if hasattr(res, "model_dump") else res
-        except HTTPException:
-            pass
-        except Exception:
-            pass
+        async def run(key: str, coro):
+            try:
+                res = await coro
+                out[key] = res.model_dump(mode="json") if hasattr(res, "model_dump") else res
+            except HTTPException:
+                pass
+            except Exception:
+                pass
 
-    if "portfolio" in need:
-        await run("portfolio", dash.get_portfolio(db=db, current_user=owner))
-    if "financials" in need:
-        await run("financials", dash.get_manager_financials(db=db, current_user=owner))
-    if "evm" in need:
-        await run("evm", dash.get_evm(db=db, current_user=owner))
-    if "revrec" in need:
-        await run("revrec", dash.get_revenue_recognition(db=db, current_user=owner))
-    if "resourcing" in need:
-        await run("resourcing", dash.get_team_resourcing(weeks_ahead=4, db=db, current_user=owner))
-    if "ontime" in need:
-        await run("ontime", dash.get_team_on_time_stats(days_back=90, db=db, current_user=owner))
+        if "portfolio" in keys:
+            await run("portfolio", dash.get_portfolio(scope=scope, db=db, current_user=owner))
+        if "financials" in keys:
+            await run("financials", dash.get_manager_financials(scope=scope, db=db, current_user=owner))
+        if "evm" in keys:
+            await run("evm", dash.get_evm(scope=scope, db=db, current_user=owner))
+        if "revrec" in keys:
+            await run("revrec", dash.get_revenue_recognition(scope=scope, db=db, current_user=owner))
+        if "resourcing" in keys:
+            await run("resourcing", dash.get_team_resourcing(weeks_ahead=4, scope=scope, db=db, current_user=owner))
+        if "ontime" in keys:
+            await run("ontime", dash.get_team_on_time_stats(days_back=90, scope=scope, db=db, current_user=owner))
+        return out
+
+    # Unscoped widgets share one portfolio-wide bundle (the common case). Scoped
+    # widgets get their own bundle keyed by widget id, mirroring the live path.
+    unscoped = [w for w in (layout or []) if not _scope_of(w)]
+    scoped = [w for w in (layout or []) if _scope_of(w)]
+
+    out: dict[str, Any] = await bundle_for(_which_bundles(unscoped), DashboardScope())
+    per_widget: dict[str, Any] = {}
+    for w in scoped:
+        per_widget[w["id"]] = await bundle_for(_which_bundles([w]), _scope_of(w))
+    if per_widget:
+        out["__scoped__"] = per_widget
     return out
+
+
+def _scope_of(widget: dict[str, Any]) -> Optional["DashboardScope"]:
+    """Build a DashboardScope from a widget's config.scope, or None if unscoped.
+
+    Accepts the multi-select shape (clientIds[]/projectIds[]) and the legacy
+    single-id shape (clientId/projectId) saved before multi-select.
+    """
+    from app.api._dashboard_scope import DashboardScope
+
+    cfg = widget.get("config") or {}
+    s = cfg.get("scope") or {}
+    client_ids = list(s.get("clientIds") or [])
+    if s.get("clientId"):
+        client_ids.append(s["clientId"])
+    project_ids = list(s.get("projectIds") or [])
+    if s.get("projectId"):
+        project_ids.append(s["projectId"])
+    if not (client_ids or project_ids or s.get("taskId") or s.get("userId")):
+        return None
+    return DashboardScope(
+        client_ids=sorted({int(c) for c in client_ids}),
+        project_ids=sorted({int(p) for p in project_ids}),
+        task_id=s.get("taskId"), user_id=s.get("userId"),
+        resource_mode=s.get("resourceMode") or "contribution",
+    )
 
 
 @router.get("/{share_token}", response_model=PublicDashboardResponse)
