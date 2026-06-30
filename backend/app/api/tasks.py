@@ -39,6 +39,7 @@ from app.crud.task_dependency import (
     delete_dependency,
     list_dependencies_for_project,
 )
+from app.crud.time_entry import count_protected_entries_for_task
 from sqlalchemy.future import select
 from sqlalchemy import or_
 
@@ -459,6 +460,22 @@ async def delete_task_endpoint(
     t_project = await get_project_by_id(db, task.project_id, tenant_id=current_user.tenant_id)
     if t_project:
         await assert_client_access(db, current_user, t_project.client_id)
+
+    # Block the delete if it would orphan billing-relevant time entries. Without
+    # this, db.delete(task) NULLs the task_id on submitted/approved/rejected
+    # entries, severing them from the task. Mirrors the project/client guard.
+    protected = await count_protected_entries_for_task(
+        db, task_id, tenant_id=current_user.tenant_id
+    )
+    if protected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot delete this task: it has {protected} submitted, "
+                "approved, or rejected time entries. Reassign or remove those "
+                "entries first."
+            ),
+        )
 
     task_name = task.name
     task_tenant_id = task.tenant_id

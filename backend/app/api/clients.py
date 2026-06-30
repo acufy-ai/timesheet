@@ -429,7 +429,16 @@ async def update_client_endpoint(
         if old_val != new_val:
             changed_fields[field] = {"old": old_val, "new": new_val}
 
-    updated_client = await update_client(db, client, client_update)
+    try:
+        updated_client = await update_client(db, client, client_update)
+    except IntegrityError:
+        # A rename collides with an existing client name in this tenant
+        # (uq_client_tenant_name). The create path catches this too; without it
+        # the update 500s instead of a clean 409.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A client with this name already exists.",
+        )
 
     if client.ingestion_client_id and changed_fields:
         background_tasks.add_task(

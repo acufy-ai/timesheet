@@ -145,6 +145,24 @@ async def count_protected_entries_for_project(
     return int((await db.execute(query)).scalar_one())
 
 
+async def count_protected_entries_for_task(
+    db: AsyncSession, task_id: int, tenant_id: Optional[int] = None
+) -> int:
+    """Count non-DRAFT time entries attached to a task.
+
+    Mirrors the project/client guard: deleting a task would otherwise NULL the
+    task_id on submitted/approved/rejected entries, silently severing billing
+    history from the task. Used to block destructive task deletes.
+    """
+    query = select(func.count(TimeEntry.id)).where(
+        TimeEntry.task_id == task_id,
+        TimeEntry.status != TimeEntryStatus.DRAFT,
+    )
+    if tenant_id is not None:
+        query = query.where(TimeEntry.tenant_id == tenant_id)
+    return int((await db.execute(query)).scalar_one())
+
+
 async def count_protected_entries_for_client(
     db: AsyncSession, client_id: int, tenant_id: Optional[int] = None
 ) -> int:

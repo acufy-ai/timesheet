@@ -303,9 +303,12 @@ async def create_timesheet_entry(
     Employees can only create entries for themselves.
     """
     _ensure_not_locked(current_user)
-    # Employees, managers, and system admins can create their own time entries
+    # Employees, managers, and system admins can create their own time entries.
+    # VIEWER is read-only across the tenant (per the role contract) and is
+    # intentionally excluded; it previously slipped in here, letting a VIEWER
+    # create/edit/delete its own entries despite being a read-only role.
     old_decision = current_user.role in (
-        UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN,
+        UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.ADMIN,
     )
     await shadow_check(
         db,

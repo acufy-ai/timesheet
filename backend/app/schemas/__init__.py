@@ -293,6 +293,30 @@ def _check_in(value, allowed, field):
     return value
 
 
+# Input-only validators. Live on *Create/*Update schemas, NOT on the shared
+# *Base, so *Response can still serialize any odd legacy stored row without a
+# 500 (see the TimeEntry/Project status-validator fixes for the same reason).
+def _check_nonblank(value, field):
+    """A provided name must not be blank/whitespace. None passes (partial update);
+    presence with an empty value is rejected."""
+    if value is not None and not str(value).strip():
+        raise ValueError(f"{field} cannot be empty")
+    return value
+
+
+def _check_nonneg(value, field):
+    """A provided monetary/amount value must be >= 0. None passes."""
+    if value is not None and value < 0:
+        raise ValueError(f"{field} cannot be negative")
+    return value
+
+
+def _check_date_order(start, end, start_field="start_date", end_field="end_date"):
+    """When both dates are set, end must not precede start."""
+    if start is not None and end is not None and end < start:
+        raise ValueError(f"{end_field} cannot be before {start_field}")
+
+
 class ClientBase(BaseModel):
     name: str
     client_type: str = "external"
@@ -310,6 +334,11 @@ class ClientCreate(ClientBase):
     # Input-only validation; kept off ClientBase so ClientResponse serializes a
     # stored client whose status/client_type predates the current allowlist
     # without 500-ing every list it appears in. See the TimeEntry/Project fixes.
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
+
     @field_validator("client_type")
     @classmethod
     def _valid_client_type(cls, v):
@@ -332,6 +361,11 @@ class ClientUpdate(BaseModel):
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = None
     client_self_manage_enabled: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
 
     @field_validator("client_type")
     @classmethod
@@ -430,7 +464,10 @@ class ClientContactBase(BaseModel):
 
 
 class ClientContactCreate(ClientContactBase):
-    pass
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
 
 
 class ClientContactUpdate(BaseModel):
@@ -439,6 +476,11 @@ class ClientContactUpdate(BaseModel):
     emails: Optional[list[dict]] = None
     phones: Optional[list[dict]] = None
     is_primary: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
 
 
 class ClientContactResponse(ClientContactBase):
@@ -455,7 +497,10 @@ class ClientRoleRateBase(BaseModel):
 
 
 class ClientRoleRateCreate(ClientRoleRateBase):
-    pass
+    @field_validator("rate")
+    @classmethod
+    def _rate_nonneg(cls, v):
+        return _check_nonneg(v, "rate")
 
 
 class ClientRoleRateUpdate(BaseModel):
@@ -463,6 +508,11 @@ class ClientRoleRateUpdate(BaseModel):
     rate: Optional[Decimal] = None
     currency: Optional[str] = None
     effective_date: Optional[date] = None
+
+    @field_validator("rate")
+    @classmethod
+    def _rate_nonneg(cls, v):
+        return _check_nonneg(v, "rate")
 
 
 class ClientRoleRateResponse(ClientRoleRateBase):
@@ -570,6 +620,21 @@ class ProjectCreate(ProjectBase):
             raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
         return v
 
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
+
+    @field_validator("billable_rate")
+    @classmethod
+    def _rate_nonneg(cls, v):
+        return _check_nonneg(v, "billable_rate")
+
+    @model_validator(mode="after")
+    def _date_order(self):
+        _check_date_order(self.start_date, self.end_date)
+        return self
+
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -604,6 +669,21 @@ class ProjectUpdate(BaseModel):
         if v is not None and v not in ("as_billed", "percent_complete"):
             raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
         return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
+
+    @field_validator("billable_rate")
+    @classmethod
+    def _rate_nonneg(cls, v):
+        return _check_nonneg(v, "billable_rate")
+
+    @model_validator(mode="after")
+    def _date_order(self):
+        _check_date_order(self.start_date, self.end_date)
+        return self
 
 
 class ProjectResponse(ProjectBase):
@@ -648,6 +728,16 @@ class TaskCreate(TaskBase):
     def _valid_status(cls, v):
         return _check_status(v, _TASK_STATUSES, "task status")
 
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
+
+    @model_validator(mode="after")
+    def _date_order(self):
+        _check_date_order(self.start_date, self.due_date, "start_date", "due_date")
+        return self
+
 
 class TaskUpdate(BaseModel):
     project_id: Optional[int] = None
@@ -668,6 +758,16 @@ class TaskUpdate(BaseModel):
     @classmethod
     def _valid_status(cls, v):
         return _check_status(v, _TASK_STATUSES, "task status")
+
+    @field_validator("name")
+    @classmethod
+    def _name_nonblank(cls, v):
+        return _check_nonblank(v, "name")
+
+    @model_validator(mode="after")
+    def _date_order(self):
+        _check_date_order(self.start_date, self.due_date, "start_date", "due_date")
+        return self
 
 
 class ClientAssigneeInfo(BaseModel):

@@ -534,7 +534,23 @@ async def register(
         _validate_new_password(user_create.password)
 
     # Create user (in per-tenant DB; create_user mirrors stub into shared DB).
-    new_user, _temp_password, _invite_url = await create_user(db, user_create)
+    # create_user raises ValueError on role-profile rule violations (e.g. a
+    # missing title/department) and IntegrityError on a duplicate. Translate
+    # both to a clean 4xx, mirroring POST /users; without this they propagate
+    # as a 500.
+    from sqlalchemy.exc import IntegrityError
+    try:
+        new_user, _temp_password, _invite_url = await create_user(db, user_create)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email or username already exists",
+        )
     return new_user
 
 
