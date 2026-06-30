@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { BarChart3, CalendarRange, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
+import { BarChart3, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
-import { Input, Tooltip, WorkspaceHeader } from '@/components/ui';
+import { Input, Pager, Tooltip, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/cn';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import { useEvm, useManagerFinancials, usePortfolio, useRevenueRecognition, useTeamResourcing } from '@/hooks/useDashboard';
 import { DashboardsTab } from '@/components/insights/DashboardsTab';
 import { ResourceDetailPanel } from '@/components/insights/ResourceDetailPanel';
@@ -42,7 +43,7 @@ const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
   { key: 'financials', label: 'Financials', Icon: BarChart3 },
   { key: 'resourcing', label: 'Resources', Icon: Layers },
-  { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
+  // Forecasts tab disabled for now (kept the component + route for later).
   { key: 'dashboards', label: 'Dashboards', Icon: LayoutDashboard },
 ];
 
@@ -89,9 +90,8 @@ export function InsightsPage() {
 
       {tab === 'financials' ? <FinancialsTab />
         : tab === 'resourcing' ? <ResourcingTab />
-        : tab === 'portfolio' ? <PortfolioTab />
         : tab === 'dashboards' ? <DashboardsTab />
-        : <ForecastsTab />}
+        : <PortfolioTab />}
     </div>
   );
 }
@@ -104,7 +104,9 @@ function indexTone(v: number | null | undefined): string {
   return 'text-rose-600 dark:text-rose-400';
 }
 
-function ForecastsTab() {
+// Exported (not rendered) so it's preserved for when the Forecasts tab is
+// re-enabled; the tab is currently disabled in TABS above.
+export function ForecastsTab() {
   const q = useEvm();
   const navigate = useNavigate();
   if (q.isLoading) {
@@ -289,7 +291,7 @@ function PortfolioTab() {
                 </th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Revenue" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Margin" side="bottom" /></th>
-                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget burn" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget %" infoKey="budget burn" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold">Ends in</th>
               </tr>
             </thead>
@@ -395,6 +397,14 @@ function ResourcingTab() {
     return all;
   }, [d, search, filter]);
 
+  // Paginate the (filtered) list so the page shows a fixed number of rows and
+  // the rest go to the next page. Page size shrinks when the detail panel is
+  // open so the narrower list still fits without scrolling the whole page.
+  const pageSize = openUser != null ? 8 : 12;
+  const { pageItems, page, pages, total, start, end, setPage } = useClientPagination(rows, pageSize);
+  // Reset to the first page whenever the filter/search changes the result set.
+  useEffect(() => { setPage(1); }, [search, filter]);
+
   if (q.isLoading) {
     return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
   }
@@ -425,7 +435,9 @@ function ResourcingTab() {
       {/* List + (when open) an in-flow detail panel beside it: the list shrinks
           to make room, and rows stay clickable so you can switch employees. */}
       <div className="flex items-start gap-4">
-        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-card">
+        {/* When the detail panel is open the list and panel split the row 50/50
+            (both flex-1 basis-0); when closed the list takes the full width. */}
+        <div className={cn('min-w-0 rounded-2xl border border-border bg-card', panelOpen ? 'flex-1 basis-0' : 'flex-1')}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div>
               <p className="text-sm font-semibold text-foreground">Team capacity for the next {d.weeks_ahead} weeks</p>
@@ -444,7 +456,7 @@ function ResourcingTab() {
           <div className="divide-y divide-border">
             {rows.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">No people match {search.trim() ? 'your search' : 'this filter'}.</p>
-            ) : rows.map((r) => {
+            ) : pageItems.map((r) => {
               const m = stateMeta(r.state);
               // 100% = a full bar. Over-capacity stays full (it can't exceed the
               // track) and is signalled by the rose colour + the % label.
@@ -472,6 +484,9 @@ function ResourcingTab() {
               );
             })}
           </div>
+          {pages > 1 ? (
+            <Pager page={page} pages={pages} total={total} start={start} end={end} onPage={setPage} unit="people" />
+          ) : null}
         </div>
         {panelOpen ? (
           <ResourceDetailPanel userId={openUser.id} name={openUser.name} onClose={() => setOpenUser(null)} />

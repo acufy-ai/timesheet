@@ -158,7 +158,7 @@ export function FinancialsReport({ data, revrec }: { data: ManagerFinancials; re
               <SortHead label="Revenue" k="revenue" align="right" />
               <SortHead label="Cost" k="cost" align="right" />
               <SortHead label="Margin" k="margin" align="right" />
-              <SortHead label="Budget burn" k="budget" align="right" />
+              <SortHead label="Budget %" k="budget" align="right" />
               <SortHead label="Contract billed" k="contract" align="right" />
               {revrec ? <th className="table-header-cell table-header-cell-sticky sticky top-0 z-10 whitespace-nowrap text-center">Rev-rec method</th> : null}
               {revrec ? <SortHead label="Recognized" k="recognized" align="right" /> : null}
