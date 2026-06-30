@@ -2416,16 +2416,80 @@ async def get_resource_detail(
             else:
                 d["untasked"] += hrs
 
+    # ── Forward planned allocation (matches the resourcing row exactly) ───────
+    from app.models.resource_allocation import ResourceAllocation
+    today2 = date.today()
+    window_end = today2 + timedelta(weeks=8)
+    allocs = (await db.execute(
+        select(ResourceAllocation).where(
+            ResourceAllocation.user_id == user_id,
+            ResourceAllocation.tenant_id == current_user.tenant_id,
+            ResourceAllocation.start_date <= window_end,
+            ResourceAllocation.end_date >= today2,
+        )
+    )).scalars().all()
+    cap = person.weekly_capacity_hours or Decimal("40")
+    planned_by_proj: dict[int, Decimal] = {}
+    for a in allocs:
+        if a.percent is not None:
+            pc = a.percent
+        elif a.hours_per_week is not None and cap > 0:
+            pc = a.hours_per_week / cap * 100
+        else:
+            pc = Decimal("0")
+        planned_by_proj[a.project_id] = planned_by_proj.get(a.project_id, Decimal("0")) + pc
+    allocated_pct = int(round(sum(planned_by_proj.values(), Decimal("0"))))
+    capacity_state = "over" if allocated_pct > 100 else ("under" if allocated_pct < 60 else "ok")
+
+    # Make sure every allocated project surfaces, even with no logged time.
+    alloc_proj_ids = set(planned_by_proj)
+    missing_alloc_projects = {p.id: p for p in (await db.execute(
+        select(ProjectModel).where(ProjectModel.id.in_(list(alloc_proj_ids - set(proj_agg)) or [-1]))
+    )).scalars().all()}
+    projects.update(missing_alloc_projects)
+    for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all():
+        client_name.setdefault(cid, name)
+
     proj_rows = []
-    for pid, d in proj_agg.items():
+    all_proj_ids = set(proj_agg) | alloc_proj_ids
+    for pid in all_proj_ids:
+        d = proj_agg.get(pid, {"hours": Decimal("0"), "billable": Decimal("0"), "billed": Decimal("0"), "untasked": Decimal("0")})
         p = projects.get(pid)
+        planned = planned_by_proj.get(pid)
         proj_rows.append(ResourceProjectRow(
             project_id=pid, project_name=p.name if p else f"Project {pid}",
             client_name=client_name.get(p.client_id) if p else None,
             hours=d["hours"], billable_hours=d["billable"], billed=d["billed"],
             untasked_hours=d["untasked"],
+            planned_pct=int(round(planned)) if planned is not None else None,
         ))
-    proj_rows.sort(key=lambda r: -float(r.hours))
+    # Sort: by planned allocation desc (forward focus), then logged hours desc.
+    proj_rows.sort(key=lambda r: (-(r.planned_pct or 0), -float(r.hours)))
+
+    # ── Plain-English "why" for the capacity bucket ──────────────────────────
+    n_proj = len(planned_by_proj)
+    top = sorted(planned_by_proj.items(), key=lambda kv: -kv[1])
+    top_names = [f"{projects[pid].name if projects.get(pid) else f'Project {pid}'} ({int(round(pc))}%)" for pid, pc in top[:2]]
+    if capacity_state == "over":
+        capacity_summary = (
+            f"Allocated {allocated_pct}% across {n_proj} project{'s' if n_proj != 1 else ''} "
+            f"({', '.join(top_names)}){' and more' if n_proj > 2 else ''} — "
+            f"{allocated_pct - 100}% beyond a full schedule. Consider reducing a booking or extending a deadline."
+        )
+    elif capacity_state == "under":
+        if allocated_pct == 0:
+            capacity_summary = "No active allocations — fully available to take on work."
+        else:
+            capacity_summary = (
+                f"Allocated {allocated_pct}% ({', '.join(top_names)}) — about {100 - allocated_pct}% of capacity is free for more work."
+            )
+    else:
+        capacity_summary = (
+            f"Allocated {allocated_pct}% across {n_proj} project{'s' if n_proj != 1 else ''} "
+            f"({', '.join(top_names)}){' and more' if n_proj > 2 else ''} — a healthy, near-full schedule."
+        )
 
     task_rows = []
     for tid in all_task_ids:
@@ -2447,6 +2511,7 @@ async def get_resource_detail(
         cost_rate=person.cost_rate,
         submitted_hours=submitted, approved_hours=approved, billable_hours=billable,
         billed=billed, cost=cost, days_back=days_back,
+        allocated_pct=allocated_pct, capacity_state=capacity_state, capacity_summary=capacity_summary,
         projects=proj_rows, tasks=task_rows,
     )
 

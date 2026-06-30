@@ -124,6 +124,7 @@ export interface ResourceProjectRow {
   billable_hours: string | number;
   billed: string | number;
   untasked_hours: string | number;
+  planned_pct?: number | null;
 }
 export interface ResourceTaskRow {
   task_id?: number | null;
@@ -145,6 +146,9 @@ export interface ResourceDetail {
   billed: string | number;
   cost: string | number;
   days_back: number;
+  allocated_pct: number;
+  capacity_state: 'over' | 'ok' | 'under';
+  capacity_summary: string;
   projects: ResourceProjectRow[];
   tasks: ResourceTaskRow[];
 }

@@ -1273,6 +1273,10 @@ class ResourceProjectRow(BaseModel):
     # Approved hours on this project NOT logged against any task (so per-task +
     # untasked reconciles with the project total).
     untasked_hours: Decimal = Decimal("0")
+    # Planned forward allocation on this project (% of weekly capacity). None
+    # when the project has logged time but no current allocation. A project may
+    # appear with planned_pct set and hours=0 (booked but not yet worked).
+    planned_pct: Optional[int] = None
 
 
 class ResourceDetailResponse(BaseModel):
@@ -1287,6 +1291,11 @@ class ResourceDetailResponse(BaseModel):
     billed: Decimal = Decimal("0")       # approved billable × rate
     cost: Decimal = Decimal("0")         # approved hours × cost rate
     days_back: int = 90
+    # Forward capacity (matches the resourcing row): total planned allocation %,
+    # the bucket, and a plain-English explanation of why.
+    allocated_pct: int = 0
+    capacity_state: str = "ok"           # 'over' | 'ok' | 'under'
+    capacity_summary: str = ""
     projects: List[ResourceProjectRow] = Field(default_factory=list)
     tasks: List[ResourceTaskRow] = Field(default_factory=list)
 

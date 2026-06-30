@@ -47,32 +47,49 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
         <div className="grid flex-1 place-items-center px-6 py-16 text-center text-sm text-muted-foreground">Couldn't load this employee's detail.</div>
       ) : (
         <div className="flex-1 space-y-4 overflow-y-auto p-4">
+            {/* Capacity summary — why this person is over / at / under capacity. */}
+            {d.capacity_summary ? (
+              <div className={cn('rounded-lg border p-3', capacityClasses(d.capacity_state))}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wide">{capacityLabel(d.capacity_state)}</span>
+                  <span className="text-sm font-bold tabular-nums">{d.allocated_pct}% allocated</span>
+                </div>
+                <p className="mt-1 text-[12px] opacity-90">{d.capacity_summary}</p>
+              </div>
+            ) : null}
+
             {/* Billing + hours summary */}
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border">
               <Stat label="Billed" value={fmtMoney(d.billed)} hint={`last ${d.days_back} days`} />
-              <Stat label="Cost" value={fmtMoney(d.cost)} hint={d.cost_rate != null ? `${fmtMoney(d.cost_rate)}/h` : 'no cost rate'} />
+              <Stat label="Cost" value={fmtMoney(d.cost)} hint={d.cost_rate != null ? `${fmtMoney(d.cost_rate)}/h cost` : 'no cost rate'} />
               <Stat label="Approved hours" value={`${num(d.approved_hours)}h`} hint={`${num(d.billable_hours)}h billable`} />
               <Stat label="Submitted hours" value={`${num(d.submitted_hours)}h`} hint="submitted + approved" />
             </div>
 
-            {/* Per-project, with that project's tasks nested under it so the
-                per-task hours reconcile with the project total (plus any time
-                logged at the project level with no task). */}
-            <Section title="Projects & tasks" count={d.projects.length}>
-              {d.projects.length === 0 ? <Empty>No approved time in this window.</Empty> : (
+            {/* Per-project: planned allocation (forward) reconciled with logged
+                time (actuals). A project may show a planned % with 0h logged
+                (booked, not yet worked) — that's why the row and panel match. */}
+            <Section title="Projects" count={d.projects.length}>
+              {d.projects.length === 0 ? <Empty>No allocations or logged time in this window.</Empty> : (
                 <div className="space-y-2.5">
                   {d.projects.map((p) => {
                     const tasks = d.tasks.filter((t) => t.project_id === p.project_id);
+                    const plannedOnly = p.planned_pct != null && num(p.hours) === 0;
                     return (
                       <div key={p.project_id} className="rounded-lg border border-border/70 p-2.5">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-foreground">{p.project_name}</p>
+                            <p className="flex items-center gap-1.5 truncate text-sm font-semibold text-foreground">
+                              {p.project_name}
+                              {p.planned_pct != null ? (
+                                <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{p.planned_pct}% planned</span>
+                              ) : null}
+                            </p>
                             {p.client_name ? <p className="truncate text-[11px] text-muted-foreground">{p.client_name}</p> : null}
                           </div>
                           <div className="shrink-0 text-right">
                             <p className="text-sm font-semibold tabular-nums text-foreground">{num(p.hours)}h</p>
-                            <p className="text-[11px] text-muted-foreground">{fmtMoney(p.billed)} billed</p>
+                            <p className="text-[11px] text-muted-foreground">{plannedOnly ? 'no time logged yet' : `${fmtMoney(p.billed)} billed`}</p>
                           </div>
                         </div>
                         {(tasks.length || num(p.untasked_hours) > 0) ? (
@@ -104,6 +121,19 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
         )}
     </aside>
   );
+}
+
+// Capacity banner styling per bucket. Uses the same status colours as the
+// resourcing list (rose = over, emerald = at target, sky = available).
+function capacityClasses(state: string): string {
+  if (state === 'over') return 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300';
+  if (state === 'under') return 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+}
+function capacityLabel(state: string): string {
+  if (state === 'over') return 'Over capacity';
+  if (state === 'under') return 'Available capacity';
+  return 'At target capacity';
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
