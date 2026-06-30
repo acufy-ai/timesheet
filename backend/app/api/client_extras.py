@@ -247,9 +247,17 @@ async def _note_response(db: AsyncSession, row: ClientNote) -> dict:
     (so the note card + search can show/match project name, code, task name)."""
     project = await db.get(Project, row.project_id) if row.project_id else None
     task = await db.get(Task, row.task_id) if row.task_id else None
+    # Prefer the author's LIVE name (resolved from author_user_id) so renames are
+    # reflected; fall back to the stored snapshot when the user is gone or the
+    # note was created without a user link.
+    author = row.author
+    if row.author_user_id is not None:
+        author_user = await db.get(User, row.author_user_id)
+        if author_user is not None and author_user.full_name:
+            author = author_user.full_name
     return {
         "id": row.id, "client_id": row.client_id,
-        "author": row.author, "author_user_id": row.author_user_id,
+        "author": author, "author_user_id": row.author_user_id,
         "body": row.body, "note_date": row.note_date,
         "project_id": row.project_id, "task_id": row.task_id,
         "project_name": project.name if project else None,

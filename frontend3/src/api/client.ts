@@ -102,6 +102,7 @@ import type {
   ClientPortalUser,
   ClientInviteBody,
   PortalProject,
+  PortalTaskNote,
   ClientManagerContext,
   ClientEmployeeSummary,
   ClientReviewItem,
@@ -577,6 +578,9 @@ export const clientPortalApi = {
   createTask: (body: { project_id: number; name: string; description?: string }) =>
     api.post<{ id: number; project_id: number; name: string; status: string }>('/client-portal/tasks', body),
   deleteTask: (taskId: number) => api.delete(`/client-portal/tasks/${taskId}`),
+  listTaskNotes: (taskId: number) => api.get<PortalTaskNote[]>(`/client-portal/tasks/${taskId}/notes`),
+  addTaskNote: (taskId: number, body: string) =>
+    api.post<PortalTaskNote>(`/client-portal/tasks/${taskId}/notes`, { body }),
   updateProject: (projectId: number, body: { description?: string }) =>
     api.patch<{ id: number; description: string | null }>(`/client-portal/projects/${projectId}`, body),
   // Orienting context for any client-side user (org, role, manager, account team).

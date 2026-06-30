@@ -134,6 +134,16 @@ export interface PortalProject {
   tasks: PortalTask[];
 }
 
+export interface PortalTaskNote {
+  id: number;
+  author?: string | null;
+  author_user_id?: number | null;
+  body: string;
+  note_date?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface ClientPortalUser {
   user_id: number;
   full_name: string;

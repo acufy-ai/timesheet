@@ -2209,6 +2209,11 @@ class PortalTaskCreate(BaseModel):
     description: Optional[str] = None
 
 
+class PortalTaskNoteCreate(BaseModel):
+    """Client adding a note to a task they have UPDATE on."""
+    body: str = Field(..., min_length=1)
+
+
 class PortalProjectUpdate(BaseModel):
     """Client editing a project they have UPDATE on (description only — name,
     status, billing etc. stay manager-owned)."""

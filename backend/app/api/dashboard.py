@@ -1001,6 +1001,118 @@ def _working_days_between(start: date, end_inclusive: date) -> int:
     return days
 
 
+def _overlap_weeks(a_start: date, a_end: date, w_start: date, w_end: date) -> Decimal:
+    """Fractional number of weeks an allocation [a_start,a_end] covers within the
+    planning window [w_start,w_end]. Used to weight an allocation's intensity by
+    how much of the window it actually spans (a 1-week booking shouldn't count
+    the same as one spanning the whole window)."""
+    lo = max(a_start, w_start)
+    hi = min(a_end, w_end)
+    if hi < lo:
+        return Decimal("0")
+    days = (hi - lo).days + 1
+    return Decimal(days) / Decimal("7")
+
+
+def compute_capacity(
+    allocations,
+    weekly_capacity: Decimal,
+    window_start: date,
+    window_end: date,
+    pto_hours_in_window: Decimal = Decimal("0"),
+    holiday_workdays_in_window: int = 0,
+) -> dict:
+    """Capacity utilization for ONE person over a planning window.
+
+    Refinements over a flat percent-sum:
+      - Each allocation is WEIGHTED by how many of the window's weeks it spans
+        (a booking covering 2 of 8 weeks contributes 2/8 of its weekly load).
+      - Available capacity is REDUCED by approved PTO + holidays in the window,
+        so someone booked 100% who is also off that period reads as a conflict.
+
+    Returns: allocated_pct (int), state ('over'|'ok'|'under'), per-project planned
+    percents (window-weighted, of nominal weekly capacity), and a pto/holiday
+    flag for conflict surfacing.
+    """
+    window_weeks = _overlap_weeks(window_start, window_end, window_start, window_end)
+    if window_weeks <= 0:
+        window_weeks = Decimal("1")
+    cap = weekly_capacity if weekly_capacity and weekly_capacity > 0 else Decimal("40")
+
+    # Nominal capacity-hours across the window, then subtract time off.
+    nominal_hours = cap * window_weeks
+    holiday_hours = (cap / 5) * Decimal(holiday_workdays_in_window)  # workday = cap/5
+    available_hours = max(nominal_hours - pto_hours_in_window - holiday_hours, Decimal("0"))
+
+    # Each allocation's hours = weekly intensity (hrs) × weeks it overlaps.
+    planned_by_proj: dict[int, Decimal] = {}
+    total_alloc_hours = Decimal("0")
+    for a in allocations:
+        if a.percent is not None:
+            weekly_hours = a.percent / 100 * cap
+        elif a.hours_per_week is not None:
+            weekly_hours = a.hours_per_week
+        else:
+            weekly_hours = Decimal("0")
+        weeks = _overlap_weeks(a.start_date, a.end_date, window_start, window_end)
+        alloc_hours = weekly_hours * weeks
+        total_alloc_hours += alloc_hours
+        # Express each project's planned share as a % of NOMINAL window capacity
+        # (so "70% planned" reads naturally), window-weighted.
+        planned_by_proj[a.project_id] = planned_by_proj.get(a.project_id, Decimal("0")) + (
+            (alloc_hours / nominal_hours * 100) if nominal_hours > 0 else Decimal("0")
+        )
+
+    # Utilization is against AVAILABLE (time-off-adjusted) capacity, so PTO pushes
+    # the percentage up — that's how "booked but off" surfaces as over-capacity.
+    allocated_pct = int(round((total_alloc_hours / available_hours * 100))) if available_hours > 0 else (
+        100 if total_alloc_hours > 0 else 0
+    )
+    state = "over" if allocated_pct > 100 else ("under" if allocated_pct < 60 else "ok")
+    return {
+        "allocated_pct": allocated_pct,
+        "state": state,
+        "planned_by_proj": {pid: int(round(pc)) for pid, pc in planned_by_proj.items()},
+        "pto_hours": int(round(pto_hours_in_window)),
+        "holiday_days": holiday_workdays_in_window,
+        "available_hours": int(round(available_hours)),
+        "nominal_hours": int(round(nominal_hours)),
+    }
+
+
+async def _pto_and_holidays_in_window(
+    db: AsyncSession, tenant_id: int, user_ids: list[int], window_start: date, window_end: date,
+) -> tuple[dict[int, Decimal], int]:
+    """Approved PTO hours per user, and the count of holiday WORKDAYS, within the
+    window. Holidays are tenant-wide; PTO is per user (APPROVED only)."""
+    from app.models.holiday import Holiday
+
+    pto: dict[int, Decimal] = {}
+    if user_ids:
+        rows = (await db.execute(
+            select(TimeOffRequest.user_id, func.coalesce(func.sum(TimeOffRequest.hours), 0))
+            .where(
+                TimeOffRequest.user_id.in_(user_ids),
+                TimeOffRequest.tenant_id == tenant_id,
+                TimeOffRequest.status == TimeOffStatus.APPROVED,
+                TimeOffRequest.request_date >= window_start,
+                TimeOffRequest.request_date <= window_end,
+            )
+            .group_by(TimeOffRequest.user_id)
+        )).all()
+        pto = {uid: Decimal(str(h or 0)) for uid, h in rows}
+
+    holiday_dates = (await db.execute(
+        select(Holiday.date).where(
+            Holiday.tenant_id == tenant_id,
+            Holiday.date >= window_start,
+            Holiday.date <= window_end,
+        )
+    )).scalars().all()
+    holiday_workdays = sum(1 for d in holiday_dates if d.weekday() < 5)
+    return pto, holiday_workdays
+
+
 @router.get("/manager-team-overview", response_model=ManagerTeamOverviewResponse)
 async def get_manager_team_overview(
     week_offset: int = Query(
@@ -2287,43 +2399,50 @@ async def get_team_resourcing(
         select(Project.id, Project.name).where(Project.tenant_id == current_user.tenant_id)
     )).all()}
 
-    # Sum intensity per user across overlapping allocations.
-    DEFAULT_CAP = Decimal("40")
     by_user: dict[int, list[ResourceAllocation]] = {}
     for a in allocs:
         by_user.setdefault(a.user_id, []).append(a)
 
+    # NOTE: PTO/holiday capacity reduction is intentionally disabled for now
+    # (allocation and time off are kept independent; we'll revisit). The window
+    # weighting below stays active.
+
     rows: list[ResourcingRow] = []
     over = under = 0
+    DEFAULT_CAP = Decimal("40")
     for uid in team_ids:
         u = members.get(uid)
         if u is None:
             continue
         cap = u.weekly_capacity_hours or DEFAULT_CAP
         user_allocs = by_user.get(uid, [])
-        pct_total = Decimal("0")
+        c = compute_capacity(user_allocs, cap, today, window_end)
+        planned = c["planned_by_proj"]
         projects: list[ResourcingAllocRow] = []
         for a in user_allocs:
-            if a.percent is not None:
-                p = a.percent
-            elif a.hours_per_week is not None and cap > 0:
-                p = (a.hours_per_week / cap * 100)
-            else:
-                p = Decimal("0")
-            pct_total += p
             projects.append(ResourcingAllocRow(
                 project_id=a.project_id, project_name=proj_name.get(a.project_id, ""),
-                percent=int(round(p)), start_date=a.start_date.isoformat(), end_date=a.end_date.isoformat(),
+                percent=planned.get(a.project_id, 0),
+                start_date=a.start_date.isoformat(), end_date=a.end_date.isoformat(),
             ))
-        pct_int = int(round(pct_total))
-        state = "over" if pct_int > 100 else ("under" if pct_int < 60 else "ok")
+        # Dedupe duplicate project rows (a project may have >1 allocation row);
+        # keep the per-project planned % which is already summed.
+        seen: dict[int, ResourcingAllocRow] = {}
+        for pr in projects:
+            seen[pr.project_id] = ResourcingAllocRow(
+                project_id=pr.project_id, project_name=pr.project_name,
+                percent=planned.get(pr.project_id, 0),
+                start_date=pr.start_date, end_date=pr.end_date,
+            )
+        projects = list(seen.values())
+        state = c["state"]
         if state == "over":
             over += 1
         elif state == "under":
             under += 1
         rows.append(ResourcingRow(
             user_id=uid, full_name=u.full_name, title=u.title,
-            capacity_hours=cap, allocated_pct=pct_int, state=state, allocations=projects,
+            capacity_hours=cap, allocated_pct=c["allocated_pct"], state=state, allocations=projects,
         ))
 
     # Sort: over-allocated first (most urgent), then by allocation desc.
@@ -2429,17 +2548,12 @@ async def get_resource_detail(
         )
     )).scalars().all()
     cap = person.weekly_capacity_hours or Decimal("40")
-    planned_by_proj: dict[int, Decimal] = {}
-    for a in allocs:
-        if a.percent is not None:
-            pc = a.percent
-        elif a.hours_per_week is not None and cap > 0:
-            pc = a.hours_per_week / cap * 100
-        else:
-            pc = Decimal("0")
-        planned_by_proj[a.project_id] = planned_by_proj.get(a.project_id, Decimal("0")) + pc
-    allocated_pct = int(round(sum(planned_by_proj.values(), Decimal("0"))))
-    capacity_state = "over" if allocated_pct > 100 else ("under" if allocated_pct < 60 else "ok")
+    # Same window-weighted math as the resourcing list (PTO/holiday adjustment
+    # disabled for now), so the panel's total matches the row exactly.
+    cstats = compute_capacity(allocs, cap, today2, window_end)
+    planned_by_proj = {pid: Decimal(pc) for pid, pc in cstats["planned_by_proj"].items()}
+    allocated_pct = cstats["allocated_pct"]
+    capacity_state = cstats["state"]
 
     # Make sure every allocated project surfaces, even with no logged time.
     alloc_proj_ids = set(planned_by_proj)
@@ -2476,7 +2590,7 @@ async def get_resource_detail(
         capacity_summary = (
             f"Allocated {allocated_pct}% across {n_proj} project{'s' if n_proj != 1 else ''} "
             f"({', '.join(top_names)}){' and more' if n_proj > 2 else ''} — "
-            f"{allocated_pct - 100}% beyond a full schedule. Consider reducing a booking or extending a deadline."
+            f"{allocated_pct - 100}% beyond a full schedule. Consider reducing an allocation or extending a deadline."
         )
     elif capacity_state == "under":
         if allocated_pct == 0:

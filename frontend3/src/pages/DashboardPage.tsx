@@ -20,8 +20,6 @@ import { Navigate, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { Card, Input, Pager, Skeleton, StatTile, TableSkeleton, TonePill, WorkspaceHeader } from '@/components/ui';
 import { useClientPagination } from '@/hooks/useClientPagination';
 import { fmtMoney } from '@/lib/format';
-import { ProjectMatrixReport } from '@/components/dashboard/reports/ProjectMatrixReport';
-import { ReportModal } from '@/components/dashboard/reports/ReportModal';
 import { ManagerDashboardCustomizer } from '@/components/dashboard/ManagerDashboardCustomizer';
 import { useManagerDashboardPrefs, type ManagerTileKey } from '@/hooks/useManagerDashboardPrefs';
 import { useAuth } from '@/contexts/AuthContext';
@@ -748,7 +746,7 @@ function HealthFilterMenu({ value, onChange }: { value: ProjectHealth | null; on
 }
 
 function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; columns?: string[] }) {
-  const [reportOpen, setReportOpen] = useState(false);
+  const navigate = useNavigate();
   // columns = hidden column keys for this tile (from user prefs).
   const showProjects = !columns.includes('projects');
   const showRevenue = !columns.includes('revenue');
@@ -769,10 +767,10 @@ function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; co
           <p className="hidden text-xs text-muted-foreground sm:block">hours: last {data.days_back}d · revenue: all-time · approved</p>
           <button
             type="button"
-            onClick={() => setReportOpen(true)}
+            onClick={() => navigate('/insights?tab=resourcing')}
             className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
           >
-            View report <ChevronRight className="h-3.5 w-3.5" />
+            View all resources <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -794,7 +792,13 @@ function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; co
             {pageItems.map((r) => (
               <tr key={r.user_id} className="border-b border-border/60">
                 <td className="px-4 py-2 text-foreground">
-                  <span className="block leading-tight">{r.full_name}</span>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/insights?tab=resourcing&resource=${r.user_id}`)}
+                    className="block text-left leading-tight hover:text-primary hover:underline"
+                  >
+                    {r.full_name}
+                  </button>
                   {r.title ? <span className="block text-[11px] leading-tight text-muted-foreground">{r.title}</span> : null}
                 </td>
                 {showProjects && r.cells.map((c) => {
@@ -823,9 +827,6 @@ function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; co
         </table>
       </div>
       <Pager page={page} pages={pages} total={total} start={start} end={end} onPage={setPage} unit="people" />
-      <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} title="Project hours by person">
-        <ProjectMatrixReport data={data} />
-      </ReportModal>
     </Card>
   );
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Briefcase, Check, ChevronRight, Folder, Loader2, Lock, Pencil, Plus, Trash2, UserRound } from 'lucide-react';
+import { Briefcase, Check, ChevronRight, Folder, Loader2, Lock, MessageSquare, Pencil, Plus, Send, Trash2, UserRound } from 'lucide-react';
 
 import { Button, Card, Empty, Toast, TonePill } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -278,6 +278,19 @@ function TaskRow({
 
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description ?? '');
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+
+  const notesQuery = useQuery({
+    queryKey: ['portal-task-notes', task.id],
+    queryFn: () => clientPortalApi.listTaskNotes(task.id).then((r) => r.data),
+    enabled: notesOpen,
+  });
+  const addNote = useMutation({
+    mutationFn: () => clientPortalApi.addTaskNote(task.id, noteDraft.trim()).then((r) => r.data),
+    onSuccess: () => { setNoteDraft(''); notesQuery.refetch(); onFlash('ok', 'Note added.'); },
+    onError: () => onFlash('err', 'Could not add the note.'),
+  });
 
   const setStatus = useMutation({
     mutationFn: (status: string) => clientPortalApi.updateTask(task.id, { status }).then((r) => r.data),
@@ -326,6 +339,11 @@ function TaskRow({
           ) : task.status ? (
             <TonePill tone={STATUS_TONE[task.status] ?? 'neutral'}>{fmt(task.status)}</TonePill>
           ) : null}
+          <button type="button" title="Notes" onClick={() => setNotesOpen((v) => !v)}
+            className={cn('grid h-8 w-8 place-items-center rounded-md border border-border transition hover:border-primary/30 hover:bg-primary/[0.08] hover:text-primary',
+              notesOpen ? 'border-primary/30 bg-primary/[0.08] text-primary' : 'text-muted-foreground')}>
+            <MessageSquare className="h-3.5 w-3.5" />
+          </button>
           {canUpdate ? (
             <button type="button" title="Edit description" onClick={() => { setDescDraft(task.description ?? ''); setEditingDesc((v) => !v); }}
               className="grid h-8 w-8 place-items-center rounded-md border border-border text-muted-foreground transition hover:border-primary/30 hover:bg-primary/[0.08] hover:text-primary">
@@ -358,6 +376,43 @@ function TaskRow({
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditingDesc(false)}>Cancel</Button>
           </div>
+        </div>
+      ) : null}
+
+      {/* Notes thread — shared with the account team. View for anyone with task
+          access; add a note when you can edit the task (read-only viewers can
+          read but not post). */}
+      {notesOpen ? (
+        <div className="mt-2.5 space-y-2 border-t border-border pt-2.5">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Notes</span>
+          {notesQuery.isLoading ? (
+            <div className="flex items-center gap-2 py-1 text-[12px] text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading notes…</div>
+          ) : (notesQuery.data?.length ?? 0) === 0 ? (
+            <p className="py-1 text-[12px] text-muted-foreground">No notes yet.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {notesQuery.data!.map((n) => (
+                <li key={n.id} className="rounded-md border border-border/70 bg-background px-2.5 py-1.5">
+                  <p className="text-[12.5px] text-foreground/90 whitespace-pre-wrap">{n.body}</p>
+                  <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                    {n.author || 'Someone'}{n.created_at ? ` · ${new Date(n.created_at).toLocaleDateString()}` : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {canUpdate ? (
+            <div className="flex items-start gap-2 pt-0.5">
+              <textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} rows={2}
+                placeholder="Add a note…"
+                className="flex-1 rounded-md border border-border bg-background px-2.5 py-2 text-[13px] focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
+              <Button size="sm" disabled={!noteDraft.trim() || addNote.isPending} onClick={() => addNote.mutate()}>
+                {addNote.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Add
+              </Button>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">You have view-only access, so you can read notes but not add them.</p>
+          )}
         </div>
       ) : null}
     </div>

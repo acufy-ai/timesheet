@@ -40,7 +40,7 @@ from app.schemas import (
     ClientGrantCreate, ClientGrantUpdate, ClientGrantResponse,
     PortalProject, PortalTask,
     ClientInviteRequest, ClientInviteResponse, ClientUserUpdate, UserCreate, ClientPortalUser,
-    PortalTaskUpdate, PortalTaskCreate, PortalProjectUpdate,
+    PortalTaskUpdate, PortalTaskCreate, PortalTaskNoteCreate, PortalProjectUpdate,
     ClientManagerContext, ClientEmployeeSummary, ClientEmployeeInvite,
     ClientEmployeeAssign, ClientReviewItem, ClientReviewAction,
     PortalContext, PortalContactInfo,
@@ -409,6 +409,92 @@ async def portal_delete_task(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have delete access to this task.")
     await db.delete(task)
     await db.commit()
+
+
+# ── Task notes (client side) ─────────────────────────────────────────────────
+# A client can read notes on a task they can see, and add a note to a task they
+# can edit. Notes are ClientNote rows (task_id + project_id + client_id set);
+# the same rows the internal team sees in the client-management Notes tab, so a
+# client note and a manager reply share one thread. Author is server-stamped.
+async def _portal_note_response(db: AsyncSession, row: "ClientNote") -> dict:
+    """ClientNote -> portal note dict. Resolves the author's LIVE name so renames
+    show, falling back to the stored snapshot when the user link is gone."""
+    author = row.author
+    if row.author_user_id is not None:
+        author_user = await db.get(User, row.author_user_id)
+        if author_user is not None and author_user.full_name:
+            author = author_user.full_name
+    return {
+        "id": row.id,
+        "author": author,
+        "author_user_id": row.author_user_id,
+        "body": row.body,
+        "note_date": row.note_date,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.get("/client-portal/tasks/{task_id}/notes")
+async def portal_list_task_notes(
+    task_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every note attached to this task. Read access: the client can see the task
+    (holds any capability on it via a project or task grant)."""
+    from app.models.client_extras import ClientNote
+    _require_client(current_user)
+    await _require_portal_enabled(db, current_user.tenant_id)
+    task = await db.get(Task, task_id)
+    if task is None or task.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    if not await _capability_for_task(db, current_user, task):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this task.")
+    rows = (
+        await db.execute(
+            select(ClientNote)
+            .where(ClientNote.task_id == task_id, ClientNote.tenant_id == current_user.tenant_id)
+            .order_by(ClientNote.note_date.desc().nullslast(), ClientNote.id.desc())
+        )
+    ).scalars().all()
+    return [await _portal_note_response(db, r) for r in rows]
+
+
+@router.post("/client-portal/tasks/{task_id}/notes", status_code=status.HTTP_201_CREATED)
+async def portal_create_task_note(
+    task_id: int,
+    payload: PortalTaskNoteCreate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add a note to a task. Requires UPDATE on the task (same gate as editing it),
+    so a client who can work the task can leave notes; a read-only viewer cannot."""
+    from app.models.client_extras import ClientNote
+    _require_client(current_user)
+    await _require_portal_enabled(db, current_user.tenant_id)
+    task = await db.get(Task, task_id)
+    if task is None or task.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    if "update" not in await _capability_for_task(db, current_user, task):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have edit access to this task.")
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Note can't be empty.")
+    project = await db.get(Project, task.project_id)
+    row = ClientNote(
+        tenant_id=current_user.tenant_id,
+        client_id=project.client_id if project else None,
+        project_id=task.project_id,
+        task_id=task_id,
+        author=current_user.full_name,
+        author_user_id=current_user.id,
+        body=body,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return await _portal_note_response(db, row)
 
 
 @router.patch("/client-portal/projects/{project_id}")

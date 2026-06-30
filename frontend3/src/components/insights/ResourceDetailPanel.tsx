@@ -68,7 +68,7 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
 
             {/* Per-project: planned allocation (forward) reconciled with logged
                 time (actuals). A project may show a planned % with 0h logged
-                (booked, not yet worked) — that's why the row and panel match. */}
+                (allocated, not yet worked) — that's why the row and panel match. */}
             <Section title="Projects" count={d.projects.length}>
               {d.projects.length === 0 ? <Empty>No allocations or logged time in this window.</Empty> : (
                 <div className="space-y-2.5">

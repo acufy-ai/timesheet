@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { BarChart3, CalendarRange, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
@@ -41,7 +41,7 @@ const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   // stability); label is "Projects".
   { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
   { key: 'financials', label: 'Financials', Icon: BarChart3 },
-  { key: 'resourcing', label: 'Capacity', Icon: Layers },
+  { key: 'resourcing', label: 'Resources', Icon: Layers },
   { key: 'forecasts', label: 'Forecasts', Icon: CalendarRange },
   { key: 'dashboards', label: 'Dashboards', Icon: LayoutDashboard },
 ];
@@ -358,11 +358,28 @@ type CapacityFilter = 'all' | 'over' | 'ok' | 'under';
 
 function ResourcingTab() {
   const q = useTeamResourcing(8);
+  const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<CapacityFilter>('all');
   const [openUser, setOpenUser] = useState<{ id: number; name: string } | null>(null);
 
   const d = q.data;
+
+  // Deep-link: ?resource=<userId> opens that person's detail panel (used by the
+  // dashboard's "project hours by person" widget). Resolve the name from the
+  // loaded rows once available.
+  const resourceParam = params.get('resource');
+  useEffect(() => {
+    if (!resourceParam || !d) return;
+    const id = Number(resourceParam);
+    const row = d.rows.find((r) => r.user_id === id);
+    if (row) setOpenUser({ id, name: row.full_name });
+    // Clear the param so closing the panel doesn't reopen on re-render.
+    const next = new URLSearchParams(params);
+    next.delete('resource');
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceParam, d]);
   // Filter by the selected capacity bucket (KPI tile), then by the search term
   // (name / title / allocated project).
   const rows = useMemo(() => {
@@ -429,7 +446,9 @@ function ResourcingTab() {
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">No people match {search.trim() ? 'your search' : 'this filter'}.</p>
             ) : rows.map((r) => {
               const m = stateMeta(r.state);
-              const width = Math.min(r.allocated_pct, 150) / 1.5; // 150% maps to full bar
+              // 100% = a full bar. Over-capacity stays full (it can't exceed the
+              // track) and is signalled by the rose colour + the % label.
+              const width = Math.min(r.allocated_pct, 100);
               const active = openUser?.id === r.user_id;
               return (
                 <button type="button" key={r.user_id} onClick={() => setOpenUser({ id: r.user_id, name: r.full_name })}
