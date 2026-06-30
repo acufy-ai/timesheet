@@ -121,6 +121,16 @@ export function useTeamResourcing(weeksAhead = 4, enabled = true) {
   });
 }
 
+// Per-employee detail for the resourcing slide-over (fetched only when opened).
+export function useResourceDetail(userId: number | null, daysBack = 90) {
+  return useQuery({
+    queryKey: ['dashboard', 'resource', userId, daysBack],
+    queryFn: () => dashboardApi.resourceDetail(userId as number, daysBack).then((r) => r.data),
+    enabled: userId != null,
+    staleTime: 30_000,
+  });
+}
+
 export function usePortfolio(enabled = true) {
   return useQuery({
     queryKey: ['dashboard', 'portfolio'],

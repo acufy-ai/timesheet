@@ -114,6 +114,40 @@ export interface TeamResourcing {
   under_utilized: number;
   rows: ResourcingRow[];
 }
+
+// Per-employee detail for the resourcing slide-over panel.
+export interface ResourceProjectRow {
+  project_id: number;
+  project_name: string;
+  client_name?: string | null;
+  hours: string | number;
+  billable_hours: string | number;
+  billed: string | number;
+  untasked_hours: string | number;
+}
+export interface ResourceTaskRow {
+  task_id?: number | null;
+  task_name: string;
+  project_id: number;
+  project_name: string;
+  client_name?: string | null;
+  hours: string | number;
+  assigned: boolean;
+}
+export interface ResourceDetail {
+  user_id: number;
+  full_name: string;
+  title?: string | null;
+  cost_rate?: string | number | null;
+  submitted_hours: string | number;
+  approved_hours: string | number;
+  billable_hours: string | number;
+  billed: string | number;
+  cost: string | number;
+  days_back: number;
+  projects: ResourceProjectRow[];
+  tasks: ResourceTaskRow[];
+}
 export interface PortfolioRow {
   project_id: number;
   project_name: string;

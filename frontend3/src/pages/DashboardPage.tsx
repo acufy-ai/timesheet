@@ -39,6 +39,7 @@ import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 import { EmployeeWidgets } from '@/components/dashboard/EmployeeWidgets';
 import { InfoLabel, HealthInfoLabel, infoTextFor } from '@/components/dashboard/InfoLabel';
+import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
 import { QuickLogButton } from '@/components/my-time/QuickLogButton';
 import { AdminOrgStats } from '@/components/dashboard/AdminOrgStats';
 import { ManagerConversation } from '@/components/dashboard/ManagerConversation';
@@ -421,6 +422,7 @@ function ProjectsWidget({
   const [search, setSearch] = useState('');
   const [healthFilter, setHealthFilter] = useState<ProjectHealth | null>(null);
   const [page, setPage] = useState(1);
+  const [healthConfigOpen, setHealthConfigOpen] = useState(false);
 
   // 1) Search any project/client metadata.
   const q = search.trim().toLowerCase();
@@ -497,6 +499,13 @@ function ProjectsWidget({
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             />
           </div>
+          <button
+            type="button"
+            onClick={() => setHealthConfigOpen(true)}
+            className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" /> Health Config
+          </button>
           {rows.length > 0 ? (
             <button
               type="button"
@@ -588,6 +597,7 @@ function ProjectsWidget({
           ) : null}
         </>
       )}
+      <HealthRulesModal open={healthConfigOpen} onClose={() => setHealthConfigOpen(false)} />
     </Card>
   );
 }
