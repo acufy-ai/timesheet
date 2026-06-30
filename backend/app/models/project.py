@@ -64,6 +64,12 @@ class Project(Base, TimestampMixin):
     # override that wins over the computed value. Stored as a plain string for
     # forgiving forward-compat; the settable set is validated app-side.
     health_override: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # CLIENT-FACING health, set by the team for the portal — separate from the
+    # internal `health_override` RAG above, which must never reach a client.
+    # 'on_track' | 'at_risk' | 'off_track' | NULL (NULL = hidden, no pill). The
+    # allowed set is validated app-side (input schemas), not in the DB.
+    client_health: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    client_health_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # The internal user (a manager) who runs this project. Constrained in the
     # app to the client's assigned PMs; FK only enforces a real user.
     manager_id: Mapped[Optional[int]] = mapped_column(

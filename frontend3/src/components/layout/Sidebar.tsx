@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   ChevronRight,
-  Folder,
   PanelLeftClose,
   PanelLeftOpen,
   PanelTop,
@@ -140,6 +139,12 @@ function ClientProjectsNav() {
       {projects.map((p) => {
         const to = `/portal/projects/${p.id}`;
         const active = pathname === to;
+        // Attention badge: overdue (red) wins over plain attention (amber).
+        const badge = (p.overdue_count ?? 0) > 0
+          ? { n: p.overdue_count, cls: 'bg-rose-500/15 text-rose-600' }
+          : (p.attention_count ?? 0) > 0
+            ? { n: p.attention_count, cls: 'bg-amber-500/15 text-amber-600' }
+            : null;
         return (
           <NavLink
             key={p.id}
@@ -151,13 +156,27 @@ function ClientProjectsNav() {
                 : 'text-muted-foreground hover:bg-primary/10 hover:text-primary',
             )}
           >
-            <Folder className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{p.name}</span>
+            <span className={cn('h-2 w-2 shrink-0 rounded-full', clientHealthDot(p.client_health))} />
+            <span className="min-w-0 flex-1 truncate">{p.name}</span>
+            {p.progress?.total ? (
+              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/80">{p.progress.pct}%</span>
+            ) : null}
+            {badge ? (
+              <span className={cn('shrink-0 rounded-full px-1.5 text-[10px] font-bold tabular-nums', badge.cls)}>{badge.n}</span>
+            ) : null}
           </NavLink>
         );
       })}
     </div>
   );
+}
+
+// Health dot color for a client-facing health value. Null (not set) = muted.
+export function clientHealthDot(h?: string | null): string {
+  if (h === 'on_track') return 'bg-emerald-500';
+  if (h === 'at_risk') return 'bg-amber-500';
+  if (h === 'off_track') return 'bg-rose-500';
+  return 'bg-muted-foreground/30';
 }
 
 // Expanded panel: a section is either a flat top-level link (single item) or a

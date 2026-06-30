@@ -569,6 +569,10 @@ class ClientNoteResponse(BaseModel):
 
 _PROJECT_STATUSES = ("planning", "in_progress", "on_hold", "completed")
 _TASK_STATUSES = ("to_do", "in_progress", "blocked", "done")
+# Client-facing project health (Client Portal Redesign). None = hidden from the
+# client (no pill). Validated input-only; stored as plain text so a response can
+# never 500 on an odd legacy value.
+_CLIENT_HEALTHS = ("on_track", "at_risk", "off_track")
 
 
 def _check_status(value, allowed, field):
@@ -653,6 +657,10 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = None
     manager_id: Optional[int] = None
     contract_id: Optional[int] = None
+    # Client-facing health set by the team for the portal (separate from the
+    # internal health_override RAG). "" clears it back to hidden.
+    client_health: Optional[str] = None
+    client_health_note: Optional[str] = None
     # When provided, replaces the project roster (user_project_access).
     resource_ids: Optional[List[int]] = None
     # When provided, replaces the project's managers.
@@ -662,6 +670,14 @@ class ProjectUpdate(BaseModel):
     @classmethod
     def _valid_status(cls, v):
         return _check_status(v, _PROJECT_STATUSES, "project status")
+
+    @field_validator("client_health")
+    @classmethod
+    def _valid_client_health(cls, v):
+        # Allow None and "" (clear), else must be in the allowed set.
+        if v is None or v == "":
+            return v
+        return _check_in(v, _CLIENT_HEALTHS, "client health")
 
     @field_validator("revenue_recognition")
     @classmethod
@@ -694,6 +710,10 @@ class ProjectResponse(ProjectBase):
     resource_ids: List[int] = []
     # Current project managers (user ids), from project_managers.
     manager_ids: List[int] = []
+    # Client-facing health (read-back for the internal editor). On ProjectResponse
+    # (not ProjectBase) so it's never required on create and never re-validated.
+    client_health: Optional[str] = None
+    client_health_note: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -1477,6 +1497,72 @@ class TeamResourcingResponse(BaseModel):
     over_allocated: int
     under_utilized: int
     rows: list[ResourcingRow] = []
+
+
+# ── Resource allocation (PSA) write/read ─────────────────────────────────────
+class ResourceAllocationCreate(BaseModel):
+    """Allocate a person to a project over a date window. The manager supplies an
+    intensity as a PERCENT of weekly capacity OR explicit HOURS/WEEK (exactly one
+    of the two). The UI computes the % from days/hours; either form is accepted."""
+    user_id: int
+    project_id: int
+    start_date: date
+    end_date: date
+    percent: Optional[Decimal] = None
+    hours_per_week: Optional[Decimal] = None
+    role: Optional[str] = None
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        _check_date_order(self.start_date, self.end_date)
+        has_pct = self.percent is not None
+        has_hrs = self.hours_per_week is not None
+        if has_pct == has_hrs:  # neither or both
+            raise ValueError("Provide exactly one of percent or hours_per_week")
+        if has_pct and self.percent < 0:
+            raise ValueError("percent cannot be negative")
+        if has_hrs and self.hours_per_week < 0:
+            raise ValueError("hours_per_week cannot be negative")
+        return self
+
+
+class ResourceAllocationUpdate(BaseModel):
+    """Partial edit of an allocation. Sending percent clears hours_per_week and
+    vice versa (intensity is one-of)."""
+    project_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    percent: Optional[Decimal] = None
+    hours_per_week: Optional[Decimal] = None
+    role: Optional[str] = None
+    notes: Optional[str] = None
+
+    @field_validator("percent")
+    @classmethod
+    def _pct_nonneg(cls, v):
+        return _check_nonneg(v, "percent")
+
+    @field_validator("hours_per_week")
+    @classmethod
+    def _hrs_nonneg(cls, v):
+        return _check_nonneg(v, "hours_per_week")
+
+
+class ResourceAllocationResponse(BaseModel):
+    id: int
+    user_id: int
+    user_name: Optional[str] = None
+    project_id: int
+    project_name: Optional[str] = None
+    start_date: date
+    end_date: date
+    percent: Optional[Decimal] = None
+    hours_per_week: Optional[Decimal] = None
+    role: Optional[str] = None
+    notes: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 class PortfolioRow(BaseModel):
@@ -2279,6 +2365,12 @@ class ClientUserUpdate(BaseModel):
 
 
 # Client-side portal DTOs (what a CLIENT user sees of their granted work).
+class PortalBlockerRef(BaseModel):
+    """A reference to the client-visible task that a task is waiting on."""
+    id: int
+    name: str
+
+
 class PortalTask(BaseModel):
     id: int
     project_id: int
@@ -2286,6 +2378,29 @@ class PortalTask(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     capabilities: List[str] = Field(default_factory=list)
+    # Client Portal Redesign (Phase 1): deadline + blocker context for the
+    # attention zone. due_date drives the overdue/soon badge; blocked_reason is
+    # only meaningful when status == 'blocked'.
+    due_date: Optional[date] = None
+    blocked_reason: Optional[str] = None
+    # Phase 2: the status values a client may move this task to (empty for a
+    # read-only task). The StatusSelect renders only these; the API re-validates.
+    allowed_transitions: List[str] = Field(default_factory=list)
+    # Phase 3: blocker linkage (from task_dependencies).
+    # blocking_team: this client task is holding up an INTERNAL task the client
+    #   can't see → render "BLOCKING TEAM".
+    # blocked_by_client_task: this client-visible task is waiting on ANOTHER
+    #   client-visible task (not done) → render "Waiting on your task: X".
+    blocking_team: bool = False
+    blocked_by_client_task: Optional[PortalBlockerRef] = None
+
+
+class PortalProgress(BaseModel):
+    """Done/total over the CLIENT-VISIBLE tasks of a project (keeps the bar
+    consistent with what the client can actually see)."""
+    done: int = 0
+    total: int = 0
+    pct: int = 0
 
 
 class PortalProject(BaseModel):
@@ -2299,6 +2414,15 @@ class PortalProject(BaseModel):
     # Project-level capabilities (empty when the client only has task grants here).
     capabilities: List[str] = Field(default_factory=list)
     tasks: List[PortalTask] = Field(default_factory=list)
+    # Client Portal Redesign (Phase 1) computed/portal fields.
+    start_date: Optional[date] = None
+    target_date: Optional[date] = None              # project end_date, client-facing label
+    client_health: Optional[str] = None             # on_track|at_risk|off_track|None (None = hide pill)
+    client_health_note: Optional[str] = None
+    progress: PortalProgress = Field(default_factory=PortalProgress)
+    attention_count: int = 0                        # editable, non-terminal tasks for this client
+    overdue_count: int = 0                          # subset of attention with due_date < today
+    contact_name: Optional[str] = None              # assigned Acufy contact (project PM)
 
 
 # Portal write payloads (capability-gated).

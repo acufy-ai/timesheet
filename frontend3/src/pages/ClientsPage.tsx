@@ -1026,6 +1026,42 @@ function ProjectHealthSelect({ projectId, health, isManual }: { projectId: numbe
   );
 }
 
+// Client-facing health select. Separate from ProjectHealthSelect (internal RAG)
+// — this is the on_track/at_risk/off_track value the CLIENT sees in the portal.
+// "Hidden" (null) means no pill in the portal. Saved via the project update.
+const CLIENT_HEALTH_OPTS = [
+  { value: '', label: 'Client: hidden', dot: 'bg-muted-foreground/30' },
+  { value: 'on_track', label: 'Client: on track', dot: 'bg-emerald-500' },
+  { value: 'at_risk', label: 'Client: at risk', dot: 'bg-amber-500' },
+  { value: 'off_track', label: 'Client: off track', dot: 'bg-rose-500' },
+];
+
+function ClientHealthSelect({ project }: { project: FullProject }) {
+  const update = useUpdateProject();
+  const value = project.client_health ?? '';
+  const dot = CLIENT_HEALTH_OPTS.find((o) => o.value === value)?.dot ?? 'bg-muted-foreground/30';
+  const onChange = (next: string) => {
+    if (next === value) return;
+    // '' clears it (hidden); clearing also drops the note.
+    update.mutate({ id: project.id, data: { client_health: next as any, ...(next ? {} : { client_health_note: null }) } });
+  };
+  return (
+    <span className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+      <span className={cn('pointer-events-none absolute left-2 h-2 w-2 rounded-full', dot)} />
+      <select
+        value={value}
+        disabled={update.isPending}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Set client-facing health"
+        title="Health shown to the client in their portal (separate from internal health)"
+        className="cursor-pointer rounded-full border border-border bg-card py-0.5 pl-6 pr-6 text-[11px] font-semibold uppercase tracking-wider text-foreground transition-colors hover:border-primary/40 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+      >
+        {CLIENT_HEALTH_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </span>
+  );
+}
+
 function ProjectCard({
   project,
   tasks,
@@ -1129,6 +1165,7 @@ function ProjectCard({
         {health ? (
           <ProjectHealthSelect projectId={project.id} health={health.health} isManual={health.isManual} />
         ) : null}
+        <ClientHealthSelect project={project} />
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton label="Add note to this project" onClick={() => onAddNote()} Icon={StickyNote} sm />

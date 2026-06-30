@@ -85,6 +85,9 @@ async def update_project(db: AsyncSession, project: Project, project_update: Pro
     update_data = project_update.model_dump(exclude_unset=True)
     resource_ids = update_data.pop("resource_ids", None)
     manager_ids = update_data.pop("manager_ids", None)
+    # Normalize an explicit "" client_health back to NULL (hidden from client).
+    if update_data.get("client_health") == "":
+        update_data["client_health"] = None
     # When PMs are supplied, mirror the first into the single manager_id column.
     if manager_ids is not None:
         update_data["manager_id"] = manager_ids[0] if manager_ids else None

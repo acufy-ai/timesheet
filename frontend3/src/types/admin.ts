@@ -120,7 +120,20 @@ export interface PortalTask {
   description?: string | null;
   status?: string | null;
   capabilities: ClientCapability[];
+  due_date?: string | null;
+  blocked_reason?: string | null;
+  allowed_transitions?: string[];
+  blocking_team?: boolean;
+  blocked_by_client_task?: { id: number; name: string } | null;
 }
+
+export interface PortalProgress {
+  done: number;
+  total: number;
+  pct: number;
+}
+
+export type ClientHealth = 'on_track' | 'at_risk' | 'off_track';
 
 export interface PortalProject {
   id: number;
@@ -132,6 +145,15 @@ export interface PortalProject {
   description?: string | null;
   capabilities: ClientCapability[];
   tasks: PortalTask[];
+  // Client Portal Redesign (Phase 1)
+  start_date?: string | null;
+  target_date?: string | null;
+  client_health?: ClientHealth | null;
+  client_health_note?: string | null;
+  progress: PortalProgress;
+  attention_count: number;
+  overdue_count: number;
+  contact_name?: string | null;
 }
 
 export interface PortalTaskNote {
@@ -459,6 +481,8 @@ export interface FullProject {
   manager_ids?: number[]; // project managers (user ids)
   resource_ids?: number[]; // project roster (user ids), from user_project_access
   contract_id?: number | null; // the contract (MSA/SOW) this project is under
+  client_health?: ClientHealth | null; // client-facing health (null = hidden)
+  client_health_note?: string | null;
 }
 
 // POST/PUT /projects body. billable_rate required on create.
@@ -481,6 +505,8 @@ export interface ProjectBody {
   manager_ids?: number[]; // when set, replaces the project's managers
   resource_ids?: number[]; // when set, replaces the project roster
   contract_id?: number | null;
+  client_health?: ClientHealth | '' | null; // '' clears it back to hidden
+  client_health_note?: string | null;
 }
 
 export type TaskPriority = 'low' | 'medium' | 'high';

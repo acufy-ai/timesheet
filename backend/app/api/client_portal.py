@@ -19,6 +19,7 @@ Access is governed by the grant alone, plus one tenant-wide kill switch:
     covers it, and a capability ("create"/"read"/"update"/"delete") must be
     present on that grant for the matching verb.
 """
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -38,7 +39,7 @@ from app.models.client_task_review import ClientTaskReview
 from app.models.user_client_assignment import UserClientAssignment, ClientAssignmentRole
 from app.schemas import (
     ClientGrantCreate, ClientGrantUpdate, ClientGrantResponse,
-    PortalProject, PortalTask,
+    PortalProject, PortalTask, PortalProgress, PortalBlockerRef,
     ClientInviteRequest, ClientInviteResponse, ClientUserUpdate, UserCreate, ClientPortalUser,
     PortalTaskUpdate, PortalTaskCreate, PortalTaskNoteCreate, PortalProjectUpdate,
     ClientManagerContext, ClientEmployeeSummary, ClientEmployeeInvite,
@@ -68,6 +69,22 @@ def _status_str(v) -> Optional[str]:
     if v is None:
         return None
     return v.value if hasattr(v, "value") else str(v)
+
+
+# Allowed CLIENT status transitions (from -> [to...]). A client can move their
+# work forward (to_do -> in_progress -> done), flag a blocker (-> blocked), clear
+# it, and re-open a completed task. Server-enforced; the UI's StatusSelect /
+# checkbox only render these as a convenience but the API re-validates.
+_CLIENT_STATUS_TRANSITIONS: dict[str, list[str]] = {
+    "to_do": ["in_progress", "blocked", "done"],
+    "in_progress": ["done", "blocked", "to_do"],
+    "blocked": ["in_progress", "done", "to_do"],
+    "done": ["in_progress", "to_do"],  # re-open a completed task
+}
+
+
+def _client_allowed_transitions(current: Optional[str]) -> list[str]:
+    return _CLIENT_STATUS_TRANSITIONS.get(current or "", [])
 
 
 async def _require_portal_enabled(db: AsyncSession, tenant_id: int) -> None:
@@ -152,22 +169,95 @@ async def my_portal_projects(
     for t in all_tasks_rows.scalars().all():
         tasks_by_project.setdefault(t.project_id, []).append(t)
 
+    # Assigned Acufy contact per project = its PM (manager_id) full name.
+    pm_ids = {p.manager_id for p in projects.values() if p.manager_id is not None}
+    pm_name: dict[int, str] = {}
+    if pm_ids:
+        prows = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(list(pm_ids))))
+        pm_name = {uid: name for uid, name in prows.all()}
+
+    # First pass: which tasks are CLIENT-VISIBLE (any grant), and their caps.
+    # Needed before building rows so blocker linkage can tell client-visible from
+    # internal tasks. A task is visible if its project is granted (inherit) OR
+    # the task itself is granted.
+    visible_caps: dict[int, list[str]] = {}   # task_id -> caps
+    visible_name: dict[int, str] = {}
+    for pid, p in projects.items():
+        pcaps = proj_caps.get(pid, [])
+        for t in tasks_by_project.get(pid, []):
+            tcaps = pcaps if pcaps else task_caps.get(t.id)
+            if tcaps:
+                visible_caps[t.id] = tcaps
+                visible_name[t.id] = t.name
+
+    # Blocker linkage from task_dependencies. Edge (task_id=A, depends_on=B)
+    # means B blocks A. For a client task we surface two directions:
+    #   blocking_team[B] = B blocks some task A the client CANNOT see (internal).
+    #   blocked_by_client_task[A] = A is waiting on a client-visible task B that
+    #                               isn't done → "Waiting on your task: B".
+    blocking_team: set[int] = set()
+    blocked_by: dict[int, "PortalBlockerRef"] = {}
+    if visible_caps:
+        vids = list(visible_caps.keys())
+        from app.models.task_dependency import TaskDependency
+        dep_rows = (await db.execute(
+            select(TaskDependency.task_id, TaskDependency.depends_on_task_id)
+            .where(TaskDependency.tenant_id == current_user.tenant_id)
+            .where(
+                TaskDependency.task_id.in_(vids) | TaskDependency.depends_on_task_id.in_(vids)
+            )
+        )).all()
+        # Status of any task referenced by an edge (for the not-done check).
+        ref_ids = {tid for edge in dep_rows for tid in edge}
+        status_by_id: dict[int, str] = {}
+        if ref_ids:
+            srows = (await db.execute(
+                select(Task.id, Task.status).where(Task.id.in_(list(ref_ids)), Task.tenant_id == current_user.tenant_id))).all()
+            status_by_id = {tid: _status_str(st) for tid, st in srows}
+        for a_id, b_id in dep_rows:  # b blocks a
+            # B is client-visible and A is NOT → B is blocking the team.
+            if b_id in visible_caps and a_id not in visible_caps:
+                blocking_team.add(b_id)
+            # A is client-visible, blocked by a client-visible B that's not done.
+            if a_id in visible_caps and b_id in visible_caps and status_by_id.get(b_id) != "done":
+                blocked_by[a_id] = PortalBlockerRef(id=b_id, name=visible_name.get(b_id, "a task"))
+
+    today = date.today()
     out: list[PortalProject] = []
     for pid, p in projects.items():
         pcaps = proj_caps.get(pid, [])
         portal_tasks: list[PortalTask] = []
         for t in tasks_by_project.get(pid, []):
-            # A task is visible if the project is granted (inherit) OR the task
-            # itself is granted. Capabilities = project caps for inherited, else
-            # the task's own caps.
-            if pcaps:
-                portal_tasks.append(PortalTask(id=t.id, project_id=pid, name=t.name, description=t.description, status=_status_str(t.status), capabilities=pcaps))
-            elif t.id in task_caps:
-                portal_tasks.append(PortalTask(id=t.id, project_id=pid, name=t.name, description=t.description, status=_status_str(t.status), capabilities=task_caps[t.id]))
+            tcaps = visible_caps.get(t.id)
+            if not tcaps:
+                continue
+            tstatus = _status_str(t.status)
+            portal_tasks.append(PortalTask(
+                id=t.id, project_id=pid, name=t.name, description=t.description,
+                status=tstatus, capabilities=tcaps,
+                due_date=t.due_date, blocked_reason=t.blocked_reason,
+                allowed_transitions=(_client_allowed_transitions(tstatus) if "update" in tcaps else []),
+                blocking_team=(t.id in blocking_team),
+                blocked_by_client_task=blocked_by.get(t.id),
+            ))
+        # Computed fields over the CLIENT-VISIBLE tasks only.
+        total = len(portal_tasks)
+        done = sum(1 for t in portal_tasks if t.status == "done")
+        pct = round(done / total * 100) if total else 0
+        # Attention = tasks the client can edit (update cap) and aren't done.
+        attention = [t for t in portal_tasks if "update" in (t.capabilities or []) and t.status != "done"]
+        overdue = [t for t in attention if t.due_date is not None and t.due_date < today]
+        ch = p.client_health or None
         out.append(PortalProject(
             id=p.id, name=p.name, code=p.code, client_id=p.client_id,
             client_name=client_name.get(p.client_id), status=_status_str(p.status),
             description=p.description, capabilities=pcaps, tasks=portal_tasks,
+            start_date=p.start_date, target_date=p.end_date,
+            client_health=ch, client_health_note=(p.client_health_note if ch else None),
+            progress=PortalProgress(done=done, total=total, pct=pct),
+            attention_count=len(attention), overdue_count=len(overdue),
+            contact_name=pm_name.get(p.manager_id) if p.manager_id else None,
         ))
     return out
 
@@ -316,9 +406,16 @@ async def portal_update_task(
     if payload.status is not None:
         from app.models.task import TaskStatus
         try:
-            task.status = TaskStatus(payload.status)
+            new_status = TaskStatus(payload.status)
         except ValueError:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid status")
+        current = _status_str(task.status)
+        # A no-op (same status) is fine; otherwise the transition must be allowed.
+        if new_status.value != current and new_status.value not in _client_allowed_transitions(current):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="That status change isn't allowed from the portal.")
+        task.status = new_status
     if payload.description is not None:
         task.description = payload.description.strip() or None
     db.add(task)
@@ -329,7 +426,11 @@ async def portal_update_task(
         await _upsert_employee_review(db, current_user, task)
 
     await db.commit()
-    return {"id": task.id, "status": _status_str(task.status), "description": task.description}
+    new_st = _status_str(task.status)
+    return {
+        "id": task.id, "status": new_st, "description": task.description,
+        "allowed_transitions": _client_allowed_transitions(new_st),
+    }
 
 
 async def _upsert_employee_review(db: AsyncSession, employee: User, task: Task) -> None:

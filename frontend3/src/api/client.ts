@@ -20,6 +20,9 @@ import type {
   ManagerClients,
   ProjectTaskBreakdown,
   ResourceDetail,
+  ResourceAllocation,
+  ResourceAllocationBody,
+  AllocationPreview,
   TeamRejectionStats,
 } from '@/types/dashboard';
 import type {
@@ -439,6 +442,22 @@ export const dashboardApi = {
   setProjectHealthOverride: (projectId: number, health: string | null) =>
     api.put<{ project_id: number; health_override: string | null }>(
       `/dashboard/project/${projectId}/health-override`, { health }),
+};
+
+// Resource allocation (PSA capacity planning) — the WRITE side of Resourcing.
+export const resourceAllocationsApi = {
+  list: (params: { user_id?: number; project_id?: number }) =>
+    api.get<ResourceAllocation[]>('/resource-allocations', { params }),
+  create: (body: ResourceAllocationBody) =>
+    api.post<ResourceAllocation>('/resource-allocations', body),
+  update: (id: number, body: Partial<ResourceAllocationBody>) =>
+    api.put<ResourceAllocation>(`/resource-allocations/${id}`, body),
+  remove: (id: number) => api.delete(`/resource-allocations/${id}`),
+  // Live "this puts them at X%" preview before saving. exclude_id when editing.
+  preview: (body: ResourceAllocationBody, excludeId?: number) =>
+    api.post<AllocationPreview>('/resource-allocations/preview', body, {
+      params: excludeId ? { exclude_id: excludeId } : undefined,
+    }),
 };
 
 export const timeApi = {
