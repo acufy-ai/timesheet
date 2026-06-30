@@ -496,3 +496,37 @@ export interface DashboardAnalytics {
   project_breakdown: ProjectBreakdownRow[];
   top_activities: ActivityRow[];
 }
+
+// Resource allocation (PSA capacity planning) — write-side types.
+export interface ResourceAllocation {
+  id: number;
+  user_id: number;
+  user_name?: string | null;
+  project_id: number;
+  project_name?: string | null;
+  start_date: string;
+  end_date: string;
+  percent?: string | number | null;
+  hours_per_week?: string | number | null;
+  role?: string | null;
+  notes?: string | null;
+}
+
+// Create/update body: intensity is one-of percent | hours_per_week.
+export interface ResourceAllocationBody {
+  user_id?: number;
+  project_id?: number;
+  start_date?: string;
+  end_date?: string;
+  percent?: number | null;
+  hours_per_week?: number | null;
+  role?: string | null;
+  notes?: string | null;
+}
+
+export interface AllocationPreview {
+  weekly_capacity_hours: number;
+  before_pct: number;
+  after_pct: number;
+  after_state: 'over' | 'ok' | 'under';
+}

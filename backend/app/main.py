@@ -21,6 +21,7 @@ from app.api import (
     contracts,
     dashboard,
     dashboards,
+    resource_allocations,
     dashboards_public,
     departments,
     titles,
@@ -271,6 +272,7 @@ app.include_router(approvals.router)
 app.include_router(time_off.router)
 app.include_router(time_off_approvals.router)
 app.include_router(dashboard.router)
+app.include_router(resource_allocations.router)
 app.include_router(dashboards.router)
 app.include_router(dashboards_public.router)  # unauthenticated public share view
 app.include_router(notifications.router)

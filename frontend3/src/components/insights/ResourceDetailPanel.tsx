@@ -4,6 +4,7 @@ import { Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { fmtMoney } from '@/lib/format';
 import { useResourceDetail } from '@/hooks/useDashboard';
+import { AllocationManager } from './AllocationManager';
 
 // Slide-over panel showing one employee's detail: billing, submitted/approved
 // hours, billed vs cost, a per-project breakdown, and their tasks (with hours +
@@ -30,7 +31,7 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
   return (
     // In-flow side panel: sticks within the viewport while the list scrolls, and
     // doesn't overlay the list, so the user can keep clicking other employees.
-    <aside className="sticky top-4 flex max-h-[calc(100vh-7rem)] w-[30rem] shrink-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+    <aside className="sticky top-4 flex max-h-[calc(100vh-7rem)] min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="min-w-0">
           <h2 className="truncate text-base font-bold text-foreground">{d?.full_name ?? name ?? 'Employee'}</h2>
@@ -57,6 +58,11 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
                 <p className="mt-1 text-[12px] opacity-90">{d.capacity_summary}</p>
               </div>
             ) : null}
+
+            {/* Plan forward work — placed right under the capacity summary it
+                drives, so allocating/adjusting is the first thing you reach. The
+                numbers above recompute as these change. */}
+            {userId != null ? <AllocationManager userId={userId} /> : null}
 
             {/* Billing + hours summary */}
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border">
