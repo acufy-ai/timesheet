@@ -128,26 +128,31 @@ function HealthSummaryWidget({ config, widgetId }: WidgetProps) {
   if (portfolio.isLoading) return <Centered><Loader2 className="h-5 w-5 animate-spin" /></Centered>;
   const p = portfolio.data as AnyData | undefined;
   const view: HealthView = (config?.view as HealthView) ?? 'cards';
+  const allRows: AnyData[] = (p?.rows as AnyData[]) ?? [];
 
   const tiers = HEALTH_TIERS.map(({ key, health }) => ({
     health, label: healthMeta(health).label, value: (p?.[key] as number) ?? 0, color: HEALTH_HEX[health],
+    // The projects in THIS tier, so hovering lists exactly which ones they are.
+    tip: <HealthTierTip label={healthMeta(health).label} health={health} rows={allRows} />,
   }));
   if (tiers.every((t) => t.value === 0)) return <Centered><span className="text-xs">No projects in this scope.</span></Centered>;
 
   if (view === 'donut') {
-    return <div className="px-1 py-1"><Donut slices={tiers.filter((t) => t.value > 0).map((t) => ({ label: t.label, value: t.value, color: t.color }))} /></div>;
+    return <div className="px-1 py-1"><Donut slices={tiers.filter((t) => t.value > 0).map((t) => ({ label: t.label, value: t.value, color: t.color, tip: t.tip }))} /></div>;
   }
   if (view === 'bar') {
-    return <div className="px-1 py-1"><Bars bars={tiers.map((t) => ({ label: t.label, value: t.value }))} /></div>;
+    return <div className="px-1 py-1"><Bars bars={tiers.map((t) => ({ label: t.label, value: t.value, tip: t.tip }))} /></div>;
   }
   return (
     <div className="grid grid-cols-2 gap-2 px-1 py-1">
       {tiers.map((t) => (
-        <div key={t.health} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: t.color }} />
-          <span className="text-xs text-muted-foreground">{t.label}</span>
-          <span className="ml-auto text-sm font-bold tabular-nums text-foreground">{t.value}</span>
-        </div>
+        <Tooltip key={t.health} label={t.tip} side="top" maxWidth={300}>
+          <div className="flex cursor-help items-center gap-2 rounded-lg border border-border px-2.5 py-1.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: t.color }} />
+            <span className="text-xs text-muted-foreground">{t.label}</span>
+            <span className="ml-auto text-sm font-bold tabular-nums text-foreground">{t.value}</span>
+          </div>
+        </Tooltip>
       ))}
     </div>
   );
@@ -275,12 +280,42 @@ function EvmWidget({ config, widgetId }: WidgetProps) {
   const cpi = ac > 0 ? ev / ac : null;
   const spi = pv > 0 ? ev / pv : null;
   const idxTone = (v: number | null) => v == null ? 'text-foreground' : v >= 1 ? 'text-emerald-600 dark:text-emerald-400' : v >= 0.9 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400';
+  // Per-project breakdowns: each portfolio metric lists the projects behind it,
+  // sorted to surface the ones that matter (worst index / biggest dollar first).
+  const cpiOf = (r: AnyData) => Number(r.ac) > 0 ? Number(r.ev) / Number(r.ac) : null;
+  const spiOf = (r: AnyData) => Number(r.pv) > 0 ? Number(r.ev) / Number(r.pv) : null;
   return (
     <div className="grid grid-cols-2 gap-2 px-1 py-1 text-center">
-      <Metric label="CPI" value={cpi != null ? cpi.toFixed(2) : '—'} tone={idxTone(cpi)} />
-      <Metric label="SPI" value={spi != null ? spi.toFixed(2) : '—'} tone={idxTone(spi)} />
-      <Metric label="Earned (EV)" value={fmtMoney(ev)} />
-      <Metric label="Forecast (EAC)" value={fmtMoney(eac)} />
+      <Metric label="CPI" value={cpi != null ? cpi.toFixed(2) : '—'} tone={idxTone(cpi)}
+        tip={<EvmMetricTip title="Cost performance (CPI) by project" rows={[...rows].sort((a, b) => (cpiOf(a) ?? 9) - (cpiOf(b) ?? 9))}
+          render={(r) => { const v = cpiOf(r); return v != null ? v.toFixed(2) : '—'; }} />} />
+      <Metric label="SPI" value={spi != null ? spi.toFixed(2) : '—'} tone={idxTone(spi)}
+        tip={<EvmMetricTip title="Schedule performance (SPI) by project" rows={[...rows].sort((a, b) => (spiOf(a) ?? 9) - (spiOf(b) ?? 9))}
+          render={(r) => { const v = spiOf(r); return v != null ? v.toFixed(2) : '—'; }} />} />
+      <Metric label="Earned (EV)" value={fmtMoney(ev)}
+        tip={<EvmMetricTip title="Earned value (EV) by project" rows={[...rows].sort((a, b) => Number(b.ev) - Number(a.ev))}
+          render={(r) => fmtMoney(Number(r.ev))} />} />
+      <Metric label="Forecast (EAC)" value={fmtMoney(eac)}
+        tip={<EvmMetricTip title="Forecast at completion (EAC) by project" rows={[...rows].sort((a, b) => Number(b.eac) - Number(a.eac))}
+          render={(r) => fmtMoney(Number(r.eac))} />} />
+    </div>
+  );
+}
+
+// Lists the per-project value behind one EVM metric (CPI/SPI/EV/EAC).
+function EvmMetricTip({ title, rows, render }: { title: string; rows: AnyData[]; render: (r: AnyData) => string }) {
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold">{title}</p>
+      <ul className="space-y-0.5">
+        {rows.slice(0, 10).map((r) => (
+          <li key={r.project_id} className="flex justify-between gap-4 leading-snug">
+            <span className="truncate">{r.project_name}</span>
+            <span className="shrink-0 font-medium tabular-nums">{render(r)}</span>
+          </li>
+        ))}
+        {rows.length > 10 ? <li className="text-[11px] text-muted-foreground">+{rows.length - 10} more</li> : null}
+      </ul>
     </div>
   );
 }
@@ -290,10 +325,15 @@ function RevRecWidget({ config, widgetId }: WidgetProps) {
   const rr = useWidgetBundles(config?.scope, widgetId).revrec;
   if (rr.isLoading) return <Centered><Loader2 className="h-5 w-5 animate-spin" /></Centered>;
   const d = rr.data as AnyData | undefined;
+  const rows: AnyData[] = (d?.rows as AnyData[]) ?? [];
   return (
     <div className="grid grid-cols-2 gap-2 px-1 py-1 text-center">
-      <Metric label="Billed" value={fmtMoney(d?.total_billed ?? 0)} />
-      <Metric label="Recognized" value={fmtMoney(d?.total_recognized ?? 0)} />
+      <Metric label="Billed" value={fmtMoney(d?.total_billed ?? 0)}
+        tip={<EvmMetricTip title="Billed by project" rows={[...rows].sort((a, b) => Number(b.billed) - Number(a.billed))}
+          render={(r) => fmtMoney(Number(r.billed), r.currency)} />} />
+      <Metric label="Recognized" value={fmtMoney(d?.total_recognized ?? 0)}
+        tip={<EvmMetricTip title="Recognized by project" rows={[...rows].sort((a, b) => Number(b.recognized) - Number(a.recognized))}
+          render={(r) => fmtMoney(Number(r.recognized), r.currency)} />} />
     </div>
   );
 }
@@ -306,12 +346,36 @@ function UtilizationWidget({ config, widgetId }: WidgetProps) {
   if (res.isLoading || fin.isLoading) return <Centered><Loader2 className="h-5 w-5 animate-spin" /></Centered>;
   const r = res.data as AnyData | undefined;
   const util = (fin.data as AnyData | undefined)?.summary?.utilization_pct as number | null | undefined;
+  const people: AnyData[] = (r?.rows as AnyData[]) ?? [];
+  const inState = (s: string) => people.filter((u) => u.state === s);
   return (
     <div className="grid grid-cols-2 gap-2 px-1 py-1 text-center">
       <Metric label="Utilization" value={util != null ? `${util}%` : '—'} tone={util == null ? 'text-foreground' : util >= 80 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'} />
-      <Metric label="Team size" value={String(r?.team_size ?? 0)} />
-      <Metric label="Over-allocated" value={String(r?.over_allocated ?? 0)} tone={(r?.over_allocated ?? 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-foreground'} />
-      <Metric label="Under-utilized" value={String(Math.max(0, r?.under_utilized ?? 0))} />
+      <Metric label="Team size" value={String(r?.team_size ?? 0)}
+        tip={<PeopleTip title="Team" people={people} />} />
+      <Metric label="Over-allocated" value={String(r?.over_allocated ?? 0)} tone={(r?.over_allocated ?? 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-foreground'}
+        tip={<PeopleTip title="Over-allocated (over 100%)" people={inState('over')} />} />
+      <Metric label="Under-utilized" value={String(Math.max(0, r?.under_utilized ?? 0))}
+        tip={<PeopleTip title="Under-utilized (below 60%)" people={inState('under')} />} />
+    </div>
+  );
+}
+
+// Lists people behind a resourcing count (team / over-allocated / under-utilized).
+function PeopleTip({ title, people }: { title: string; people: AnyData[] }) {
+  if (!people.length) return <span>No one in this group.</span>;
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold">{title} · {people.length}</p>
+      <ul className="space-y-0.5">
+        {people.slice(0, 12).map((u) => (
+          <li key={u.user_id} className="flex justify-between gap-4 leading-snug">
+            <span className="truncate">{u.full_name}</span>
+            <span className="shrink-0 font-medium tabular-nums">{u.allocated_pct}%</span>
+          </li>
+        ))}
+        {people.length > 12 ? <li className="text-[11px] text-muted-foreground">+{people.length - 12} more</li> : null}
+      </ul>
     </div>
   );
 }
@@ -337,15 +401,17 @@ function OnTimeWidget({ config, widgetId }: WidgetProps) {
 // A small labelled stat. The label is wrapped in InfoLabel so abbreviations like
 // CPI/SPI/EAC explain themselves on hover (it falls back to plain text when the
 // label has no glossary entry, so no harm for self-evident labels).
-function Metric({ label, value, tone = 'text-foreground' }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className="rounded-lg border border-border px-2 py-1.5">
+function Metric({ label, value, tone = 'text-foreground', tip }: { label: string; value: string; tone?: string; tip?: React.ReactNode }) {
+  const body = (
+    <div className={cn('rounded-lg border border-border px-2 py-1.5', tip && 'cursor-help')}>
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
         <InfoLabel label={label} side="top" />
       </p>
       <p className={cn('text-base font-bold tabular-nums', tone)}>{value}</p>
     </div>
   );
+  // When a per-item breakdown is provided, hovering the WHOLE tile reveals it.
+  return tip ? <Tooltip label={tip} side="top" maxWidth={320}>{body}</Tooltip> : body;
 }
 
 // ── Table ────────────────────────────────────────────────────────────────────
@@ -468,6 +534,29 @@ function ScopeLine({ scope }: { scope?: WidgetScope }) {
     <Tooltip label={text} side="top" maxWidth={260}>
       <p className="truncate text-[10px] text-muted-foreground">{text}</p>
     </Tooltip>
+  );
+}
+
+// Lists the projects in a given health tier, so hovering "Critical 3" shows
+// which 3 projects are critical (with their client + the reason). Reads the
+// per-project rows the portfolio response already carries — no extra fetch.
+function HealthTierTip({ label, health, rows }: { label: string; health: string; rows: AnyData[] }) {
+  const matched = rows.filter((r) => r.health === health);
+  if (!matched.length) return <span>No projects are {label.toLowerCase()}.</span>;
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold">{label} · {matched.length}</p>
+      <ul className="space-y-0.5">
+        {matched.slice(0, 10).map((r) => (
+          <li key={r.project_id} className="leading-snug">
+            <span className="font-medium">{r.project_name}</span>
+            {r.client_name ? <span className="text-muted-foreground"> · {r.client_name}</span> : null}
+            {r.health_reason ? <span className="block text-[11px] text-muted-foreground">{r.health_reason}</span> : null}
+          </li>
+        ))}
+        {matched.length > 10 ? <li className="text-[11px] text-muted-foreground">+{matched.length - 10} more</li> : null}
+      </ul>
+    </div>
   );
 }
 
