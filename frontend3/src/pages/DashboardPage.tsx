@@ -359,7 +359,7 @@ function FinancialsWidget({
               {showCol('hours') ? <th className="table-header-cell"><InfoLabel label="Hours" /></th> : null}
               {showCol('revenue') ? <th className="table-header-cell"><InfoLabel label="Revenue" /></th> : null}
               <th className="table-header-cell"><InfoLabel label="Margin" /></th>
-              {showCol('budget_used') ? <th className="table-header-cell"><InfoLabel label="Budget burn" /></th> : null}
+              {showCol('budget_used') ? <th className="table-header-cell"><InfoLabel label="Billed %" infoKey="budget burn" /></th> : null}
               {showCol('contract_used') ? <th className="table-header-cell"><InfoLabel label="Contract billed" /></th> : null}
             </tr>
           </thead>
@@ -545,7 +545,7 @@ function ProjectsWidget({
                   <th className="table-header-cell">Project</th>
                   {showCol('client') ? <th className="table-header-cell">Client</th> : null}
                   {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged hours" /></th> : null}
-                  {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Budget burn" /></th> : null}
+                  {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Billed %" infoKey="budget burn" /></th> : null}
                   <th className="table-header-cell">
                     <span className="inline-flex items-center gap-1">
                       <HealthInfoLabel />
