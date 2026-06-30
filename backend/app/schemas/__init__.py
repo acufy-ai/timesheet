@@ -301,6 +301,11 @@ class ClientBase(BaseModel):
     contact_phone: Optional[str] = None
     client_self_manage_enabled: bool = False
 
+
+class ClientCreate(ClientBase):
+    # Input-only validation; kept off ClientBase so ClientResponse serializes a
+    # stored client whose status/client_type predates the current allowlist
+    # without 500-ing every list it appears in. See the TimeEntry/Project fixes.
     @field_validator("client_type")
     @classmethod
     def _valid_client_type(cls, v):
@@ -310,10 +315,6 @@ class ClientBase(BaseModel):
     @classmethod
     def _valid_client_status(cls, v):
         return _check_in(v, _CLIENT_STATUSES, "client status")
-
-
-class ClientCreate(ClientBase):
-    pass
 
 
 class ClientUpdate(BaseModel):
@@ -541,6 +542,18 @@ class ProjectBase(BaseModel):
     # The contract (MSA/SOW) this project is delivered under, if any.
     contract_id: Optional[int] = None
 
+
+class ProjectCreate(ProjectBase):
+    # Optional team roster on create (user ids); reconciled into user_project_access.
+    resource_ids: Optional[List[int]] = None
+    # Project managers (user ids). A project can have multiple PMs.
+    manager_ids: Optional[List[int]] = None
+
+    # Write-time validation lives on the input schema, not ProjectBase, so
+    # ProjectResponse (which also inherits the base) serializes already-stored
+    # rows faithfully. A legacy row with a since-retired status value must stay
+    # readable; rejecting it on the response path would 500 any list it appears
+    # in. See the TimeEntry fix for the same pattern.
     @field_validator("status")
     @classmethod
     def _valid_status(cls, v):
@@ -552,13 +565,6 @@ class ProjectBase(BaseModel):
         if v not in ("as_billed", "percent_complete"):
             raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
         return v
-
-
-class ProjectCreate(ProjectBase):
-    # Optional team roster on create (user ids); reconciled into user_project_access.
-    resource_ids: Optional[List[int]] = None
-    # Project managers (user ids). A project can have multiple PMs.
-    manager_ids: Optional[List[int]] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -587,6 +593,13 @@ class ProjectUpdate(BaseModel):
     @classmethod
     def _valid_status(cls, v):
         return _check_status(v, _PROJECT_STATUSES, "project status")
+
+    @field_validator("revenue_recognition")
+    @classmethod
+    def _valid_revrec(cls, v):
+        if v is not None and v not in ("as_billed", "percent_complete"):
+            raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
+        return v
 
 
 class ProjectResponse(ProjectBase):
@@ -620,14 +633,16 @@ class TaskBase(BaseModel):
     due_date: Optional[date] = None
     blocked_reason: Optional[str] = None
 
+
+class TaskCreate(TaskBase):
+    assignee_ids: Optional[List[int]] = None
+
+    # Input-only: kept off TaskBase so TaskResponse serializes stored rows with a
+    # since-retired status without 500-ing. See the TimeEntry/Project fixes.
     @field_validator("status")
     @classmethod
     def _valid_status(cls, v):
         return _check_status(v, _TASK_STATUSES, "task status")
-
-
-class TaskCreate(TaskBase):
-    assignee_ids: Optional[List[int]] = None
 
 
 class TaskUpdate(BaseModel):
