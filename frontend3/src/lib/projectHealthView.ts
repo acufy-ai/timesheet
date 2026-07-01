@@ -385,12 +385,15 @@ export function buildProjectHealthView(
   // ---- 2. Summary cards. Build all, then drop missing-data cards. ----
   const cards: SummaryCardVM[] = [];
 
+  // For unhealthy projects the reason is already spelled out as the top line of
+  // the critical-issues panel below, so repeating it in the Status tile sub is
+  // redundant. Only show the sub for the healthy states (on-track / excellent /
+  // not-set), where the panel carries no reason bullet.
+  const reasonInPanel = health === 'at-risk' || health === 'critical' || health === 'blocked';
   cards.push({
     key: 'status', label: 'Status', value: '', tone: 'neutral', emphasis: false,
     isStatus: true, health,
-    // The plain-language "why this status" (e.g. "Behind pace, 60% done at 80%
-    // elapsed"), so the manager sees the reason, not just the colour.
-    sub: portfolio?.health_reason ?? undefined,
+    sub: reasonInPanel ? undefined : (portfolio?.health_reason ?? undefined),
   });
 
   if (taskCompletionPct != null) {

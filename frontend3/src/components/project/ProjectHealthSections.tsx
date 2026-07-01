@@ -3,7 +3,7 @@
 // owns nothing but layout. The page composes these in a fixed order; the same
 // components render for every project so the layout stays identical.
 
-import { useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 import { cn } from '@/lib/cn';
 import { healthMeta } from '@/lib/projectHealth';
@@ -303,8 +303,8 @@ function TaskDetailModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={t.name} className="max-w-3xl">
-      <div className="space-y-5 text-base">
+    <Modal open onClose={onClose} title={t.name} className="max-w-4xl">
+      <div className="space-y-6 text-base">
         <Row label="Project">{projectName}{clientName ? ` · ${clientName}` : ''}</Row>
         <Row label="Manager">{managerName || '—'}</Row>
         <Row label="Hours">
@@ -361,7 +361,7 @@ function TaskDetailModal({
             <ul className="mt-2 space-y-2">
               {notes.map((n) => (
                 <li key={n.id} className="rounded-lg border border-border/70 px-3.5 py-2.5">
-                  <p className="whitespace-pre-wrap text-base text-foreground">{n.body}</p>
+                  <NoteBody text={n.body} />
                   {n.author ? <p className="mt-1 text-sm text-muted-foreground">{n.author}</p> : null}
                 </li>
               ))}
@@ -380,6 +380,48 @@ function TaskDetailModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// A note body that clamps to 4 lines and reveals a "Show more" / "Show less"
+// toggle ONLY when the text actually overflows that clamp (measured against the
+// collapsed element, so short notes never show the button). Mirrors the my-time
+// DescriptionCell pattern.
+function NoteBody({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (!expanded) setOverflows(el.scrollHeight - el.clientHeight > 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, expanded]);
+
+  return (
+    <div>
+      <p
+        ref={ref}
+        className={cn('whitespace-pre-wrap break-words text-base text-foreground', !expanded && 'line-clamp-4')}
+      >
+        {text}
+      </p>
+      {(overflows || expanded) ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-sm font-medium text-primary hover:underline"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
