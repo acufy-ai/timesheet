@@ -133,6 +133,7 @@ export interface WorkloadPersonVM {
 }
 export interface ExecutionVM {
   highestEffort: EffortTaskVM[];
+  effortTotal: string | null;      // "382h" or "382h · $36k" — the denominator the bars are shares of
   overdueUnfinished: OverdueTaskVM[];
   workload: WorkloadPersonVM[];
 }
@@ -454,6 +455,16 @@ export function buildProjectHealthView(
     right: showCost ? `${round(Number(t.hours))}h · ${fmtMoney(t.cost, currency)}` : `${round(Number(t.hours))}h`,
     pct: clampPct(t.pct_of_hours),
   }));
+  // Total effort = ALL logged hours on the project (the denominator the effort
+  // bars are shares of), so the tile shows what 100% represents. Uses the
+  // project-wide approved hours, not just the shown top-N tasks.
+  const effortTotal: string | null = (breakdown && breakdown.top_tasks.length)
+    ? (() => {
+        const h = approved != null ? round(approved) : round((breakdown.top_tasks).reduce((s, t) => s + Number(t.hours), 0));
+        const c = showCost && cost != null ? ` · ${fmtMoney(cost, currency)}` : '';
+        return `${h}h${c}`;
+      })()
+    : null;
   // Prefer the explicit overdue list; else unfinished-at-deadline (still unfinished).
   const overdueSource = breakdown
     ? (breakdown.overdue_tasks.length > 0
@@ -574,7 +585,7 @@ export function buildProjectHealthView(
 
   return {
     header, summaryCards: cards, criticalIssues,
-    execution: { highestEffort, overdueUnfinished, workload },
+    execution: { highestEffort, effortTotal, overdueUnfinished, workload },
     financialKpis, effortBudget: { rows: ebRows },
     evm: evmVM, revRec: revRecVM, visibility, footerNote: FOOTER_NOTE,
   };

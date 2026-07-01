@@ -151,6 +151,7 @@ export function ProjectReportPage() {
           {visibility.execution ? (
             <ExecutionStatus
               highestEffort={view.execution.highestEffort}
+              effortTotal={view.execution.effortTotal}
               overdueUnfinished={view.execution.overdueUnfinished}
               workload={view.execution.workload}
             />

@@ -129,9 +129,10 @@ function ExecCard({ title, children }: { title: string; children: ReactNode }) {
 }
 
 export function ExecutionStatus({
-  highestEffort, overdueUnfinished, workload,
+  highestEffort, effortTotal, overdueUnfinished, workload,
 }: {
   highestEffort: EffortTaskVM[];
+  effortTotal: string | null;
   overdueUnfinished: OverdueTaskVM[];
   workload: WorkloadPersonVM[];
 }) {
@@ -141,9 +142,19 @@ export function ExecutionStatus({
       <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         <ExecCard title="Highest effort tasks">
           {highestEffort.length ? (
-            <ul className="space-y-2">
-              {highestEffort.map((t) => <BarRow key={t.taskId} name={t.name} right={t.right} pct={t.pct} />)}
-            </ul>
+            <>
+              <ul className="space-y-2">
+                {highestEffort.map((t) => <BarRow key={t.taskId} name={t.name} right={t.right} pct={t.pct} />)}
+              </ul>
+              {/* Bars are each task's share of hours; show the total they add up
+                  to so a full-looking bar reads as "share", not "done". */}
+              {effortTotal ? (
+                <div className="mt-2 flex items-baseline justify-between border-t border-border pt-2 text-sm">
+                  <span className="font-medium text-foreground">Total effort</span>
+                  <span className="shrink-0 tabular-nums font-semibold text-foreground">{effortTotal}</span>
+                </div>
+              ) : null}
+            </>
           ) : <p className="text-sm text-muted-foreground">No time logged against tasks.</p>}
         </ExecCard>
 
