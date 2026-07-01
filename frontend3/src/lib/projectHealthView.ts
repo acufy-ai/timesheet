@@ -397,26 +397,24 @@ export function buildProjectHealthView(
   }
 
   if (logged != null || approved != null) {
-    // "Hours" tile: allocated (sum of task estimates) vs logged, colored by how
-    // logged compares to the plan — red over, green comfortably under, amber near.
+    // "Hours" tile: allocated (sum of task estimates) / logged. Hours are the
+    // EFFORT axis, separate from the dollar budget that drives health — so this
+    // only turns red when hours are MATERIALLY over the plan (>15%); a small
+    // difference reads neutral (the budget tile carries the money story).
     const loggedH = round(logged ?? approved ?? 0);
     const allocatedH = breakdown
       ? Math.round(breakdown.all_tasks.reduce((s, t) => s + Number(t.estimated_hours ?? 0), 0))
       : 0;
     let hoursTone: RiskTone = 'neutral';
-    let sub: string | undefined = approved != null ? `${round(approved)}h approved` : undefined;
-    if (allocatedH > 0) {
-      const ratio = loggedH / allocatedH;
-      hoursTone = ratio > 1.02 ? 'critical' : ratio >= 0.9 ? 'warning' : 'subtle';
-      sub = `${allocatedH}h allocated`;
+    let emphasize = false;
+    if (allocatedH > 0 && loggedH > allocatedH * 1.15) {
+      hoursTone = 'critical'; emphasize = true;  // effort materially over plan
     }
     cards.push({
       key: 'logged_hours', label: 'Hours',
-      value: allocatedH > 0 ? `${loggedH}h / ${allocatedH}h` : `${loggedH}h`,
-      sub,
-      // Emphasize (color) whenever we have an allocation, so under=green,
-      // near=amber, over=red all show. Plain when there's no allocation.
-      tone: hoursTone, emphasis: allocatedH > 0,
+      value: allocatedH > 0 ? `${allocatedH}h / ${loggedH}h` : `${loggedH}h`,
+      sub: allocatedH > 0 ? 'allocated / logged' : (approved != null ? `${round(approved)}h approved` : undefined),
+      tone: hoursTone, emphasis: emphasize,
     });
   }
 
@@ -470,10 +468,12 @@ export function buildProjectHealthView(
   const tasks: TaskRowVM[] = (breakdown?.all_tasks ?? []).map((t) => {
     const logged = round(Number(t.hours));
     const est = t.estimated_hours != null ? round(Number(t.estimated_hours)) : null;
-    const over = est != null && est > 0 && logged > est * 1.02;
+    // Only flag red when MATERIALLY over the estimate (>15%), matching the
+    // materiality bar used for the "estimate overrun" issue.
+    const over = est != null && est > 0 && logged > est * 1.15;
     return {
       taskId: t.task_id, name: t.name, logged, allocated: est,
-      right: est != null ? `${logged}h / ${est}h` : `${logged}h`,
+      right: est != null ? `${est}h / ${logged}h` : `${logged}h`,
       over, pct: clampPct(t.pct_of_hours), task: t,
     };
   });

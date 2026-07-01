@@ -251,7 +251,7 @@ function TaskDetailModal({
         <Row label="Status">{TASK_STATUS_LABEL[task.status] ?? task.status}</Row>
         <Row label="Hours">
           <span className={cn('tabular-nums', t.over ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-foreground')}>
-            {t.allocated != null ? `${t.logged}h logged / ${t.allocated}h allocated` : `${t.logged}h logged`}
+            {t.allocated != null ? `${t.allocated}h allocated / ${t.logged}h logged` : `${t.logged}h logged`}
           </span>
         </Row>
         <Row label="Assignees">

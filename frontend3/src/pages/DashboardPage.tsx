@@ -599,7 +599,7 @@ function ProjectsWidget({
                 <tr className="table-header-row">
                   <th className="table-header-cell">{grouped ? 'Client / Project' : 'Project'}</th>
                   {showClientCol ? <th className="table-header-cell">Client</th> : null}
-                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged / allocated" /></th> : null}
+                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Allocated / logged" /></th> : null}
                   {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Billed %" infoKey="budget burn" /></th> : null}
                   <th className="table-header-cell">
                     <span className="inline-flex items-center gap-1">
@@ -633,7 +633,7 @@ function ProjectsWidget({
                           </td>
                           {showCol('hours_this_week') ? (
                             <td className="border-b border-border px-4 py-2.5 tabular-nums text-[12px] text-muted-foreground">
-                              {Math.round(g.totalHours)}h{g.totalAllocated > 0 ? ` / ${Math.round(g.totalAllocated)}h` : ''} total
+                              {g.totalAllocated > 0 ? `${Math.round(g.totalAllocated)}h / ` : ''}{Math.round(g.totalHours)}h total
                             </td>
                           ) : null}
                           {showCol('budget') ? <td className="border-b border-border" /> : null}
@@ -724,10 +724,11 @@ function ProjectRow({
       ) : null}
       {showCol('hours_this_week') ? (
         <td className="px-4 py-3 tabular-nums text-foreground">
-          {Math.round(Number(row.hours_this_week))}h
           {row.allocated_hours != null && Number(row.allocated_hours) > 0 ? (
-            <span className="text-muted-foreground"> / {Math.round(Number(row.allocated_hours))}h</span>
-          ) : null}
+            <><span className="text-muted-foreground">{Math.round(Number(row.allocated_hours))}h / </span>{Math.round(Number(row.hours_this_week))}h</>
+          ) : (
+            <>{Math.round(Number(row.hours_this_week))}h</>
+          )}
         </td>
       ) : null}
       {showCol('budget') ? (
