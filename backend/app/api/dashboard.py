@@ -361,37 +361,52 @@ def _classify_by_pace(
     def pct(x):  # these inputs are ALREADY 0-100 percentages; just round.
         return int(round(x)) if x is not None else 0
 
+    # Reusable phrases that name exactly what each percentage measures: tasks
+    # (done vs total) and schedule (elapsed vs the planned window) and budgeted
+    # hours (used vs planned).
+    tasks = f"{pct_complete}% of tasks are done"
+    schedule = f"{pct(pct_elapsed)}% of the schedule has passed" if pct_elapsed is not None else None
+    budget = f"{pct(pct_hours_burned)}% of budgeted hours are used" if pct_hours_burned is not None else None
+
     # 1. Critical — badly behind on both axes, or over budget with the deadline
     #    upon us, or already overdue and not done.
     if (well_behind and over_budget) or (over_budget and (deadline_close or overdue)) or (overdue and pct_complete < 100):
         reasons = []
-        if over_budget:
-            reasons.append(f"{pct(pct_hours_burned)}% of budgeted hours used at {pct_complete}% done")
+        if over_budget and budget:
+            reasons.append(f"{budget} but only {tasks}")
         if overdue:
-            reasons.append(f"{abs(days_until_end)} days overdue")
-        elif well_behind:
-            reasons.append(f"only {pct_complete}% done at {pct(pct_elapsed)}% of the schedule")
-        return "critical", (" and ".join(reasons).capitalize() or "Behind on budget and schedule") + "."
+            reasons.append(f"the deadline passed {abs(days_until_end)} days ago")
+        elif well_behind and schedule:
+            reasons.append(f"{tasks} but {schedule}")
+        base = "; ".join(reasons) if reasons else "the project is behind on both budget and schedule"
+        return "critical", base[0].upper() + base[1:] + "."
     # 2. Blocked — after critical, so over-budget + blocked reads as critical.
     if has_blocked_task:
-        return "blocked", "One or more tasks are blocked."
+        return "blocked", "One or more tasks are blocked and can't move forward."
     # 3. At risk — slipping on one axis (behind schedule OR over budget), or the
     #    deadline is close. Still recoverable, so a watch rather than a crisis.
     if behind_schedule or over_budget or deadline_close:
         reasons = []
-        if over_budget:
-            reasons.append(f"{pct(pct_hours_burned)}% of hours used at {pct_complete}% done")
-        if behind_schedule:
-            reasons.append(f"behind pace ({pct_complete}% done at {pct(pct_elapsed)}% elapsed)")
+        if over_budget and budget:
+            reasons.append(f"{budget} but only {tasks}")
+        if behind_schedule and schedule:
+            reasons.append(f"{tasks} but {schedule}, so it's behind schedule")
         if deadline_close:
-            reasons.append(f"ends in {days_until_end} day{'s' if days_until_end != 1 else ''}")
-        return "at-risk", " and ".join(reasons).capitalize() + "."
+            reasons.append(f"the deadline is {days_until_end} day{'s' if days_until_end != 1 else ''} away")
+        base = "; ".join(reasons)
+        return "at-risk", base[0].upper() + base[1:] + "."
     # 4. Healthy — completion keeping up with spend and schedule. Excellent when
     #    comfortably ahead on both; otherwise on-track.
     ahead = (sched_pace is None or sched_pace >= 1.0) and (budget_pace is None or budget_pace >= 1.1)
+    tail = []
+    if schedule:
+        tail.append(f"{pct(pct_elapsed)}% of the schedule used")
+    if budget:
+        tail.append(f"{pct(pct_hours_burned)}% of budgeted hours used")
+    ctx = f" ({', '.join(tail)})" if tail else ""
     if ahead and not deadline_close:
-        return "excellent", f"{pct_complete}% done, ahead of both schedule and budget."
-    return "on-track", f"{pct_complete}% done, keeping pace with schedule and budget."
+        return "excellent", f"{tasks}, ahead of both schedule and budget{ctx}."
+    return "on-track", f"{tasks}, keeping pace with schedule and budget{ctx}."
 
 
 def _classify_health(

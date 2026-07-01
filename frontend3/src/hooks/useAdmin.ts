@@ -214,9 +214,16 @@ function invalidateClients(qc: ReturnType<typeof useQueryClient>) {
 }
 function invalidateProjects(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['projects'] });
+  // A project edit (budget, dates, % complete, ...) changes the derived health,
+  // Billed %, financials and portfolio, so refresh the dashboard queries too —
+  // otherwise those stay on their 60s stale cache and the edit looks ignored.
+  qc.invalidateQueries({ queryKey: ['dashboard'] });
 }
 function invalidateTasks(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['tasks'] });
+  // Task status/assignment changes feed task-completion, the health reason and
+  // the project task-breakdown, so refresh the dashboard queries as well.
+  qc.invalidateQueries({ queryKey: ['dashboard'] });
 }
 
 export function useCreateClient() {
