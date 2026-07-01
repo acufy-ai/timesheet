@@ -3620,10 +3620,18 @@ async def get_project_task_breakdown(
     # Blocked: status == blocked. Carries blocked_reason for the "why" line.
     blocked_tasks = [task_row(t) for t in tasks if status_str(t) == "blocked"]
 
-    # Over estimate: logged hours exceeded the task's estimate. Sort by the
-    # biggest absolute overrun first.
+    # Over estimate: logged hours MATERIALLY exceeded the task's estimate. A tiny
+    # overrun (a task 2% over) is noise, not an issue worth surfacing under
+    # "critical issues" — and on a healthy project it shouldn't appear at all.
+    # Only flag overruns of >= 20% AND >= 4 hours (so small tasks don't trip on a
+    # rounding-level slip). Sort by the biggest absolute overrun first.
+    OVERRUN_PCT_MIN = 20
+    OVERRUN_HOURS_MIN = Decimal("4")
     over_estimate_tasks = [
-        r for r in (task_row(t) for t in tasks) if r.over_estimate_hours is not None
+        r for r in (task_row(t) for t in tasks)
+        if r.over_estimate_hours is not None
+        and r.over_estimate_hours >= OVERRUN_HOURS_MIN
+        and (r.over_estimate_pct or 0) >= OVERRUN_PCT_MIN
     ]
     over_estimate_tasks.sort(key=lambda r: r.over_estimate_hours or Decimal("0"), reverse=True)
 
