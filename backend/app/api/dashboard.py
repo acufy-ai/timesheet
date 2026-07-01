@@ -376,7 +376,9 @@ def _classify_by_pace(
     if (well_behind and over_budget) or (over_budget and (deadline_close or overdue)) or (overdue and pct_complete < 100):
         reasons = []
         if over_budget and budget:
-            reasons.append(f"{budget} but only {tasks}")
+            # "only" reads wrong when tasks are actually fairly complete.
+            lead = "only " if pct_complete is not None and pct_complete < 50 else ""
+            reasons.append(f"{budget} but {lead}{tasks}")
         if overdue:
             reasons.append(f"the deadline passed {abs(days_until_end)} days ago")
         elif well_behind and schedule:
