@@ -270,6 +270,7 @@ export interface TaskBreakdownTask {
   revenue: string | number;
   pct_of_hours: number;
   assignees: string[];
+  assignee_ids?: number[];
   // Phase 2 causal fields. null = not captured (unknown), never zero/overdue.
   estimated_hours?: string | number | null;
   due_date?: string | null;

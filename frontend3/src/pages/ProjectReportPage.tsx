@@ -157,6 +157,7 @@ export function ProjectReportPage() {
               projectName={header.projectName}
               managerName={breakdown.data?.manager_name}
               clientName={header.clientName}
+              clientId={header.clientId}
             />
           ) : null}
 

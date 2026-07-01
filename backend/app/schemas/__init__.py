@@ -1761,6 +1761,7 @@ class TaskBreakdownTask(BaseModel):
     revenue: Decimal = Decimal("0")   # approved billable revenue
     pct_of_hours: int = 0             # share of the project's logged hours
     assignees: list[str] = []         # names, for "who's carrying it"
+    assignee_ids: list[int] = []      # user ids, for the interactive assignee editor
     # Phase 2 causal fields. All Optional — None means "not captured" (unknown),
     # which the "why" logic must never treat as zero/overdue.
     estimated_hours: Optional[Decimal] = None

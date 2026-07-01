@@ -371,6 +371,7 @@ MANUAL_HEALTH_VALUES = {"excellent", "on-track", "at-risk", "critical"}
 def _classify_by_pace(
     pct_complete, pct_elapsed, pct_budget_used, days_until_end,
     cfg: "HealthConfig", has_blocked_task: bool,
+    projected_over_pct=None,
 ) -> tuple[str, str]:
     """Derive health from PACE ratios (the demo-prep model): compare progress
     against how much of the schedule and budget it has consumed, so the status
@@ -426,9 +427,24 @@ def _classify_by_pace(
     # 2. Blocked — after critical, so over-budget + blocked reads as critical.
     if has_blocked_task:
         return "blocked", "One or more tasks are blocked and can't move forward."
-    # 3. At risk — slipping on one axis (behind schedule OR over budget), or the
-    #    deadline is close. Still recoverable, so a watch rather than a crisis.
-    if behind_schedule or over_budget or deadline_close:
+    # 3. At risk — slipping on one axis (behind schedule OR over budget), OR
+    #    PROJECTED to blow the budget: spend so far + the remaining allocated
+    #    hours on unfinished tasks would exceed the budget. This warns the
+    #    manager AHEAD of the overrun (a task ran hot and there's unfinished work
+    #    that won't fit the budget), not after.
+    projecting_over = projected_over_pct is not None and projected_over_pct > 100
+    if behind_schedule or over_budget or deadline_close or projecting_over:
+        # When the budget PROJECTION is the driver, lead with it alone — it's the
+        # forward-looking headline ("heading over"), clearer than stacking the
+        # current-pace reasons behind it.
+        if projecting_over:
+            return "at-risk", (
+                f"On track to go over budget: {int(round(projected_over_pct))}% projected once the "
+                f"remaining allocated work is done (only {int(round(pct_budget_used))}% spent so far)."
+                if pct_budget_used is not None else
+                f"On track to go over budget: {int(round(projected_over_pct))}% projected once the "
+                f"remaining allocated work is done."
+            )
         reasons = []
         if over_budget and budget:
             reasons.append(f"{budget} but only {tasks}")
@@ -457,6 +473,7 @@ def _classify_health(
     cfg: Optional["HealthConfig"] = None, margin_pct=None,
     has_blocked_task: bool = False,
     pct_complete=None, pct_elapsed=None, pct_budget_used=None,
+    projected_over_pct=None,
 ) -> tuple[str, str]:
     """Return (health, reason) for a project. The reason is a plain-language
     explanation of WHY this health state, for the pill tooltip.
@@ -484,7 +501,7 @@ def _classify_health(
     ):
         return _classify_by_pace(
             pct_complete, pct_elapsed, pct_budget_used, days_until_end,
-            cfg, has_blocked_task,
+            cfg, has_blocked_task, projected_over_pct=projected_over_pct,
         )
 
     is_over_budget = cfg.budget_enabled and budget_pct is not None and budget_pct > cfg.over_budget_pct
@@ -588,6 +605,39 @@ async def _task_completion_by_project(
         .group_by(Task.project_id)
     )).all()
     return {pid: (int(done or 0), int(total or 0)) for pid, total, done in rows}
+
+
+async def _remaining_alloc_hours_by_project(
+    db: AsyncSession, project_ids: list[int], tenant_id: int
+) -> dict[int, Decimal]:
+    """project_id -> remaining ALLOCATED hours on UNFINISHED tasks: the sum over
+    tasks that aren't done of max(estimate - logged, 0). This is the still-to-
+    spend effort the project is committed to — used to PROJECT whether the budget
+    will be exhausted before the work finishes (forward-looking 'at risk')."""
+    if not project_ids:
+        return {}
+    from app.models.task import Task, TaskStatus
+
+    # logged approved hours per task
+    logged = {tid: Decimal(str(h or 0)) for tid, h in (await db.execute(
+        select(TimeEntry.task_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(TimeEntry.project_id.in_(project_ids), TimeEntry.task_id.isnot(None),
+               TimeEntry.status == TimeEntryStatus.APPROVED)
+        .group_by(TimeEntry.task_id)
+    )).all()}
+    out: dict[int, Decimal] = {}
+    tasks = (await db.execute(
+        select(Task.id, Task.project_id, Task.estimated_hours, Task.status)
+        .where(Task.project_id.in_(project_ids), Task.tenant_id == tenant_id, Task.is_active.is_(True))
+    )).all()
+    for tid, pid, est, status in tasks:
+        st = status.value if hasattr(status, "value") else str(status)
+        if st == "done" or est is None:
+            continue
+        remaining = Decimal(str(est)) - logged.get(tid, Decimal("0"))
+        if remaining > 0:
+            out[pid] = out.get(pid, Decimal("0")) + remaining
+    return out
 
 
 def _derive_pace_inputs(project, revenue, task_done_total, today):
@@ -1708,6 +1758,11 @@ async def get_manager_project_health(
         .where(_TaskM.project_id.in_(project_ids), _TaskM.is_active.is_(True))
         .group_by(_TaskM.project_id)
     )).all()}
+    # Remaining allocated hours on UNFINISHED tasks — powers the projected
+    # budget-exhaustion ('at risk') check below.
+    remaining_by_project = await _remaining_alloc_hours_by_project(
+        db, project_ids, current_user.tenant_id
+    )
 
     # 3) LOGGED HOURS per project (all-time, not week-scoped). This column used to
     # be "hours this week", but at the start of a week it reads 0 even when the
@@ -1787,12 +1842,24 @@ async def get_manager_project_health(
             project, revenue, task_completion.get(project.id), today,
         )
 
+        # Projected budget at completion: spend so far + the DOLLAR cost of the
+        # remaining allocated hours on unfinished tasks (at the project rate).
+        # If that exceeds the budget the project is HEADING over even if not yet
+        # over — the forward-looking 'at risk' signal.
+        projected_over_pct = None
+        rem_hours = remaining_by_project.get(project.id, Decimal("0"))
+        if budget_amount is not None and budget_amount > 0 and rem_hours > 0:
+            rate = project.billable_rate or Decimal("0")
+            projected = revenue + rem_hours * Decimal(str(rate))
+            projected_over_pct = float(projected / Decimal(str(budget_amount)) * 100)
+
         health, health_reason = _apply_health_override(
             _classify_health(
                 budget_pct, days_until_end, budget_amount, project.end_date,
                 cfg=health_cfg, has_blocked_task=(project.id in blocked_pids),
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
                 pct_budget_used=pct_budget_used,
+                projected_over_pct=projected_over_pct,
             ),
             project.health_override,
         )
@@ -3284,6 +3351,9 @@ async def get_portfolio(
     task_completion = await _task_completion_by_project(
         db, list(managed_ids), current_user.tenant_id
     )
+    remaining_by_project = await _remaining_alloc_hours_by_project(
+        db, list(managed_ids), current_user.tenant_id
+    )
 
     agg: dict[int, dict] = {}
     for e in entries:
@@ -3316,6 +3386,14 @@ async def get_portfolio(
         pct_complete, pct_elapsed, pct_budget_used = _derive_pace_inputs(
             p, revenue, task_completion.get(pid), today,
         )
+        # Projected budget-at-completion (forward-looking at-risk), same as the
+        # dashboard endpoint so the two agree.
+        projected_over_pct = None
+        rem_hours = remaining_by_project.get(pid, Decimal("0"))
+        if budget and budget > 0 and rem_hours > 0:
+            rate = p.billable_rate or Decimal("0")
+            projected = revenue + rem_hours * Decimal(str(rate))
+            projected_over_pct = float(projected / Decimal(str(budget)) * 100)
 
         health, health_reason = _apply_health_override(
             _classify_health(
@@ -3323,6 +3401,7 @@ async def get_portfolio(
                 margin_pct=margin_pct, has_blocked_task=(pid in blocked_pids),
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
                 pct_budget_used=pct_budget_used,
+                projected_over_pct=projected_over_pct,
             ),
             p.health_override,
         )
@@ -3617,16 +3696,18 @@ async def get_project_task_breakdown(
     )).scalars().all()
     tasks_by_id = {t.id: t for t in tasks}
 
-    # Assignee names per task.
+    # Assignee names + ids per task.
     assignee_names: dict[int, list[str]] = {}
+    assignee_ids: dict[int, list[int]] = {}
     if tasks:
         rows = (await db.execute(
-            select(TaskAssignee.task_id, User.full_name)
+            select(TaskAssignee.task_id, TaskAssignee.user_id, User.full_name)
             .join(User, User.id == TaskAssignee.user_id)
             .where(TaskAssignee.task_id.in_([t.id for t in tasks]))
         )).all()
-        for tid, name in rows:
+        for tid, uid, name in rows:
             assignee_names.setdefault(tid, []).append(name)
+            assignee_ids.setdefault(tid, []).append(uid)
 
     # Approved time aggregated per task and per person.
     entries = (await db.execute(
@@ -3679,6 +3760,7 @@ async def get_project_task_breakdown(
             hours=hrs, cost=agg["cost"], revenue=agg["revenue"],
             pct_of_hours=pct(hrs),
             assignees=assignee_names.get(t.id, []),
+            assignee_ids=assignee_ids.get(t.id, []),
             estimated_hours=est,
             due_date=t.due_date,
             blocked_reason=t.blocked_reason,

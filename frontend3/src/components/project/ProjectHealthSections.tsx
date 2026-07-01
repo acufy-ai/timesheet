@@ -8,8 +8,9 @@ import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { healthMeta } from '@/lib/projectHealth';
 import { InfoLabel } from '@/components/dashboard/InfoLabel';
-import { Modal } from '@/components/ui';
-import { useProjectNotes } from '@/hooks/useAdmin';
+import { Modal, Button, Input } from '@/components/ui';
+import { useProjectNotes, useUpdateTask, useCreateClientNote, useUsers } from '@/hooks/useAdmin';
+import type { TaskStatus } from '@/types/admin';
 import {
   riskText,
   TASK_STATUS_LABEL,
@@ -155,7 +156,7 @@ function TaskLine({ t, onOpen }: { t: TaskRowVM; onOpen: () => void }) {
 }
 
 export function ExecutionStatus({
-  tasks, effortTotal, workload, projectId, projectName, managerName, clientName,
+  tasks, effortTotal, workload, projectId, projectName, managerName, clientName, clientId,
 }: {
   tasks: TaskRowVM[];
   effortTotal: string | null;
@@ -164,6 +165,7 @@ export function ExecutionStatus({
   projectName: string;
   managerName?: string | null;
   clientName?: string | null;
+  clientId?: number | null;
 }) {
   const [openTask, setOpenTask] = useState<TaskRowVM | null>(null);
   return (
@@ -220,18 +222,20 @@ export function ExecutionStatus({
         <TaskDetailModal
           t={openTask} onClose={() => setOpenTask(null)}
           projectId={projectId} projectName={projectName}
-          managerName={managerName} clientName={clientName}
+          managerName={managerName} clientName={clientName} clientId={clientId}
         />
       ) : null}
     </section>
   );
 }
 
-// Task-detail popup (item 7): name, description, assignees, project, PM,
-// allocated vs logged, and notes linked to this task/project. Closes on the X,
-// Escape, or an outside click (all provided by <Modal>).
+const TASK_STATUS_OPTS: TaskStatus[] = ['to_do', 'in_progress', 'blocked', 'done'];
+
+// Task-detail popup (item 7): INTERACTIVE — edit status, allocated hours, and
+// assignees, and add a note, all saved live. Also shows project, PM, and the
+// allocated-vs-logged hours. Closes on X, Escape, or outside click.
 function TaskDetailModal({
-  t, onClose, projectId, projectName, managerName, clientName,
+  t, onClose, projectId, projectName, managerName, clientName, clientId,
 }: {
   t: TaskRowVM;
   onClose: () => void;
@@ -239,33 +243,100 @@ function TaskDetailModal({
   projectName: string;
   managerName?: string | null;
   clientName?: string | null;
+  clientId?: number | null;
 }) {
+  const task = t.task;
+  const updateTask = useUpdateTask();
+  const createNote = useCreateClientNote();
+  const usersQ = useUsers();
   const notesQ = useProjectNotes(projectId);
   const notes = (notesQ.data ?? []).filter(
     (n) => n.task_id === t.taskId || (n.task_id == null && n.project_id === projectId),
   );
-  const task = t.task;
-  const assignees = task.assignees ?? [];
+  // Internal (non-client) users are the assignable resources.
+  const users = (usersQ.data ?? []).filter((u) => !u.is_external);
+  const currentAssignees: number[] = task.assignee_ids ?? [];
+
+  const [status, setStatus] = useState<TaskStatus>(task.status as TaskStatus);
+  const [alloc, setAlloc] = useState<string>(t.allocated != null ? String(t.allocated) : '');
+  const [assignees, setAssignees] = useState<number[]>(currentAssignees);
+  const [noteText, setNoteText] = useState('');
+
+  const save = (data: Parameters<typeof updateTask.mutate>[0]['data']) =>
+    updateTask.mutate({ id: t.taskId, data });
+
+  const toggleAssignee = (uid: number) => {
+    const next = assignees.includes(uid) ? assignees.filter((x) => x !== uid) : [...assignees, uid];
+    setAssignees(next);
+    save({ assignee_ids: next });
+  };
+  const addNote = () => {
+    const body = noteText.trim();
+    if (!body || clientId == null) return;
+    createNote.mutate({ clientId, data: { body, project_id: projectId, task_id: t.taskId } });
+    setNoteText('');
+  };
+
   return (
-    <Modal open onClose={onClose} title={t.name}>
-      <div className="space-y-3 text-sm">
+    <Modal open onClose={onClose} title={t.name} className="max-w-lg">
+      <div className="space-y-4 text-sm">
         <Row label="Project">{projectName}{clientName ? ` · ${clientName}` : ''}</Row>
         <Row label="Manager">{managerName || '—'}</Row>
-        <Row label="Status">{TASK_STATUS_LABEL[task.status] ?? task.status}</Row>
         <Row label="Hours">
           <span className={cn('tabular-nums', t.over ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-foreground')}>
             {t.allocated != null ? `${t.allocated}h allocated / ${t.logged}h logged` : `${t.logged}h logged`}
           </span>
         </Row>
-        <Row label="Assignees">
-          {assignees.length ? assignees.join(', ') : <span className="text-muted-foreground">Unassigned</span>}
-        </Row>
+
+        {/* Editable: status + allocated hours */}
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status</span>
+            <select
+              value={status}
+              onChange={(e) => { const v = e.target.value as TaskStatus; setStatus(v); save({ status: v }); }}
+              className="mt-1 w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              {TASK_STATUS_OPTS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s] ?? s}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Allocated hours</span>
+            <Input
+              type="number" min="0" step="1" value={alloc}
+              onChange={(e) => setAlloc(e.target.value)}
+              onBlur={() => save({ estimated_hours: alloc === '' ? null : Number(alloc) })}
+              className="mt-1 h-9"
+              placeholder="e.g. 100"
+            />
+          </label>
+        </div>
+
+        {/* Editable: assignees (internal resources) */}
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Assignees</p>
+          <div className="mt-1 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border p-2">
+            {users.length === 0 ? <span className="text-[12px] text-muted-foreground">No resources</span> : users.map((u) => {
+              const on = assignees.includes(u.id);
+              return (
+                <button key={u.id} type="button" onClick={() => toggleAssignee(u.id)}
+                  className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors',
+                    on ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-foreground/10')}>
+                  {u.full_name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {task.description ? (
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Description</p>
             <p className="mt-0.5 whitespace-pre-wrap text-foreground">{task.description}</p>
           </div>
         ) : null}
+
+        {/* Notes: list + add */}
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Notes</p>
           {notes.length ? (
@@ -277,7 +348,17 @@ function TaskDetailModal({
                 </li>
               ))}
             </ul>
-          ) : <p className="mt-0.5 text-[13px] text-muted-foreground">No notes for this task.</p>}
+          ) : <p className="mt-0.5 text-[13px] text-muted-foreground">No notes yet.</p>}
+          {clientId != null ? (
+            <div className="mt-2 flex items-start gap-2">
+              <textarea
+                value={noteText} onChange={(e) => setNoteText(e.target.value)}
+                placeholder="Add a note…" rows={2}
+                className="min-h-0 flex-1 resize-y rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+              <Button size="sm" onClick={addNote} disabled={!noteText.trim() || createNote.isPending}>Add</Button>
+            </div>
+          ) : null}
         </div>
       </div>
     </Modal>
