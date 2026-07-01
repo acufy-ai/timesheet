@@ -420,19 +420,19 @@ function ResourcingTab() {
   }
   const stateMeta = (s: string) =>
     s === 'over' ? { label: 'Over capacity', short: 'over capacity', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' }
-      : s === 'under' ? { label: 'Available capacity', short: 'has free capacity', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' }
-        : { label: 'At target capacity', short: 'on target', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
+      : s === 'under' ? { label: 'Light workload', short: 'light workload', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' }
+        : { label: 'On target', short: 'on target', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
   const panelOpen = openUser != null;
   return (
     <div className="space-y-4">
       {/* summary — capacity utilization buckets for the upcoming window. Each
           tile is a filter: click to show only that bucket; click again to clear. */}
       <div className="grid grid-cols-3 gap-3">
-        <SummaryStat label="Over capacity" value={d.over_allocated} tone="rose" hint="Utilized above 100%"
+        <SummaryStat label="Over capacity" value={d.over_allocated} tone="rose" hint="Above 100% of weekly capacity"
           active={filter === 'over'} onClick={() => setFilter((f) => (f === 'over' ? 'all' : 'over'))} />
-        <SummaryStat label="At target capacity" value={d.team_size - d.over_allocated - d.under_utilized} tone="emerald" hint="60–100% utilized"
+        <SummaryStat label="On target" value={d.team_size - d.over_allocated - d.under_utilized} tone="emerald" hint="60–100% of capacity"
           active={filter === 'ok'} onClick={() => setFilter((f) => (f === 'ok' ? 'all' : 'ok'))} />
-        <SummaryStat label="Available capacity" value={d.under_utilized} tone="sky" hint="Below 60% utilized"
+        <SummaryStat label="Light workload" value={d.under_utilized} tone="sky" hint="Below 60% of capacity"
           active={filter === 'under'} onClick={() => setFilter((f) => (f === 'under' ? 'all' : 'under'))} />
       </div>
       {/* List + (when open) an in-flow detail panel beside it: the list shrinks
@@ -444,10 +444,10 @@ function ResourcingTab() {
         <div className={cn('min-w-0 rounded-2xl border border-border bg-card', panelOpen ? 'w-[34%] shrink-0' : 'flex-1')}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div>
-              <p className="text-sm font-semibold text-foreground">Team capacity for the next {d.weeks_ahead} weeks</p>
+              <p className="text-sm font-semibold text-foreground">Team workload (recent)</p>
               <p className="text-xs text-muted-foreground">
                 {d.team_size} team {d.team_size === 1 ? 'member' : 'members'}
-                {d.client_count ? ` · ${d.client_count} client-side` : ''} · capacity for the team, task progress for client resources · select a row for details
+                {d.client_count ? ` · ${d.client_count} client-side` : ''} · % of weekly capacity from recent logged hours; task progress for client resources · select a row for details
                 {filter !== 'all' ? (
                   <button type="button" onClick={() => setFilter('all')} className="ml-2 text-primary hover:underline">Clear filter</button>
                 ) : null}
@@ -502,10 +502,10 @@ function ResourcingTab() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-foreground">{r.full_name}{r.title ? <span className="ml-1.5 text-xs text-muted-foreground">{r.title}</span> : null}</p>
                     {r.allocations.length ? (
-                      <p className="truncate text-[11px] text-muted-foreground">{r.allocations.map((a) => `${a.project_name} ${a.percent}%`).join(' · ')}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">Booked: {r.allocations.map((a) => `${a.project_name} ${a.percent}%`).join(' · ')}</p>
                     ) : r.allocated_pct > 0 ? (
-                      <p className="text-[11px] text-muted-foreground/80">From recent logged work (no forward booking)</p>
-                    ) : <p className="text-[11px] text-muted-foreground/70">No work booked or logged</p>}
+                      <p className="text-[11px] text-muted-foreground/80">From recent logged hours</p>
+                    ) : <p className="text-[11px] text-muted-foreground/70">No recent logged hours</p>}
                   </div>
                   {/* Allocation bar — narrower when the panel is open so the row
                       stays balanced in the narrower list. */}
