@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { BarChart3, Building2, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
+import { BarChart3, Building2, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
 import { Input, Pager, Tooltip, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -26,9 +26,9 @@ const TABS: { key: InsightTab; label: string; Icon: typeof BarChart3 }[] = [
   // Projects is the primary/first tab. key stays 'portfolio' (route/deep-link
   // stability); label is "Projects".
   { key: 'portfolio', label: 'Projects', Icon: TrendingUp },
-  { key: 'financials', label: 'Financials', Icon: BarChart3 },
-  { key: 'resourcing', label: 'Resources', Icon: Layers },
-  // Forecasts tab disabled for now (kept the component + route for later).
+  // Financials + Resources tabs disabled for now (the same data lives in the
+  // dashboard widgets). Components + routes kept for when they're re-enabled.
+  // Forecasts tab also disabled (kept the component + route for later).
   { key: 'dashboards', label: 'Dashboards', Icon: LayoutDashboard },
 ];
 
@@ -52,7 +52,7 @@ export function InsightsPage() {
     <div className="space-y-5">
       <WorkspaceHeader
         title="Insights"
-        description="Project, financial and capacity analytics for your projects."
+        description="Project analytics for your book of work."
       />
 
       <div className="flex gap-1 border-b border-border">

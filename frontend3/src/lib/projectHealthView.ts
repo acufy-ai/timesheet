@@ -194,7 +194,6 @@ export const FOOTER_NOTE =
 const num = (v: string | number | null | undefined): number | null =>
   v == null || v === '' ? null : Number(v);
 const round = (v: number) => Math.round(v);
-const hrs = (v: number | null) => (v == null ? '—' : `${round(v)}h`);
 const clampPct = (v: number) => Math.max(0, Math.min(100, v));
 
 // ----------------------------------------------------------------------------
@@ -276,7 +275,7 @@ function buildCriticalIssues(s: IssueSignals): CriticalIssueVM[] {
   // Over-budget line. Skipped when the health-reason bullet above already spells
   // out the budget (e.g. "115% of budget used but 75% of tasks are done") — with
   // the side labels removed, two "budget used" lines would just read as a repeat.
-  const healthMentionsBudget = /budget/i.test(s.healthReason ?? '');
+  const healthMentionsBudget = /budget|over its allocated hours/i.test(s.healthReason ?? '');
   if (s.overBudget && !healthMentionsBudget) {
     issues.push({
       category: 'budget', label: 'Budget issue', tone: 'critical', severity: 3,
@@ -350,7 +349,8 @@ export function buildProjectHealthView(
   const health = (portfolio?.health ?? 'not-set') as ProjectHealth;
 
   // ---- 1. Derived metrics, computed once. ----
-  const hasApprovalConcept = logged != null;
+  // pendingApproval still feeds the "approval bottleneck" critical issue even
+  // though the standalone summary card was removed.
   const pendingApproval =
     logged != null && approved != null && logged >= approved ? logged - approved : null;
 
@@ -394,11 +394,14 @@ export function buildProjectHealthView(
   });
 
   if (taskCompletionPct != null) {
+    // Show the raw count ("3/4 tasks done") rather than a percentage — clearer at
+    // a glance for a small task list. Falls back to the % only when the breakdown
+    // (and thus the count) isn't available.
+    const hasCount = breakdown && breakdown.total_tasks > 0;
     cards.push({
       key: 'task_completion', label: 'Task completion',
-      value: `${taskCompletionPct}%`,
-      sub: breakdown && breakdown.total_tasks > 0
-        ? `${breakdown.done_tasks}/${breakdown.total_tasks} tasks` : undefined,
+      value: hasCount ? `${breakdown!.done_tasks}/${breakdown!.total_tasks}` : `${taskCompletionPct}%`,
+      sub: hasCount ? 'tasks done' : undefined,
       tone: 'neutral', emphasis: false,
     });
   }
@@ -431,14 +434,8 @@ export function buildProjectHealthView(
     });
   }
 
-  if (hasApprovalConcept && pendingApproval != null) {
-    const pendTone: RiskTone =
-      approved != null && pendingApproval >= Math.max(8, 0.25 * approved) ? 'warning' : 'neutral';
-    cards.push({
-      key: 'pending_approval', label: 'Pending approval hours',
-      value: hrs(pendingApproval), tone: pendTone, emphasis: pendTone !== 'neutral',
-    });
-  }
+  // (The "Pending approval hours" summary card was removed from the project
+  // detail page — approval backlog reads through Approvals, not project health.)
 
   // (The top-row "Schedule variance" summary card was removed: schedule status
   // now reads through the health reason + the "Why it's at risk" critical issue.
@@ -596,7 +593,7 @@ export function buildProjectHealthView(
   };
 
   const visibility: VisibilityVM = {
-    pendingApprovalCard: hasApprovalConcept && pendingApproval != null,
+    pendingApprovalCard: false,  // card removed from the project detail page
     budgetCard,
     execution: !!breakdown && breakdown.total_tasks > 0,
     financial: revenue != null || cost != null || budgetAmt != null,

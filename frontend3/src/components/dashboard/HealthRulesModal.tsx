@@ -51,24 +51,24 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
   const hasOverride = !!q.data?.override;
 
   return (
-    <Modal open={open} onClose={onClose} title="Project health rules" className="max-w-lg" flushBottom>
-      <div className="space-y-4 pb-4">
-        <p className="text-xs text-muted-foreground">
-          Decide how projects are flagged <span className="font-medium text-rose-600 dark:text-rose-400">critical</span>,{' '}
-          <span className="font-medium text-amber-600 dark:text-amber-400">at risk</span>,{' '}
-          <span className="font-medium text-sky-600 dark:text-sky-400">on track</span> or{' '}
-          <span className="font-medium text-emerald-600 dark:text-emerald-400">excellent</span>. These rules drive the health pills across Insights and the dashboard. (Blocked is set automatically when a project has a blocked task.)
+    <Modal open={open} onClose={onClose} title="Project Health" className="max-w-2xl" flushBottom>
+      <div className="space-y-5 pb-4">
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Decide how projects are flagged <span className="font-semibold text-rose-600 dark:text-rose-400">critical</span>,{' '}
+          <span className="font-semibold text-amber-600 dark:text-amber-400">at risk</span>,{' '}
+          <span className="font-semibold text-sky-600 dark:text-sky-400">on track</span> or{' '}
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">excellent</span>. These rules drive the health pills across Insights and the dashboard. (Blocked is set automatically when a project has a blocked task.)
         </p>
 
         {/* Scope switch */}
-        <div className="inline-flex rounded-lg border border-border p-0.5 text-xs">
+        <div className="inline-flex rounded-lg border border-border p-0.5 text-sm">
           {(['override', 'workspace'] as Scope[]).map((s) => (
             <button
               key={s}
               type="button"
               onClick={() => setScope(s)}
               className={cn(
-                'rounded-md px-3 py-1.5 font-medium transition-colors',
+                'rounded-md px-4 py-2 font-medium transition-colors',
                 scope === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
             >
@@ -76,7 +76,7 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
             </button>
           ))}
         </div>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {scope === 'override'
             ? hasOverride
               ? 'Your personal rules. These override the workspace default for your own views.'
@@ -87,16 +87,16 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
         {q.isLoading ? (
           <div className="grid place-items-center py-10 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /></div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-4">
             <RuleGroup
               title="Budget"
               hint="Flag on how much of the dollar budget the approved revenue has consumed."
               enabled={form.budget_enabled}
               onToggle={(v) => set('budget_enabled', v)}
             >
-              <NumField label="Critical above" suffix="% of budget" value={form.over_budget_pct} onChange={(v) => set('over_budget_pct', v)} tone="rose" />
-              <NumField label="At risk above" suffix="% of budget" value={form.high_burn_pct} onChange={(v) => set('high_burn_pct', v)} tone="amber" />
-              <NumField label="Excellent below" suffix="% of budget" value={form.excellent_under_pct} onChange={(v) => set('excellent_under_pct', v)} tone="emerald" />
+              <NumRow label="Critical above" suffix="% of budget" value={form.over_budget_pct} onChange={(v) => set('over_budget_pct', v)} tone="rose" />
+              <NumRow label="At risk above" suffix="% of budget" value={form.high_burn_pct} onChange={(v) => set('high_burn_pct', v)} tone="amber" />
+              <NumRow label="Excellent below" suffix="% of budget" value={form.excellent_under_pct} onChange={(v) => set('excellent_under_pct', v)} tone="emerald" />
             </RuleGroup>
 
             <RuleGroup
@@ -105,8 +105,8 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
               enabled={form.schedule_enabled}
               onToggle={(v) => set('schedule_enabled', v)}
             >
-              <NumField label="At risk within" suffix="days of end" value={form.ending_soon_days} onChange={(v) => set('ending_soon_days', v)} tone="amber" />
-              <NumField label="Critical when overdue by" suffix="days" value={form.overdue_days} onChange={(v) => set('overdue_days', v)} tone="rose" />
+              <NumRow label="At risk within" suffix="days of end" value={form.ending_soon_days} onChange={(v) => set('ending_soon_days', v)} tone="amber" />
+              <NumRow label="Critical when overdue by" suffix="days" value={form.overdue_days} onChange={(v) => set('overdue_days', v)} tone="rose" />
             </RuleGroup>
 
             <RuleGroup
@@ -115,7 +115,7 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
               enabled={form.margin_enabled}
               onToggle={(v) => set('margin_enabled', v)}
             >
-              <NumField label="At risk when margin below" suffix="%" value={form.low_margin_pct} onChange={(v) => set('low_margin_pct', v)} tone="amber" />
+              <NumRow label="At risk when margin below" suffix="%" value={form.low_margin_pct} onChange={(v) => set('low_margin_pct', v)} tone="amber" />
             </RuleGroup>
           </div>
         )}
@@ -127,18 +127,18 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
               type="button"
               onClick={onResetOverride}
               disabled={clear.isPending}
-              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
             >
-              <RotateCcw className="h-3.5 w-3.5" /> Use workspace default
+              <RotateCcw className="h-4 w-4" /> Use workspace default
             </button>
           ) : <span />}
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+            <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
             <button
               type="button"
               onClick={onSave}
               disabled={save.isPending || q.isLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
             >
               {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {scope === 'override' ? 'Save my rules' : 'Save workspace default'}
@@ -150,48 +150,58 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
   );
 }
 
+// A rule group rendered as a titled table: each row is (rule name | threshold |
+// unit). Larger type + a real table so the thresholds line up and read clearly.
 function RuleGroup({
   title, hint, enabled, onToggle, children,
 }: {
   title: string; hint: string; enabled: boolean; onToggle: (v: boolean) => void; children: React.ReactNode;
 }) {
   return (
-    <div className={cn('rounded-xl border border-border p-3 transition-opacity', !enabled && 'opacity-60')}>
-      <div className="flex items-center justify-between">
-        <Tooltip label={hint} side="top" maxWidth={260}>
-          <span className="cursor-help text-sm font-semibold text-foreground">{title}</span>
+    <div className={cn('overflow-hidden rounded-xl border border-border transition-opacity', !enabled && 'opacity-60')}>
+      <div className="flex items-center justify-between border-b border-border bg-foreground/[0.03] px-4 py-2.5">
+        <Tooltip label={hint} side="top" maxWidth={280}>
+          <span className="cursor-help text-base font-semibold text-foreground">{title}</span>
         </Tooltip>
-        <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} className="accent-primary" />
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} className="h-4 w-4 accent-primary" />
           {enabled ? 'On' : 'Off'}
         </label>
       </div>
-      <div className={cn('mt-3 grid gap-3 sm:grid-cols-2', !enabled && 'pointer-events-none')}>{children}</div>
+      <table className={cn('w-full text-sm', !enabled && 'pointer-events-none')}>
+        <tbody>{children}</tbody>
+      </table>
     </div>
   );
 }
 
-function NumField({
+// One rule row: colored dot + label on the left, the threshold input and its
+// unit right-aligned. Table row so every group's thresholds line up.
+function NumRow({
   label, suffix, value, onChange, tone,
 }: {
   label: string; suffix: string; value: number; onChange: (v: number) => void; tone: 'rose' | 'amber' | 'emerald';
 }) {
   const dot = tone === 'rose' ? 'bg-rose-500' : tone === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500';
   return (
-    <label className="block">
-      <span className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className={cn('h-1.5 w-1.5 rounded-full', dot)} />
-        {label}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <input
-          type="number"
-          value={Number.isFinite(value) ? value : 0}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm tabular-nums text-foreground focus:border-primary focus:outline-none"
-        />
-        <span className="text-[11px] text-muted-foreground">{suffix}</span>
-      </span>
-    </label>
+    <tr className="border-b border-border/60 last:border-b-0">
+      <td className="px-4 py-3">
+        <span className="flex items-center gap-2 text-[15px] text-foreground">
+          <span className={cn('h-2 w-2 rounded-full', dot)} />
+          {label}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-right">
+        <span className="inline-flex items-center gap-2">
+          <input
+            type="number"
+            value={Number.isFinite(value) ? value : 0}
+            onChange={(e) => onChange(Number(e.target.value))}
+            className="w-24 rounded-lg border border-border bg-background px-3 py-2 text-right text-[15px] tabular-nums text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          <span className="w-24 text-left text-sm text-muted-foreground">{suffix}</span>
+        </span>
+      </td>
+    </tr>
   );
 }

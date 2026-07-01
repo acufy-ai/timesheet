@@ -303,8 +303,8 @@ function TaskDetailModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={t.name} className="max-w-lg">
-      <div className="space-y-4 text-sm">
+    <Modal open onClose={onClose} title={t.name} className="max-w-xl">
+      <div className="space-y-3.5 text-sm">
         <Row label="Project">{projectName}{clientName ? ` · ${clientName}` : ''}</Row>
         <Row label="Manager">{managerName || '—'}</Row>
         <Row label="Hours">
@@ -313,43 +313,39 @@ function TaskDetailModal({
           </span>
         </Row>
 
-        {/* Editable: status + allocated hours */}
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status</span>
-            <select
-              value={status}
-              onChange={(e) => { const v = e.target.value as TaskStatus; setStatus(v); save({ status: v }); }}
-              className="mt-1 w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-            >
-              {TASK_STATUS_OPTS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s] ?? s}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Allocated hours</span>
-            <Input
-              type="number" min="0" step="1" value={alloc}
-              onChange={(e) => setAlloc(e.target.value)}
-              onBlur={() => save({ estimated_hours: alloc === '' ? null : Number(alloc) })}
-              className="mt-1 h-9"
-              placeholder="e.g. 100"
-            />
-          </label>
-        </div>
+        {/* Editable: status + allocated hours — same label-left / control-right
+            table layout as the rows above, for a consistent modal. */}
+        <Row label="Status">
+          <select
+            value={status}
+            onChange={(e) => { const v = e.target.value as TaskStatus; setStatus(v); save({ status: v }); }}
+            className="w-40 rounded-lg border border-border bg-card px-2 py-1.5 text-right text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+          >
+            {TASK_STATUS_OPTS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s] ?? s}</option>)}
+          </select>
+        </Row>
+        <Row label="Allocated hours">
+          <Input
+            type="number" min="0" step="1" value={alloc}
+            onChange={(e) => setAlloc(e.target.value)}
+            onBlur={() => save({ estimated_hours: alloc === '' ? null : Number(alloc) })}
+            className="h-9 w-28 text-right"
+            placeholder="e.g. 100"
+          />
+        </Row>
 
         {/* Assigned to (read-only) — reflects the current assignment live. */}
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Assigned to</p>
+        <Row label="Assigned to">
           {assignedNames.length ? (
-            <div className="mt-1 flex flex-wrap gap-1.5">
+            <span className="flex flex-wrap justify-end gap-1.5">
               {assignedNames.map((name, i) => (
                 <span key={`${name}-${i}`} className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
                   {name}
                 </span>
               ))}
-            </div>
-          ) : <p className="mt-0.5 text-[13px] text-muted-foreground">No one assigned yet.</p>}
-        </div>
+            </span>
+          ) : <span className="text-muted-foreground">No one assigned yet.</span>}
+        </Row>
 
         {task.description ? (
           <div>

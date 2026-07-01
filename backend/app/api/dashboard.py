@@ -371,7 +371,7 @@ MANUAL_HEALTH_VALUES = {"excellent", "on-track", "at-risk", "critical"}
 def _classify_by_pace(
     pct_complete, pct_elapsed, pct_budget_used, days_until_end,
     cfg: "HealthConfig", has_blocked_task: bool,
-    projected_over_pct=None,
+    projected_over_pct=None, hours_over=None, over_tasks=None,
 ) -> tuple[str, str]:
     """Derive health from PACE ratios (the demo-prep model): compare progress
     against how much of the schedule and budget it has consumed, so the status
@@ -409,20 +409,40 @@ def _classify_by_pace(
     schedule = f"{pct(pct_elapsed)}% of the schedule has passed" if pct_elapsed is not None else None
     budget = f"{pct(pct_budget_used)}% of the budget is used" if pct_budget_used is not None else None
 
+    over_hours = Decimal(str(hours_over)) if hours_over is not None else None
+    has_hours_overrun = over_hours is not None and over_hours > 0
+
+    def _hours_over_reason():
+        # "the project is 120h over its allocated hours, driven by Task 1-3
+        # (130h logged vs 100h planned)" — names the whole-project overrun AND the
+        # task(s) actually responsible. Used as the critical reason so the message
+        # points at the hours, not the raw budget %.
+        oh = int(round(float(over_hours)))
+        lead = f"the project is {oh}h over its allocated hours"
+        drivers = over_tasks or []
+        if drivers:
+            top = drivers[0]
+            name, logged_h, est_h = top[0], int(round(float(top[1]))), int(round(float(top[2])))
+            more = f" and {len(drivers) - 1} other task{'s' if len(drivers) - 1 != 1 else ''}" if len(drivers) > 1 else ""
+            lead += f", driven by {name} ({logged_h}h logged vs {est_h}h planned{more})"
+        return lead
+
     # 1. Critical — badly behind on both axes, or over budget with the deadline
-    #    upon us, or already overdue and not done.
+    #    upon us, or already overdue and not done. (Budget-based trigger, as
+    #    before; a configurable hours threshold can come later.) When the project
+    #    is over its allocated HOURS, the reason names the hours overrun + the
+    #    task(s) responsible rather than the raw budget %.
     if (well_behind and over_budget) or (over_budget and (deadline_close or overdue)) or (overdue and pct_complete < 100):
-        reasons = []
-        if over_budget and budget:
-            # "only" reads wrong when tasks are actually fairly complete.
-            lead = "only " if pct_complete is not None and pct_complete < 50 else ""
-            reasons.append(f"{budget} but {lead}{tasks}")
-        # NOTE: the "deadline passed X days ago" clause was intentionally dropped
-        # from the reason — over-budget is the lead story. (Overdue still
-        # contributes to the CLASSIFICATION as critical above.)
-        elif well_behind and schedule:
-            reasons.append(f"{tasks} but {schedule}")
-        base = "; ".join(reasons) if reasons else "the project is over budget"
+        if over_budget and has_hours_overrun:
+            base = _hours_over_reason()
+        else:
+            reasons = []
+            if over_budget and budget:
+                lead = "only " if pct_complete is not None and pct_complete < 50 else ""
+                reasons.append(f"{budget} but {lead}{tasks}")
+            elif well_behind and schedule:
+                reasons.append(f"{tasks} but {schedule}")
+            base = "; ".join(reasons) if reasons else "the project is over budget"
         return "critical", base[0].upper() + base[1:] + "."
     # 2. Blocked — after critical, so over-budget + blocked reads as critical.
     if has_blocked_task:
@@ -473,7 +493,7 @@ def _classify_health(
     cfg: Optional["HealthConfig"] = None, margin_pct=None,
     has_blocked_task: bool = False,
     pct_complete=None, pct_elapsed=None, pct_budget_used=None,
-    projected_over_pct=None,
+    projected_over_pct=None, hours_over=None, over_tasks=None,
 ) -> tuple[str, str]:
     """Return (health, reason) for a project. The reason is a plain-language
     explanation of WHY this health state, for the pill tooltip.
@@ -502,6 +522,7 @@ def _classify_health(
         return _classify_by_pace(
             pct_complete, pct_elapsed, pct_budget_used, days_until_end,
             cfg, has_blocked_task, projected_over_pct=projected_over_pct,
+            hours_over=hours_over, over_tasks=over_tasks,
         )
 
     is_over_budget = cfg.budget_enabled and budget_pct is not None and budget_pct > cfg.over_budget_pct
@@ -637,6 +658,47 @@ async def _remaining_alloc_hours_by_project(
         remaining = Decimal(str(est)) - logged.get(tid, Decimal("0"))
         if remaining > 0:
             out[pid] = out.get(pid, Decimal("0")) + remaining
+    return out
+
+
+async def _hours_over_alloc_by_project(
+    db: AsyncSession, project_ids: list[int], tenant_id: int
+) -> dict[int, dict]:
+    """project_id -> {"over": Decimal, "tasks": [(name, logged, est), ...]}.
+
+    "over" = max(total logged - total allocated, 0) across the WHOLE project (the
+    threshold used to flag 'critical'): the project as a whole burned more hours
+    than the plan. "tasks" names the individual tasks that actually went over
+    their own estimate, worst-first — the downstream drivers shown in the reason.
+    """
+    if not project_ids:
+        return {}
+    from app.models.task import Task
+
+    logged = {tid: Decimal(str(h or 0)) for tid, h in (await db.execute(
+        select(TimeEntry.task_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(TimeEntry.project_id.in_(project_ids), TimeEntry.task_id.isnot(None),
+               TimeEntry.status == TimeEntryStatus.APPROVED)
+        .group_by(TimeEntry.task_id)
+    )).all()}
+    tasks = (await db.execute(
+        select(Task.id, Task.project_id, Task.name, Task.estimated_hours)
+        .where(Task.project_id.in_(project_ids), Task.tenant_id == tenant_id, Task.is_active.is_(True))
+    )).all()
+    totals: dict[int, dict] = {}
+    for tid, pid, name, est in tasks:
+        d = totals.setdefault(pid, {"alloc": Decimal("0"), "logged": Decimal("0"), "tasks": []})
+        lg = logged.get(tid, Decimal("0"))
+        d["logged"] += lg
+        if est is not None:
+            e = Decimal(str(est))
+            d["alloc"] += e
+            if lg > e:
+                d["tasks"].append((name, lg, e))
+    out: dict[int, dict] = {}
+    for pid, d in totals.items():
+        d["tasks"].sort(key=lambda t: t[1] - t[2], reverse=True)
+        out[pid] = {"over": max(d["logged"] - d["alloc"], Decimal("0")), "tasks": d["tasks"]}
     return out
 
 
@@ -1763,6 +1825,11 @@ async def get_manager_project_health(
     remaining_by_project = await _remaining_alloc_hours_by_project(
         db, project_ids, current_user.tenant_id
     )
+    # Hours over the allocated plan (+ the task drivers) — powers the critical
+    # reason ("120h over its allocated hours, driven by Task 1-3 ...").
+    over_by_project = await _hours_over_alloc_by_project(
+        db, project_ids, current_user.tenant_id
+    )
 
     # 3) LOGGED HOURS per project (all-time, not week-scoped). This column used to
     # be "hours this week", but at the start of a week it reads 0 even when the
@@ -1860,6 +1927,8 @@ async def get_manager_project_health(
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
                 pct_budget_used=pct_budget_used,
                 projected_over_pct=projected_over_pct,
+                hours_over=(over_by_project.get(project.id) or {}).get("over"),
+                over_tasks=(over_by_project.get(project.id) or {}).get("tasks"),
             ),
             project.health_override,
         )
@@ -3354,6 +3423,9 @@ async def get_portfolio(
     remaining_by_project = await _remaining_alloc_hours_by_project(
         db, list(managed_ids), current_user.tenant_id
     )
+    over_by_project = await _hours_over_alloc_by_project(
+        db, list(managed_ids), current_user.tenant_id
+    )
     # Allocated hours per project = sum of task estimates (the plan), shown as
     # "allocated vs logged" alongside approved hours — mirrors the dashboard.
     from app.models.task import Task as _TaskM
@@ -3410,6 +3482,8 @@ async def get_portfolio(
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
                 pct_budget_used=pct_budget_used,
                 projected_over_pct=projected_over_pct,
+                hours_over=(over_by_project.get(pid) or {}).get("over"),
+                over_tasks=(over_by_project.get(pid) or {}).get("tasks"),
             ),
             p.health_override,
         )
