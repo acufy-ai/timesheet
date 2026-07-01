@@ -3008,12 +3008,25 @@ async def get_resource_detail(
         )
     )).scalars().all()
     cap = person.weekly_capacity_hours or Decimal("40")
-    # Same window-weighted math as the resourcing list (PTO/holiday adjustment
-    # disabled for now), so the panel's total matches the row exactly.
+    # Keep the per-project PLANNED % (forward bookings) for the project chips…
     cstats = compute_capacity(allocs, cap, today2, window_end)
     planned_by_proj = {pid: Decimal(pc) for pid, pc in cstats["planned_by_proj"].items()}
-    allocated_pct = cstats["allocated_pct"]
-    capacity_state = cstats["state"]
+    # …but the headline % is WORKLOAD (recent logged hours ÷ 8 weeks ÷ capacity),
+    # computed the SAME way as the resourcing list so the row and panel agree.
+    WL_WEEKS = 8
+    wl_start = today2 - timedelta(weeks=WL_WEEKS)
+    wl_hours = (await db.execute(
+        select(func.coalesce(func.sum(TimeEntry.hours), 0)).where(
+            TimeEntry.user_id == user_id,
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+            TimeEntry.entry_date >= wl_start,
+            TimeEntry.entry_date <= today2,
+        )
+    )).scalar() or Decimal("0")
+    avg_weekly = Decimal(str(wl_hours)) / Decimal(WL_WEEKS)
+    allocated_pct = min(int(round(avg_weekly / cap * 100)) if cap and cap > 0 else 0, 150)
+    capacity_state = "over" if allocated_pct > 100 else ("under" if allocated_pct < 60 else "ok")
 
     # Make sure every allocated project surfaces, even with no logged time.
     alloc_proj_ids = set(planned_by_proj)
@@ -3042,27 +3055,25 @@ async def get_resource_detail(
     # Sort: by planned allocation desc (forward focus), then logged hours desc.
     proj_rows.sort(key=lambda r: (-(r.planned_pct or 0), -float(r.hours)))
 
-    # ── Plain-English "why" for the capacity bucket ──────────────────────────
-    n_proj = len(planned_by_proj)
-    top = sorted(planned_by_proj.items(), key=lambda kv: -kv[1])
-    top_names = [f"{projects[pid].name if projects.get(pid) else f'Project {pid}'} ({int(round(pc))}%)" for pid, pc in top[:2]]
+    # ── Plain-English "why" for the workload bucket (recent logged pace) ──────
+    wl_weekly = int(round(avg_weekly))
     if capacity_state == "over":
         capacity_summary = (
-            f"Allocated {allocated_pct}% across {n_proj} project{'s' if n_proj != 1 else ''} "
-            f"({', '.join(top_names)}){' and more' if n_proj > 2 else ''} — "
-            f"{allocated_pct - 100}% beyond a full schedule. Consider reducing an allocation or extending a deadline."
+            f"Averaging ~{wl_weekly}h/week of logged work over the last {WL_WEEKS} weeks "
+            f"— {allocated_pct}% of a {int(cap)}h week, above a full load. Consider rebalancing their work."
         )
     elif capacity_state == "under":
         if allocated_pct == 0:
-            capacity_summary = "No active allocations — fully available to take on work."
+            capacity_summary = f"No hours logged in the last {WL_WEEKS} weeks — free to take on work."
         else:
             capacity_summary = (
-                f"Allocated {allocated_pct}% ({', '.join(top_names)}) — about {100 - allocated_pct}% of capacity is free for more work."
+                f"Averaging ~{wl_weekly}h/week over the last {WL_WEEKS} weeks "
+                f"— {allocated_pct}% of capacity, so there's room for more work."
             )
     else:
         capacity_summary = (
-            f"Allocated {allocated_pct}% across {n_proj} project{'s' if n_proj != 1 else ''} "
-            f"({', '.join(top_names)}){' and more' if n_proj > 2 else ''} — a healthy, near-full schedule."
+            f"Averaging ~{wl_weekly}h/week over the last {WL_WEEKS} weeks "
+            f"— {allocated_pct}% of a {int(cap)}h week, a healthy load."
         )
 
     task_rows = []
