@@ -411,6 +411,9 @@ def _classify_by_pace(
 
     over_hours = Decimal(str(hours_over)) if hours_over is not None else None
     has_hours_overrun = over_hours is not None and over_hours > 0
+    # Already spent MORE than the budget (dollars) — distinct from "over_budget"
+    # which is the pace ratio. This is the "actually over the line" signal.
+    already_over_budget = pct_budget_used is not None and pct_budget_used > 100
 
     def _hours_over_reason():
         # "the project is 120h over its allocated hours, driven by Task 1-3
@@ -427,13 +430,17 @@ def _classify_by_pace(
             lead += f", driven by {name} ({logged_h}h logged vs {est_h}h planned{more})"
         return lead
 
-    # 1. Critical — badly behind on both axes, or over budget with the deadline
-    #    upon us, or already overdue and not done. (Budget-based trigger, as
-    #    before; a configurable hours threshold can come later.) When the project
-    #    is over its allocated HOURS, the reason names the hours overrun + the
-    #    task(s) responsible rather than the raw budget %.
-    if (well_behind and over_budget) or (over_budget and (deadline_close or overdue)) or (overdue and pct_complete < 100):
-        if over_budget and has_hours_overrun:
+    # 1. Critical — already over the dollar budget (with a real hours overrun),
+    #    badly behind on both axes, over budget with the deadline upon us, or
+    #    already overdue and not done. Being ALREADY over budget is a crisis now,
+    #    not a projection, so it outranks the forward-looking 'at risk' below.
+    #    When the project is over its allocated HOURS, the reason names the hours
+    #    overrun + the task(s) responsible rather than the raw budget %.
+    critical_over_now = already_over_budget and has_hours_overrun
+    if (critical_over_now or (well_behind and over_budget)
+            or (over_budget and (deadline_close or overdue))
+            or (overdue and pct_complete < 100)):
+        if (already_over_budget or over_budget) and has_hours_overrun:
             base = _hours_over_reason()
         else:
             reasons = []
@@ -452,7 +459,13 @@ def _classify_by_pace(
     #    hours on unfinished tasks would exceed the budget. This warns the
     #    manager AHEAD of the overrun (a task ran hot and there's unfinished work
     #    that won't fit the budget), not after.
-    projecting_over = projected_over_pct is not None and projected_over_pct > 100
+    # The projection is only a WARNING while the project is not yet over the line.
+    # Once already over budget it's a present crisis (handled by critical above),
+    # so don't dress it up as a forward-looking "on track to go over".
+    projecting_over = (
+        projected_over_pct is not None and projected_over_pct > 100
+        and not already_over_budget
+    )
     if behind_schedule or over_budget or deadline_close or projecting_over:
         # When the budget PROJECTION is the driver, lead with it alone — it's the
         # forward-looking headline ("heading over"), clearer than stacking the

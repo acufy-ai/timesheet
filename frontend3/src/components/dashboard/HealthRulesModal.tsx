@@ -1,19 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Loader2, RotateCcw } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 import { Modal, Tooltip } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { useClearHealthOverride, useHealthConfig, useSaveHealthConfig } from '@/hooks/useDashboard';
+import { useHealthConfig, useSaveHealthConfig } from '@/hooks/useDashboard';
 import type { HealthConfigBody } from '@/types/dashboard';
 
-// Lets a manager tune HOW project health is classified. Two scopes:
-//   • Workspace default — the shared baseline for the whole workspace.
-//   • My override       — this manager's personal thresholds, which win for
-//                         their own views when set.
-// Each rule group (budget / schedule / margin) can be switched off so a team
-// can judge health on, say, budget alone.
-
-type Scope = 'workspace' | 'override';
+// Lets a manager tune HOW project health is classified. One shared config for
+// the whole workspace (persisted on the workspace scope). Each rule group
+// (budget / schedule / margin) can be switched off so a team can judge health
+// on, say, budget alone.
 
 const FALLBACK: HealthConfigBody = {
   budget_enabled: true, over_budget_pct: 100, high_burn_pct: 80, excellent_under_pct: 50,
@@ -24,64 +20,31 @@ const FALLBACK: HealthConfigBody = {
 export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const q = useHealthConfig(open);
   const save = useSaveHealthConfig();
-  const clear = useClearHealthOverride();
 
-  const [scope, setScope] = useState<Scope>('override');
   const [form, setForm] = useState<HealthConfigBody>(FALLBACK);
 
-  // Load the values for the active scope whenever it (or the data) changes.
+  // One shared config for the whole workspace — load it whenever data changes.
   useEffect(() => {
     if (!q.data) return;
-    const src = scope === 'override' ? (q.data.override ?? q.data.workspace) : q.data.workspace;
-    setForm(src);
-  }, [q.data, scope]);
+    setForm(q.data.workspace);
+  }, [q.data]);
 
   const set = <K extends keyof HealthConfigBody>(k: K, v: HealthConfigBody[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
   const onSave = async () => {
-    await save.mutateAsync({ scope, body: form });
+    await save.mutateAsync({ scope: 'workspace', body: form });
     onClose();
   };
-  const onResetOverride = async () => {
-    await clear.mutateAsync();
-    setScope('workspace');
-  };
-
-  const hasOverride = !!q.data?.override;
 
   return (
-    <Modal open={open} onClose={onClose} title="Project Health" className="max-w-2xl" flushBottom>
+    <Modal open={open} onClose={onClose} title="Project Health" className="max-w-3xl" flushBottom>
       <div className="space-y-5 pb-4">
         <p className="text-sm leading-relaxed text-muted-foreground">
           Decide how projects are flagged <span className="font-semibold text-rose-600 dark:text-rose-400">critical</span>,{' '}
           <span className="font-semibold text-amber-600 dark:text-amber-400">at risk</span>,{' '}
           <span className="font-semibold text-sky-600 dark:text-sky-400">on track</span> or{' '}
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400">excellent</span>. These rules drive the health pills across Insights and the dashboard. (Blocked is set automatically when a project has a blocked task.)
-        </p>
-
-        {/* Scope switch */}
-        <div className="inline-flex rounded-lg border border-border p-0.5 text-sm">
-          {(['override', 'workspace'] as Scope[]).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setScope(s)}
-              className={cn(
-                'rounded-md px-4 py-2 font-medium transition-colors',
-                scope === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {s === 'override' ? 'My rules' : 'Workspace default'}
-            </button>
-          ))}
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {scope === 'override'
-            ? hasOverride
-              ? 'Your personal rules. These override the workspace default for your own views.'
-              : 'No personal rules yet — saving here creates an override on top of the workspace default.'
-            : 'The shared baseline for everyone in the workspace.'}
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">excellent</span>. These rules apply across the whole workspace and drive the health pills throughout Insights and the dashboard. (Blocked is set automatically when a project has a blocked task.)
         </p>
 
         {q.isLoading ? (
@@ -121,29 +84,17 @@ export function HealthRulesModal({ open, onClose }: { open: boolean; onClose: ()
         )}
 
         {/* Footer */}
-        <div className="sticky bottom-0 -mx-4 flex items-center justify-between gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
-          {scope === 'override' && hasOverride ? (
-            <button
-              type="button"
-              onClick={onResetOverride}
-              disabled={clear.isPending}
-              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <RotateCcw className="h-4 w-4" /> Use workspace default
-            </button>
-          ) : <span />}
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={save.isPending || q.isLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-            >
-              {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {scope === 'override' ? 'Save my rules' : 'Save workspace default'}
-            </button>
-          </div>
+        <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-2 border-t border-border bg-card px-4 pb-4 pt-3">
+          <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={save.isPending || q.isLoading}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          >
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save rules
+          </button>
         </div>
       </div>
     </Modal>

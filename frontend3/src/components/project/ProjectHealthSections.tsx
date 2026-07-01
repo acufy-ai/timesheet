@@ -303,8 +303,8 @@ function TaskDetailModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={t.name} className="max-w-xl">
-      <div className="space-y-3.5 text-sm">
+    <Modal open onClose={onClose} title={t.name} className="max-w-3xl">
+      <div className="space-y-5 text-base">
         <Row label="Project">{projectName}{clientName ? ` · ${clientName}` : ''}</Row>
         <Row label="Manager">{managerName || '—'}</Row>
         <Row label="Hours">
@@ -319,7 +319,7 @@ function TaskDetailModal({
           <select
             value={status}
             onChange={(e) => { const v = e.target.value as TaskStatus; setStatus(v); save({ status: v }); }}
-            className="w-40 rounded-lg border border-border bg-card px-2 py-1.5 text-right text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-48 rounded-lg border border-border bg-card px-3 py-2.5 text-right text-base text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
             {TASK_STATUS_OPTS.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s] ?? s}</option>)}
           </select>
@@ -329,7 +329,7 @@ function TaskDetailModal({
             type="number" min="0" step="1" value={alloc}
             onChange={(e) => setAlloc(e.target.value)}
             onBlur={() => save({ estimated_hours: alloc === '' ? null : Number(alloc) })}
-            className="h-9 w-28 text-right"
+            className="h-11 w-32 text-right text-base"
             placeholder="e.g. 100"
           />
         </Row>
@@ -337,9 +337,9 @@ function TaskDetailModal({
         {/* Assigned to (read-only) — reflects the current assignment live. */}
         <Row label="Assigned to">
           {assignedNames.length ? (
-            <span className="flex flex-wrap justify-end gap-1.5">
+            <span className="flex flex-wrap justify-end gap-2">
               {assignedNames.map((name, i) => (
-                <span key={`${name}-${i}`} className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                <span key={`${name}-${i}`} className="rounded-full bg-muted px-3 py-1 text-sm font-medium text-foreground">
                   {name}
                 </span>
               ))}
@@ -349,32 +349,32 @@ function TaskDetailModal({
 
         {task.description ? (
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Description</p>
-            <p className="mt-0.5 whitespace-pre-wrap text-foreground">{task.description}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Description</p>
+            <p className="mt-1 whitespace-pre-wrap text-base text-foreground">{task.description}</p>
           </div>
         ) : null}
 
         {/* Notes: list + add */}
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Notes</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</p>
           {notes.length ? (
-            <ul className="mt-1 space-y-1.5">
+            <ul className="mt-2 space-y-2">
               {notes.map((n) => (
-                <li key={n.id} className="rounded-lg border border-border/70 px-2.5 py-1.5">
-                  <p className="whitespace-pre-wrap text-[13px] text-foreground">{n.body}</p>
-                  {n.author ? <p className="mt-0.5 text-[11px] text-muted-foreground">{n.author}</p> : null}
+                <li key={n.id} className="rounded-lg border border-border/70 px-3.5 py-2.5">
+                  <p className="whitespace-pre-wrap text-base text-foreground">{n.body}</p>
+                  {n.author ? <p className="mt-1 text-sm text-muted-foreground">{n.author}</p> : null}
                 </li>
               ))}
             </ul>
-          ) : <p className="mt-0.5 text-[13px] text-muted-foreground">No notes yet.</p>}
+          ) : <p className="mt-1 text-base text-muted-foreground">No notes yet.</p>}
           {clientId != null ? (
-            <div className="mt-2 flex items-start gap-2">
+            <div className="mt-3 flex items-start gap-2">
               <textarea
                 value={noteText} onChange={(e) => setNoteText(e.target.value)}
                 placeholder="Add a note…" rows={2}
-                className="min-h-0 flex-1 resize-y rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                className="min-h-0 flex-1 resize-y rounded-lg border border-border bg-card px-3.5 py-2.5 text-base text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
-              <Button size="sm" onClick={addNote} disabled={!noteText.trim() || createNote.isPending}>Add</Button>
+              <Button onClick={addNote} disabled={!noteText.trim() || createNote.isPending}>Add</Button>
             </div>
           ) : null}
         </div>
@@ -385,8 +385,8 @@ function TaskDetailModal({
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
+    <div className="flex items-baseline justify-between gap-4">
+      <span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
       <span className="min-w-0 text-right text-foreground">{children}</span>
     </div>
   );
