@@ -106,7 +106,26 @@ export function DashboardsTab() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {selected ? (
-            <h2 className="truncate text-lg font-bold text-foreground">{name || selected.name}</h2>
+            isOwner ? (
+              // Inline-editable title: looks like the heading, click to rename.
+              // Autosaves (debounced) via saveName; Enter/blur commits, Esc reverts.
+              <input
+                value={name}
+                onChange={(e) => saveName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  if (e.key === 'Escape') { saveName(selected.name); (e.target as HTMLInputElement).blur(); }
+                }}
+                onBlur={() => { if (!name.trim()) saveName(selected.name); }}
+                aria-label="Dashboard title"
+                title="Click to rename this dashboard"
+                placeholder="Dashboard title"
+                className="min-w-0 max-w-full truncate rounded-md border border-transparent bg-transparent px-1 -mx-1 text-lg font-bold text-foreground transition-colors hover:border-border focus:border-primary focus:bg-card focus:outline-none focus:ring-2 focus:ring-primary/20"
+                size={Math.max((name || selected.name).length, 8)}
+              />
+            ) : (
+              <h2 className="truncate text-lg font-bold text-foreground">{name || selected.name}</h2>
+            )
           ) : null}
           {selected && !isOwner ? (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Shared by {selected.owner_name ?? 'someone'}</span>
