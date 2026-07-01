@@ -416,18 +416,18 @@ def _classify_by_pace(
     already_over_budget = pct_budget_used is not None and pct_budget_used > 100
 
     def _hours_over_reason():
-        # "the project is 120h over its allocated hours, driven by Task 1-3
-        # (130h logged vs 100h planned)" — names the whole-project overrun AND the
-        # task(s) actually responsible. Used as the critical reason so the message
-        # points at the hours, not the raw budget %.
+        # "the project has exceeded its allocated hours by 120h; Task 1-3 accounts
+        # for the overrun (130h logged against 100h planned)" — names the whole-
+        # project overrun AND the task(s) responsible. Used as the critical reason
+        # so the message points at the hours, not the raw budget %.
         oh = int(round(float(over_hours)))
-        lead = f"the project is {oh}h over its allocated hours"
+        lead = f"the project has exceeded its allocated hours by {oh}h"
         drivers = over_tasks or []
         if drivers:
             top = drivers[0]
             name, logged_h, est_h = top[0], int(round(float(top[1]))), int(round(float(top[2])))
-            more = f" and {len(drivers) - 1} other task{'s' if len(drivers) - 1 != 1 else ''}" if len(drivers) > 1 else ""
-            lead += f", driven by {name} ({logged_h}h logged vs {est_h}h planned{more})"
+            more = f", along with {len(drivers) - 1} other task{'s' if len(drivers) - 1 != 1 else ''}" if len(drivers) > 1 else ""
+            lead += f"; {name} accounts for the overrun ({logged_h}h logged against {est_h}h planned{more})"
         return lead
 
     # 1. Critical — already over the dollar budget (with a real hours overrun),
