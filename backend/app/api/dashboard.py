@@ -332,7 +332,7 @@ MANUAL_HEALTH_VALUES = {"excellent", "on-track", "at-risk", "critical"}
 
 
 def _classify_by_pace(
-    pct_complete, pct_elapsed, pct_hours_burned, days_until_end,
+    pct_complete, pct_elapsed, pct_budget_used, days_until_end,
     cfg: "HealthConfig", has_blocked_task: bool,
 ) -> tuple[str, str]:
     """Derive health from PACE ratios (the demo-prep model): compare progress
@@ -341,15 +341,18 @@ def _classify_by_pace(
     (no "0% done but at risk with 170 hours logged").
 
     Schedule pace = % complete / % of time elapsed   (>1 ahead, ~1 on track, <1 behind)
-    Budget pace   = % complete / % of budget hours burned (>1 under budget, <1 over)
+    Budget pace   = % complete / % of budget used ($) (>1 under budget, <1 over)
+
+    `% of budget used` is DOLLAR-based (revenue / budget), the same number the
+    financials tile shows as Billed %, so health never contradicts financials.
 
     Mapping: both healthy → on-track/excellent; one slipping with room left →
     at-risk; both well behind (or over budget) with the deadline close → critical.
     """
-    # Guard against divide-by-zero: 0% elapsed/burned means we can't judge pace
+    # Guard against divide-by-zero: 0% elapsed/used means we can't judge pace
     # on that axis yet, so treat it as "no signal" (None) rather than infinite.
     sched_pace = (pct_complete / pct_elapsed) if pct_elapsed and pct_elapsed > 0 else None
-    budget_pace = (pct_complete / pct_hours_burned) if pct_hours_burned and pct_hours_burned > 0 else None
+    budget_pace = (pct_complete / pct_budget_used) if pct_budget_used and pct_budget_used > 0 else None
 
     behind_schedule = sched_pace is not None and sched_pace < 0.8   # <1 with margin
     well_behind = sched_pace is not None and sched_pace < 0.5
@@ -362,11 +365,11 @@ def _classify_by_pace(
         return int(round(x)) if x is not None else 0
 
     # Reusable phrases that name exactly what each percentage measures: tasks
-    # (done vs total) and schedule (elapsed vs the planned window) and budgeted
-    # hours (used vs planned).
+    # (done vs total), schedule (elapsed vs the planned window) and budget
+    # (dollars spent vs the dollar budget — the same figure as Billed %).
     tasks = f"{pct_complete}% of tasks are done"
     schedule = f"{pct(pct_elapsed)}% of the schedule has passed" if pct_elapsed is not None else None
-    budget = f"{pct(pct_hours_burned)}% of budgeted hours are used" if pct_hours_burned is not None else None
+    budget = f"{pct(pct_budget_used)}% of the budget is used" if pct_budget_used is not None else None
 
     # 1. Critical — badly behind on both axes, or over budget with the deadline
     #    upon us, or already overdue and not done.
@@ -402,7 +405,7 @@ def _classify_by_pace(
     if schedule:
         tail.append(f"{pct(pct_elapsed)}% of the schedule used")
     if budget:
-        tail.append(f"{pct(pct_hours_burned)}% of budgeted hours used")
+        tail.append(f"{pct(pct_budget_used)}% of the budget used")
     ctx = f" ({', '.join(tail)})" if tail else ""
     if ahead and not deadline_close:
         return "excellent", f"{tasks}, ahead of both schedule and budget{ctx}."
@@ -413,15 +416,16 @@ def _classify_health(
     budget_pct, days_until_end, budget_amount, end_date,
     cfg: Optional["HealthConfig"] = None, margin_pct=None,
     has_blocked_task: bool = False,
-    pct_complete=None, pct_elapsed=None, pct_hours_burned=None,
+    pct_complete=None, pct_elapsed=None, pct_budget_used=None,
 ) -> tuple[str, str]:
     """Return (health, reason) for a project. The reason is a plain-language
     explanation of WHY this health state, for the pill tooltip.
 
     PRIMARY (derived) path: when the caller supplies pace inputs (``pct_complete``
-    with ``pct_elapsed`` and/or ``pct_hours_burned``), health is derived from the
+    with ``pct_elapsed`` and/or ``pct_budget_used``), health is derived from the
     schedule/budget PACE ratios so the status always follows from the inputs and
-    can't contradict them. See ``_classify_by_pace``.
+    can't contradict them. ``pct_budget_used`` is dollar-based (matches Billed %).
+    See ``_classify_by_pace``.
 
     FALLBACK path (no pace inputs — e.g. the portfolio tile): the historical
     dollar-burn + deadline heuristic, unchanged, so callers that don't compute
@@ -436,10 +440,10 @@ def _classify_health(
     # consumption axis to compare it against.
     if pct_complete is not None and (
         (pct_elapsed is not None and pct_elapsed > 0)
-        or (pct_hours_burned is not None and pct_hours_burned > 0)
+        or (pct_budget_used is not None and pct_budget_used > 0)
     ):
         return _classify_by_pace(
-            pct_complete, pct_elapsed, pct_hours_burned, days_until_end,
+            pct_complete, pct_elapsed, pct_budget_used, days_until_end,
             cfg, has_blocked_task,
         )
 
@@ -546,13 +550,16 @@ async def _task_completion_by_project(
     return {pid: (int(done or 0), int(total or 0)) for pid, total, done in rows}
 
 
-def _derive_pace_inputs(project, hours_logged, task_done_total, today):
-    """Return (pct_complete, pct_elapsed, pct_hours_burned) for the pace-based
+def _derive_pace_inputs(project, revenue, task_done_total, today):
+    """Return (pct_complete, pct_elapsed, pct_budget_used) for the pace-based
     health classifier, or Nones where an input can't be established.
 
-    - pct_complete: the manager's entered value, else the task-done ratio.
-    - pct_elapsed:  today's position in [start_date, end_date] as a %.
-    - pct_hours_burned: hours logged / budgeted (estimated) hours as a %.
+    - pct_complete:    the manager's entered value, else the task-done ratio.
+    - pct_elapsed:     today's position in [start_date, end_date] as a %.
+    - pct_budget_used: revenue / dollar budget as a %. Deliberately DOLLAR-based
+      (not hours) so the health "budget used" figure is the SAME number the
+      Financials tile shows as Billed % — one definition of "over budget"
+      everywhere, no 120%-vs-108% contradiction.
     """
     # % complete — hand-entered wins; else derive from task completion.
     pct_complete = None
@@ -570,13 +577,13 @@ def _derive_pace_inputs(project, hours_logged, task_done_total, today):
         used = (today - project.start_date).days
         pct_elapsed = max(0.0, min(150.0, used / span * 100)) if span > 0 else None
 
-    # % of budgeted HOURS burned (the checklist uses hours, not dollars, here).
-    pct_hours_burned = None
-    est = getattr(project, "estimated_hours", None)
-    if est is not None and Decimal(str(est)) > 0:
-        pct_hours_burned = float(Decimal(str(hours_logged or 0)) / Decimal(str(est)) * 100)
+    # % of the DOLLAR budget consumed = revenue / budget_amount (same as Billed %).
+    pct_budget_used = None
+    budget = getattr(project, "budget_amount", None)
+    if budget is not None and Decimal(str(budget)) > 0:
+        pct_budget_used = float(Decimal(str(revenue or 0)) / Decimal(str(budget)) * 100)
 
-    return pct_complete, pct_elapsed, pct_hours_burned
+    return pct_complete, pct_elapsed, pct_budget_used
 
 
 async def _count_pending_timesheet_weeks(
@@ -1724,11 +1731,11 @@ async def get_manager_project_health(
             budget_pct = int(round((revenue / Decimal(str(budget_amount))) * 100))
             budget_remaining = Decimal(str(budget_amount)) - revenue
 
-        # Derived pace inputs (% complete / % elapsed / % hours burned). When
-        # present, health follows from these ratios so it can't contradict the
-        # numbers; when absent, the classifier falls back to dollar-burn.
-        pct_complete, pct_elapsed, pct_hours_burned = _derive_pace_inputs(
-            project, hours_this_week, task_completion.get(project.id), today,
+        # Derived pace inputs (% complete / % elapsed / % budget used). Budget
+        # used is dollar-based (revenue / budget), the same figure as Billed %,
+        # so health never contradicts the financials tile.
+        pct_complete, pct_elapsed, pct_budget_used = _derive_pace_inputs(
+            project, revenue, task_completion.get(project.id), today,
         )
 
         health, health_reason = _apply_health_override(
@@ -1736,7 +1743,7 @@ async def get_manager_project_health(
                 budget_pct, days_until_end, budget_amount, project.end_date,
                 cfg=health_cfg, has_blocked_task=(project.id in blocked_pids),
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
-                pct_hours_burned=pct_hours_burned,
+                pct_budget_used=pct_budget_used,
             ),
             project.health_override,
         )
@@ -3203,8 +3210,9 @@ async def get_portfolio(
         days_until_end = (p.end_date - today).days if p.end_date else None
 
         # Derived pace inputs so this page's health matches the dashboard.
-        pct_complete, pct_elapsed, pct_hours_burned = _derive_pace_inputs(
-            p, d["hours"], task_completion.get(pid), today,
+        # Budget used = revenue / budget ($), the same figure as Billed %.
+        pct_complete, pct_elapsed, pct_budget_used = _derive_pace_inputs(
+            p, revenue, task_completion.get(pid), today,
         )
 
         health, health_reason = _apply_health_override(
@@ -3212,7 +3220,7 @@ async def get_portfolio(
                 budget_pct, days_until_end, budget, p.end_date, cfg=health_cfg,
                 margin_pct=margin_pct, has_blocked_task=(pid in blocked_pids),
                 pct_complete=pct_complete, pct_elapsed=pct_elapsed,
-                pct_hours_burned=pct_hours_burned,
+                pct_budget_used=pct_budget_used,
             ),
             p.health_override,
         )
