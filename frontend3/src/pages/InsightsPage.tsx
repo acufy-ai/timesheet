@@ -438,9 +438,10 @@ function ResourcingTab() {
       {/* List + (when open) an in-flow detail panel beside it: the list shrinks
           to make room, and rows stay clickable so you can switch employees. */}
       <div className="flex items-start gap-4">
-        {/* When the detail panel is open the list and panel split the row 50/50
-            (both flex-1 basis-0); when closed the list takes the full width. */}
-        <div className={cn('min-w-0 rounded-2xl border border-border bg-card', panelOpen ? 'flex-1 basis-0' : 'flex-1')}>
+        {/* When the detail panel is open the list narrows to ~1/3 (the rows only
+            need name + capacity bar); the detail panel carries the depth and
+            takes the rest. Closed, the list is full width. */}
+        <div className={cn('min-w-0 rounded-2xl border border-border bg-card', panelOpen ? 'w-[34%] shrink-0' : 'flex-1')}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div>
               <p className="text-sm font-semibold text-foreground">Team capacity for the next {d.weeks_ahead} weeks</p>
