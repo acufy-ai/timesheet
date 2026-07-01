@@ -278,23 +278,23 @@ function TaskDetailModal({
   const notes = (notesQ.data ?? []).filter(
     (n) => n.task_id === t.taskId || (n.task_id == null && n.project_id === projectId),
   );
-  // Internal (non-client) users are the assignable resources.
-  const users = (usersQ.data ?? []).filter((u) => !u.is_external);
-  const currentAssignees: number[] = task.assignee_ids ?? [];
+  // Assigned resources (read-only). Prefer resolving assignee_ids against the
+  // users list for full names; fall back to the name strings the breakdown ships.
+  // This binds to the live task data, so assigning someone elsewhere shows here as
+  // soon as the breakdown query refetches.
+  const usersById = new Map((usersQ.data ?? []).map((u) => [u.id, u.full_name]));
+  const assignedNames: string[] =
+    task.assignee_ids && task.assignee_ids.length
+      ? task.assignee_ids.map((id) => usersById.get(id) ?? `#${id}`)
+      : (task.assignees ?? []);
 
   const [status, setStatus] = useState<TaskStatus>(task.status as TaskStatus);
   const [alloc, setAlloc] = useState<string>(t.allocated != null ? String(t.allocated) : '');
-  const [assignees, setAssignees] = useState<number[]>(currentAssignees);
   const [noteText, setNoteText] = useState('');
 
   const save = (data: Parameters<typeof updateTask.mutate>[0]['data']) =>
     updateTask.mutate({ id: t.taskId, data });
 
-  const toggleAssignee = (uid: number) => {
-    const next = assignees.includes(uid) ? assignees.filter((x) => x !== uid) : [...assignees, uid];
-    setAssignees(next);
-    save({ assignee_ids: next });
-  };
   const addNote = () => {
     const body = noteText.trim();
     if (!body || clientId == null) return;
@@ -337,21 +337,18 @@ function TaskDetailModal({
           </label>
         </div>
 
-        {/* Editable: assignees (internal resources) */}
+        {/* Assigned to (read-only) — reflects the current assignment live. */}
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Assignees</p>
-          <div className="mt-1 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border p-2">
-            {users.length === 0 ? <span className="text-[12px] text-muted-foreground">No resources</span> : users.map((u) => {
-              const on = assignees.includes(u.id);
-              return (
-                <button key={u.id} type="button" onClick={() => toggleAssignee(u.id)}
-                  className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors',
-                    on ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-foreground/10')}>
-                  {u.full_name}
-                </button>
-              );
-            })}
-          </div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Assigned to</p>
+          {assignedNames.length ? (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {assignedNames.map((name, i) => (
+                <span key={`${name}-${i}`} className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                  {name}
+                </span>
+              ))}
+            </div>
+          ) : <p className="mt-0.5 text-[13px] text-muted-foreground">No one assigned yet.</p>}
         </div>
 
         {task.description ? (
