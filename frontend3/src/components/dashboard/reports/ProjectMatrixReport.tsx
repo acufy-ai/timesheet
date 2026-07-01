@@ -107,7 +107,7 @@ export function ProjectMatrixReport({ data }: { data: TeamProjectMatrix }) {
 
   const exportCsv = () => {
     const headers = [
-      'Person',
+      'Resource',
       'Title',
       ...data.projects.map((p) => `${p.project_name} (${p.client_name}) hours`),
       'Total hours',
@@ -192,7 +192,7 @@ export function ProjectMatrixReport({ data }: { data: TeamProjectMatrix }) {
         <table className="w-full text-sm">
           <thead>
             <tr>
-              <SortHead label="Person" sortKey="name" align="left" />
+              <SortHead label="Resource" sortKey="name" align="left" />
               {data.projects.map((p) => (
                 <SortHead
                   key={p.project_id}

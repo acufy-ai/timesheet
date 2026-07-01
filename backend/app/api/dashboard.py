@@ -172,6 +172,34 @@ async def _get_scoped_employee_ids(db: AsyncSession, current_user: "User") -> li
     return await _get_all_active_employee_ids(db, tenant_id=current_user.tenant_id)
 
 
+async def _get_scoped_project_ids(db: AsyncSession, current_user: "User") -> list[int]:
+    """Projects in scope for the caller.
+
+    - MANAGER: projects they own (``manager_id``) or PM (``project_managers``).
+    - VIEWER / ADMIN: all active projects in the tenant.
+
+    Used to find the client-side people (portal grants) attached to the caller's
+    engagements, mirroring how ``_get_scoped_employee_ids`` scopes internal staff.
+    """
+    from app.models.assignments import ProjectManager
+
+    base = select(Project.id).where(
+        Project.tenant_id == current_user.tenant_id,
+        Project.is_active.is_(True),
+    )
+    if current_user.role == UserRole.MANAGER:
+        pm_ids = (await db.execute(
+            select(ProjectManager.project_id).where(
+                ProjectManager.tenant_id == current_user.tenant_id,
+                ProjectManager.user_id == current_user.id,
+            )
+        )).scalars().all()
+        base = base.where(
+            or_(Project.manager_id == current_user.id, Project.id.in_(list(pm_ids) or [-1]))
+        )
+    return list((await db.execute(base)).scalars().all())
+
+
 async def _filter_managed_project_ids(
     db: AsyncSession, project_ids: list[int], tenant_id: Optional[int]
 ) -> list[int]:
@@ -303,21 +331,102 @@ HEALTH_LABEL = {
 MANUAL_HEALTH_VALUES = {"excellent", "on-track", "at-risk", "critical"}
 
 
+def _classify_by_pace(
+    pct_complete, pct_elapsed, pct_hours_burned, days_until_end,
+    cfg: "HealthConfig", has_blocked_task: bool,
+) -> tuple[str, str]:
+    """Derive health from PACE ratios (the demo-prep model): compare progress
+    against how much of the schedule and budget it has consumed, so the status
+    always follows logically from the inputs and can never contradict them
+    (no "0% done but at risk with 170 hours logged").
+
+    Schedule pace = % complete / % of time elapsed   (>1 ahead, ~1 on track, <1 behind)
+    Budget pace   = % complete / % of budget hours burned (>1 under budget, <1 over)
+
+    Mapping: both healthy → on-track/excellent; one slipping with room left →
+    at-risk; both well behind (or over budget) with the deadline close → critical.
+    """
+    # Guard against divide-by-zero: 0% elapsed/burned means we can't judge pace
+    # on that axis yet, so treat it as "no signal" (None) rather than infinite.
+    sched_pace = (pct_complete / pct_elapsed) if pct_elapsed and pct_elapsed > 0 else None
+    budget_pace = (pct_complete / pct_hours_burned) if pct_hours_burned and pct_hours_burned > 0 else None
+
+    behind_schedule = sched_pace is not None and sched_pace < 0.8   # <1 with margin
+    well_behind = sched_pace is not None and sched_pace < 0.5
+    over_budget = budget_pace is not None and budget_pace < 1.0
+    well_over_budget = budget_pace is not None and budget_pace < 0.75
+    overdue = days_until_end is not None and days_until_end < 0
+    deadline_close = days_until_end is not None and 0 <= days_until_end <= cfg.ending_soon_days
+
+    def pct(x):  # these inputs are ALREADY 0-100 percentages; just round.
+        return int(round(x)) if x is not None else 0
+
+    # 1. Critical — badly behind on both axes, or over budget with the deadline
+    #    upon us, or already overdue and not done.
+    if (well_behind and over_budget) or (over_budget and (deadline_close or overdue)) or (overdue and pct_complete < 100):
+        reasons = []
+        if over_budget:
+            reasons.append(f"{pct(pct_hours_burned)}% of budgeted hours used at {pct_complete}% done")
+        if overdue:
+            reasons.append(f"{abs(days_until_end)} days overdue")
+        elif well_behind:
+            reasons.append(f"only {pct_complete}% done at {pct(pct_elapsed)}% of the schedule")
+        return "critical", (" and ".join(reasons).capitalize() or "Behind on budget and schedule") + "."
+    # 2. Blocked — after critical, so over-budget + blocked reads as critical.
+    if has_blocked_task:
+        return "blocked", "One or more tasks are blocked."
+    # 3. At risk — slipping on one axis (behind schedule OR over budget), or the
+    #    deadline is close. Still recoverable, so a watch rather than a crisis.
+    if behind_schedule or over_budget or deadline_close:
+        reasons = []
+        if over_budget:
+            reasons.append(f"{pct(pct_hours_burned)}% of hours used at {pct_complete}% done")
+        if behind_schedule:
+            reasons.append(f"behind pace ({pct_complete}% done at {pct(pct_elapsed)}% elapsed)")
+        if deadline_close:
+            reasons.append(f"ends in {days_until_end} day{'s' if days_until_end != 1 else ''}")
+        return "at-risk", " and ".join(reasons).capitalize() + "."
+    # 4. Healthy — completion keeping up with spend and schedule. Excellent when
+    #    comfortably ahead on both; otherwise on-track.
+    ahead = (sched_pace is None or sched_pace >= 1.0) and (budget_pace is None or budget_pace >= 1.1)
+    if ahead and not deadline_close:
+        return "excellent", f"{pct_complete}% done, ahead of both schedule and budget."
+    return "on-track", f"{pct_complete}% done, keeping pace with schedule and budget."
+
+
 def _classify_health(
     budget_pct, days_until_end, budget_amount, end_date,
     cfg: Optional["HealthConfig"] = None, margin_pct=None,
     has_blocked_task: bool = False,
+    pct_complete=None, pct_elapsed=None, pct_hours_burned=None,
 ) -> tuple[str, str]:
-    """Return (health, reason) from the same signals used across the app, using
-    the resolved per-manager/workspace thresholds in ``cfg``. The reason is a
-    plain-language explanation of WHY this health state, for the pill tooltip.
+    """Return (health, reason) for a project. The reason is a plain-language
+    explanation of WHY this health state, for the pill tooltip.
 
-    Five tiers, first match wins (severity order): critical → blocked → at-risk
-    → not-set → (excellent | on-track). ``has_blocked_task`` is supplied by the
-    caller (a project with any task in 'blocked' status). This stays
-    pure-computed; a manual override is overlaid by the caller afterward."""
+    PRIMARY (derived) path: when the caller supplies pace inputs (``pct_complete``
+    with ``pct_elapsed`` and/or ``pct_hours_burned``), health is derived from the
+    schedule/budget PACE ratios so the status always follows from the inputs and
+    can't contradict them. See ``_classify_by_pace``.
+
+    FALLBACK path (no pace inputs — e.g. the portfolio tile): the historical
+    dollar-burn + deadline heuristic, unchanged, so callers that don't compute
+    completion behave exactly as before.
+
+    ``has_blocked_task`` is supplied by the caller (any task in 'blocked'
+    status). This stays pure-computed; a manual override is overlaid afterward."""
     if cfg is None:
         cfg = HealthConfig()
+
+    # Derived pace path — only when we actually have completion + at least one
+    # consumption axis to compare it against.
+    if pct_complete is not None and (
+        (pct_elapsed is not None and pct_elapsed > 0)
+        or (pct_hours_burned is not None and pct_hours_burned > 0)
+    ):
+        return _classify_by_pace(
+            pct_complete, pct_elapsed, pct_hours_burned, days_until_end,
+            cfg, has_blocked_task,
+        )
 
     is_over_budget = cfg.budget_enabled and budget_pct is not None and budget_pct > cfg.over_budget_pct
     is_long_overdue = cfg.schedule_enabled and days_until_end is not None and days_until_end < -cfg.overdue_days
@@ -395,6 +504,64 @@ async def _projects_with_blocked_task(
         .group_by(Task.project_id)
     )
     return {pid for (pid,) in result.all()}
+
+
+async def _task_completion_by_project(
+    db: AsyncSession, project_ids: list[int], tenant_id: int
+) -> dict[int, tuple[int, int]]:
+    """project_id -> (done_count, total_count) over active tasks. Used to derive
+    a project's % complete when the manager hasn't entered one by hand."""
+    if not project_ids:
+        return {}
+    from app.models.task import Task, TaskStatus
+
+    rows = (await db.execute(
+        select(
+            Task.project_id,
+            func.count(Task.id),
+            func.count().filter(Task.status == TaskStatus.done),
+        )
+        .where(
+            Task.project_id.in_(project_ids),
+            Task.tenant_id == tenant_id,
+            Task.is_active.is_(True),
+        )
+        .group_by(Task.project_id)
+    )).all()
+    return {pid: (int(done or 0), int(total or 0)) for pid, total, done in rows}
+
+
+def _derive_pace_inputs(project, hours_logged, task_done_total, today):
+    """Return (pct_complete, pct_elapsed, pct_hours_burned) for the pace-based
+    health classifier, or Nones where an input can't be established.
+
+    - pct_complete: the manager's entered value, else the task-done ratio.
+    - pct_elapsed:  today's position in [start_date, end_date] as a %.
+    - pct_hours_burned: hours logged / budgeted (estimated) hours as a %.
+    """
+    # % complete — hand-entered wins; else derive from task completion.
+    pct_complete = None
+    if getattr(project, "percent_complete", None) is not None:
+        pct_complete = max(0, min(100, int(project.percent_complete)))
+    elif task_done_total is not None:
+        done, total = task_done_total
+        if total > 0:
+            pct_complete = int(round(done / total * 100))
+
+    # % of schedule elapsed.
+    pct_elapsed = None
+    if project.start_date and project.end_date and project.end_date > project.start_date:
+        span = (project.end_date - project.start_date).days
+        used = (today - project.start_date).days
+        pct_elapsed = max(0.0, min(150.0, used / span * 100)) if span > 0 else None
+
+    # % of budgeted HOURS burned (the checklist uses hours, not dollars, here).
+    pct_hours_burned = None
+    est = getattr(project, "estimated_hours", None)
+    if est is not None and Decimal(str(est)) > 0:
+        pct_hours_burned = float(Decimal(str(hours_logged or 0)) / Decimal(str(est)) * 100)
+
+    return pct_complete, pct_elapsed, pct_hours_burned
 
 
 async def _count_pending_timesheet_weeks(
@@ -1464,6 +1631,13 @@ async def get_manager_project_health(
         db, project_ids, current_user.tenant_id
     )
 
+    # 2c) Task completion per project (done, total) — feeds the derived
+    # % complete when the manager hasn't entered one, so health can't claim
+    # "0% done" while hundreds of hours are logged.
+    task_completion = await _task_completion_by_project(
+        db, project_ids, current_user.tenant_id
+    )
+
     # 3) LOGGED HOURS per project (all-time, not week-scoped). This column used to
     # be "hours this week", but at the start of a week it reads 0 even when the
     # project has real budget/financials (which aggregate all-time), so it looked
@@ -1535,10 +1709,19 @@ async def get_manager_project_health(
             budget_pct = int(round((revenue / Decimal(str(budget_amount))) * 100))
             budget_remaining = Decimal(str(budget_amount)) - revenue
 
+        # Derived pace inputs (% complete / % elapsed / % hours burned). When
+        # present, health follows from these ratios so it can't contradict the
+        # numbers; when absent, the classifier falls back to dollar-burn.
+        pct_complete, pct_elapsed, pct_hours_burned = _derive_pace_inputs(
+            project, hours_this_week, task_completion.get(project.id), today,
+        )
+
         health, health_reason = _apply_health_override(
             _classify_health(
                 budget_pct, days_until_end, budget_amount, project.end_date,
                 cfg=health_cfg, has_blocked_task=(project.id in blocked_pids),
+                pct_complete=pct_complete, pct_elapsed=pct_elapsed,
+                pct_hours_burned=pct_hours_burned,
             ),
             project.health_override,
         )
@@ -1778,6 +1961,38 @@ async def get_my_work(
         select(TaskModel).where(TaskModel.id.in_(list(assigned_task_ids) or [-1]),
                                 TaskModel.tenant_id == current_user.tenant_id)
     )).scalars().all()
+
+    # Blocker linkage (task_dependencies), same semantics as the portal. Edge
+    # (task_id=A, depends_on=B) means B blocks A. Over the user's assigned tasks:
+    #   blocking_others[B] = B blocks some task A (holds up other work).
+    #   blocked_by[A] = A waits on a task B (that isn't done); shown when B is
+    #                   also one of the user's tasks so we can name it.
+    from app.models.task_dependency import TaskDependency
+    from app.schemas import MyWorkBlockerRef
+    blocking_others: set[int] = set()
+    blocked_by: dict[int, MyWorkBlockerRef] = {}
+    if assigned_task_ids:
+        vids = list(assigned_task_ids)
+        dep_rows = (await db.execute(
+            select(TaskDependency.task_id, TaskDependency.depends_on_task_id)
+            .where(TaskDependency.tenant_id == current_user.tenant_id)
+            .where(TaskDependency.task_id.in_(vids) | TaskDependency.depends_on_task_id.in_(vids))
+        )).all()
+        ref_ids = {tid for edge in dep_rows for tid in edge}
+        name_status: dict[int, tuple] = {}
+        if ref_ids:
+            for tid, nm, st in (await db.execute(
+                select(TaskModel.id, TaskModel.name, TaskModel.status)
+                .where(TaskModel.id.in_(list(ref_ids)), TaskModel.tenant_id == current_user.tenant_id)
+            )).all():
+                name_status[tid] = (nm, st.value if hasattr(st, "value") else str(st))
+        assigned_set = set(assigned_task_ids)
+        for a_id, b_id in dep_rows:  # b blocks a
+            if b_id in assigned_set:
+                blocking_others.add(b_id)
+            if a_id in assigned_set and b_id in name_status and name_status[b_id][1] != "done":
+                blocked_by[a_id] = MyWorkBlockerRef(task_id=b_id, name=name_status[b_id][0])
+
     tasks_by_project: dict[int, list[MyWorkTask]] = {}
     for t in all_assigned_tasks:
         tasks_by_project.setdefault(t.project_id, []).append(MyWorkTask(
@@ -1786,6 +2001,9 @@ async def get_my_work(
             priority=t.priority.value if hasattr(t.priority, "value") else (str(t.priority) if t.priority else None),
             description=t.description,
             can_edit=True,
+            due_date=t.due_date, blocked_reason=t.blocked_reason,
+            blocking_others=(t.id in blocking_others),
+            blocked_by=blocked_by.get(t.id),
         ))
 
     # The user's logged hours per project (all + approved).
@@ -2447,9 +2665,192 @@ async def get_team_resourcing(
 
     # Sort: over-allocated first (most urgent), then by allocation desc.
     rows.sort(key=lambda r: (0 if r.state == "over" else 1 if r.state == "ok" else 2, -r.allocated_pct))
+
+    # ── Client-side resources on the caller's projects ───────────────────────
+    # Portal users don't carry allocations or billing, so a capacity % is
+    # meaningless for them. They appear as task-progress rows instead (assigned
+    # tasks + how many are done), scoped to the caller's projects. Anything
+    # billing-related is intentionally omitted.
+    client_rows = await _client_resource_rows(db, current_user, resolved)
+
     return TeamResourcingResponse(
         weeks_ahead=weeks_ahead, team_size=len(rows),
-        over_allocated=over, under_utilized=under, rows=rows,
+        over_allocated=over, under_utilized=under,
+        rows=rows + client_rows, client_count=len(client_rows),
+    )
+
+
+async def _client_resource_rows(
+    db: AsyncSession, current_user: User, resolved,
+) -> list[ResourcingRow]:
+    """Client-side people (ClientAccessGrant) working on the caller's projects,
+    as task-progress rows. No allocation, no billing — just assigned tasks and
+    how many are done, so a manager can see client-side progress alongside the
+    internal team."""
+    from app.models.task import Task as TaskModel
+    from app.models.client_access_grant import ClientAccessGrant
+
+    scoped_project_ids = await _get_scoped_project_ids(db, current_user)
+    if resolved.project_ids is not None:
+        scoped_project_ids = [p for p in scoped_project_ids if p in set(resolved.project_ids)]
+    if not scoped_project_ids:
+        return []
+    project_id_set = set(scoped_project_ids)
+    proj_name = {pid: name for pid, name in (await db.execute(
+        select(Project.id, Project.name).where(Project.id.in_(scoped_project_ids))
+    )).all()}
+
+    grants = (await db.execute(
+        select(ClientAccessGrant.user_id, ClientAccessGrant.project_id, ClientAccessGrant.task_id)
+        .where(ClientAccessGrant.tenant_id == current_user.tenant_id)
+    )).all()
+    if not grants:
+        return []
+
+    # Resolve task-level grants to their project (only within the caller's projects).
+    grant_task_ids = [tid for _, _, tid in grants if tid is not None]
+    task_project: dict[int, int] = {}
+    if grant_task_ids:
+        task_project = {tid: pid for tid, pid in (await db.execute(
+            select(TaskModel.id, TaskModel.project_id)
+            .where(TaskModel.id.in_(grant_task_ids), TaskModel.project_id.in_(scoped_project_ids))
+        )).all()}
+
+    # user -> set of granted task ids (task-level grants) + set of project ids touched.
+    user_tasks: dict[int, set[int]] = {}
+    user_projects: dict[int, set[int]] = {}
+    for uid, gpid, gtid in grants:
+        if gpid is not None and gpid in project_id_set:
+            user_projects.setdefault(uid, set()).add(gpid)
+        elif gtid is not None and gtid in task_project:
+            user_tasks.setdefault(uid, set()).add(gtid)
+            user_projects.setdefault(uid, set()).add(task_project[gtid])
+    if not user_projects:
+        return []
+
+    # Progress across each user's granted tasks. Also count assigned tasks on
+    # project-level grants (a project grant implies the client's tasks under it).
+    from app.models.assignments import TaskAssignee
+    # Tasks the client user is a formal assignee of, within the scoped projects.
+    assignee_rows = (await db.execute(
+        select(TaskAssignee.user_id, TaskModel.id, TaskModel.status)
+        .join(TaskModel, TaskModel.id == TaskAssignee.task_id)
+        .where(TaskAssignee.user_id.in_(list(user_projects.keys())),
+               TaskModel.project_id.in_(scoped_project_ids))
+    )).all()
+    # Task statuses for the explicitly task-granted ids.
+    granted_ids = {tid for tids in user_tasks.values() for tid in tids}
+    granted_status = {}
+    if granted_ids:
+        granted_status = {tid: st for tid, st in (await db.execute(
+            select(TaskModel.id, TaskModel.status).where(TaskModel.id.in_(list(granted_ids)))
+        )).all()}
+
+    # Per-user task set (assignee tasks ∪ granted tasks) with status.
+    per_user_tasks: dict[int, dict[int, str]] = {}
+    for uid, tid, st in assignee_rows:
+        per_user_tasks.setdefault(uid, {})[tid] = st.value if hasattr(st, "value") else str(st)
+    for uid, tids in user_tasks.items():
+        for tid in tids:
+            st = granted_status.get(tid)
+            per_user_tasks.setdefault(uid, {})[tid] = (st.value if hasattr(st, "value") else str(st)) if st is not None else "to_do"
+
+    users = {u.id: u for u in (await db.execute(
+        select(User).where(User.id.in_(list(user_projects.keys())))
+    )).scalars().all()}
+
+    out: list[ResourcingRow] = []
+    for uid, pids in user_projects.items():
+        u = users.get(uid)
+        if u is None:
+            continue
+        tmap = per_user_tasks.get(uid, {})
+        total = len(tmap)
+        done = sum(1 for st in tmap.values() if st == "done")
+        pct = int(round(done / total * 100)) if total else 0
+        names = sorted({proj_name.get(p, f"Project {p}") for p in pids}, key=str.lower)
+        out.append(ResourcingRow(
+            user_id=uid, full_name=u.full_name, title=u.title,
+            is_client=True, role=u.role.value if hasattr(u.role, "value") else str(u.role),
+            task_total=total, task_done=done, progress_pct=pct, project_names=names,
+        ))
+    # Most tasks first, then least complete (needs attention), then name.
+    out.sort(key=lambda r: (-r.task_total, r.progress_pct, r.full_name.lower()))
+    return out
+
+
+async def _client_resource_detail(
+    db: AsyncSession, current_user: User, person: User,
+) -> ResourceDetailResponse:
+    """Detail view for a client-side portal user: the tasks they're granted /
+    assigned on the caller's projects and each task's status. No billing, cost,
+    or allocation — clients aren't billed and carry no forward capacity."""
+    from app.models.task import Task as TaskModel
+    from app.models.assignments import TaskAssignee
+    from app.models.client_access_grant import ClientAccessGrant
+
+    scoped_project_ids = await _get_scoped_project_ids(db, current_user)
+    if not scoped_project_ids:
+        raise HTTPException(status_code=404, detail="Client resource not found in your projects.")
+    project_id_set = set(scoped_project_ids)
+
+    grants = (await db.execute(
+        select(ClientAccessGrant.project_id, ClientAccessGrant.task_id)
+        .where(ClientAccessGrant.user_id == person.id,
+               ClientAccessGrant.tenant_id == current_user.tenant_id)
+    )).all()
+    grant_task_ids = [tid for _, tid in grants if tid is not None]
+    grant_project_ids = {pid for pid, _ in grants if pid is not None} & project_id_set
+
+    # Task-level grants within the caller's projects.
+    granted_tasks = {}
+    if grant_task_ids:
+        granted_tasks = {t.id: t for t in (await db.execute(
+            select(TaskModel).where(TaskModel.id.in_(grant_task_ids),
+                                    TaskModel.project_id.in_(scoped_project_ids))
+        )).scalars().all()}
+    # Tasks the client user is a formal assignee of, within the caller's projects.
+    assignee_tasks = {t.id: t for t in (await db.execute(
+        select(TaskModel).join(TaskAssignee, TaskAssignee.task_id == TaskModel.id)
+        .where(TaskAssignee.user_id == person.id, TaskModel.project_id.in_(scoped_project_ids))
+    )).scalars().all()}
+    all_tasks = {**granted_tasks, **assignee_tasks}
+
+    if not all_tasks and not grant_project_ids:
+        raise HTTPException(status_code=404, detail="Client resource not found in your projects.")
+
+    proj_ids = {t.project_id for t in all_tasks.values()} | grant_project_ids
+    projects = {p.id: p for p in (await db.execute(
+        select(Project).where(Project.id.in_(list(proj_ids) or [-1]))
+    )).scalars().all()}
+    client_name = {cid: name for cid, name in (await db.execute(
+        select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
+    )).all()}
+
+    def _st(t) -> str:
+        return t.status.value if hasattr(t.status, "value") else str(t.status)
+
+    task_rows = []
+    for tid, t in all_tasks.items():
+        p = projects.get(t.project_id)
+        task_rows.append(ResourceTaskRow(
+            task_id=tid, task_name=t.name, project_id=t.project_id,
+            project_name=p.name if p else f"Project {t.project_id}",
+            client_name=client_name.get(p.client_id) if p else None,
+            assigned=tid in assignee_tasks, status=_st(t),
+            blocked_reason=t.blocked_reason if _st(t) == "blocked" else None,
+        ))
+    # Unfinished first (needs attention), done last; then by name.
+    task_rows.sort(key=lambda r: (1 if r.status == "done" else 0, r.task_name.lower()))
+
+    total = len(task_rows)
+    done = sum(1 for r in task_rows if r.status == "done")
+    pct = int(round(done / total * 100)) if total else 0
+
+    return ResourceDetailResponse(
+        user_id=person.id, full_name=person.full_name, title=person.title,
+        days_back=0, is_client=True, tasks=task_rows,
+        task_total=total, task_done=done, progress_pct=pct,
     )
 
 
@@ -2472,14 +2873,18 @@ async def get_resource_detail(
     from app.models.assignments import TaskAssignee
     from app.services.billing_rates import entry_billed_amount, entry_cost_amount
 
-    # Access gate: the person must be one the caller already manages/sees.
-    scoped = set(await _get_scoped_employee_ids(db, current_user))
-    if user_id not in scoped:
-        raise HTTPException(status_code=404, detail="Employee not found in your team.")
-
     person = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if person is None:
         raise HTTPException(status_code=404, detail="Employee not found.")
+
+    # Access gate: internal team members go through the normal path. Client-side
+    # portal users are gated instead to those with a grant on the caller's
+    # projects, and get a task-only (no billing) view.
+    scoped = set(await _get_scoped_employee_ids(db, current_user))
+    if getattr(person, "is_external", False):
+        return await _client_resource_detail(db, current_user, person)
+    if user_id not in scoped:
+        raise HTTPException(status_code=404, detail="Employee not found in your team.")
 
     today = date.today()
     window_start = today - timedelta(days=days_back)
@@ -2750,6 +3155,11 @@ async def get_portfolio(
     blocked_pids = await _projects_with_blocked_task(
         db, list(managed_ids), current_user.tenant_id
     )
+    # Task completion per project — feeds the derived % complete so portfolio
+    # health matches the dashboard's manager-project-health (both pace-based).
+    task_completion = await _task_completion_by_project(
+        db, list(managed_ids), current_user.tenant_id
+    )
 
     agg: dict[int, dict] = {}
     for e in entries:
@@ -2777,10 +3187,17 @@ async def get_portfolio(
         budget_pct = int(round(revenue / budget * 100)) if budget and budget > 0 else None
         days_until_end = (p.end_date - today).days if p.end_date else None
 
+        # Derived pace inputs so this page's health matches the dashboard.
+        pct_complete, pct_elapsed, pct_hours_burned = _derive_pace_inputs(
+            p, d["hours"], task_completion.get(pid), today,
+        )
+
         health, health_reason = _apply_health_override(
             _classify_health(
                 budget_pct, days_until_end, budget, p.end_date, cfg=health_cfg,
                 margin_pct=margin_pct, has_blocked_task=(pid in blocked_pids),
+                pct_complete=pct_complete, pct_elapsed=pct_elapsed,
+                pct_hours_burned=pct_hours_burned,
             ),
             p.health_override,
         )

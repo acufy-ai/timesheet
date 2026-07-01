@@ -251,6 +251,15 @@ export function useClientTeam(clientId: number | null) {
     staleTime: 30_000,
   });
 }
+// Everyone working on any of the client's projects (roster + task assignees).
+export function useClientResources(clientId: number | null) {
+  return useQuery({
+    queryKey: ['client-resources', clientId],
+    queryFn: () => clientsApi.resources(clientId as number).then((r) => r.data),
+    enabled: clientId != null,
+    staleTime: 30_000,
+  });
+}
 export function useSetClientTeam() {
   const qc = useQueryClient();
   return useMutation({

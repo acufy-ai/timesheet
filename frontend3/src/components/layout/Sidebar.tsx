@@ -156,7 +156,8 @@ function ClientProjectsNav() {
                 : 'text-muted-foreground hover:bg-primary/10 hover:text-primary',
             )}
           >
-            <span className={cn('h-2 w-2 shrink-0 rounded-full', clientHealthDot(p.client_health))} />
+            {/* Client-facing health dot disabled while the client-health
+                surface is off across the app (was clientHealthDot()). */}
             <span className="min-w-0 flex-1 truncate">{p.name}</span>
             {p.progress?.total ? (
               <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/80">{p.progress.pct}%</span>

@@ -387,12 +387,15 @@ function ResourcingTab() {
   const rows = useMemo(() => {
     const term = search.trim().toLowerCase();
     let all = d?.rows ?? [];
-    if (filter !== 'all') all = all.filter((r) => r.state === filter);
+    // Capacity buckets only apply to internal team members — client-side rows
+    // carry no capacity, so any active bucket filter hides them.
+    if (filter !== 'all') all = all.filter((r) => !r.is_client && r.state === filter);
     if (term) {
       all = all.filter((r) =>
         r.full_name.toLowerCase().includes(term)
         || (r.title ?? '').toLowerCase().includes(term)
-        || r.allocations.some((a) => a.project_name.toLowerCase().includes(term)));
+        || r.allocations.some((a) => a.project_name.toLowerCase().includes(term))
+        || (r.project_names ?? []).some((n) => n.toLowerCase().includes(term)));
     }
     return all;
   }, [d, search, filter]);
@@ -442,7 +445,8 @@ function ResourcingTab() {
             <div>
               <p className="text-sm font-semibold text-foreground">Team capacity for the next {d.weeks_ahead} weeks</p>
               <p className="text-xs text-muted-foreground">
-                {rows.length} of {d.team_size} people · Allocation % shows planned time across active projects · select a row for details
+                {d.team_size} team {d.team_size === 1 ? 'member' : 'members'}
+                {d.client_count ? ` · ${d.client_count} client-side` : ''} · capacity for the team, task progress for client resources · select a row for details
                 {filter !== 'all' ? (
                   <button type="button" onClick={() => setFilter('all')} className="ml-2 text-primary hover:underline">Clear filter</button>
                 ) : null}
@@ -457,11 +461,40 @@ function ResourcingTab() {
             {rows.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">No people match {search.trim() ? 'your search' : 'this filter'}.</p>
             ) : pageItems.map((r) => {
+              const active = openUser?.id === r.user_id;
+              // Client-side resources: no allocation/billing — show task progress.
+              if (r.is_client) {
+                const total = r.task_total ?? 0;
+                const done = r.task_done ?? 0;
+                const pct = r.progress_pct ?? 0;
+                return (
+                  <button type="button" key={r.user_id} onClick={() => setOpenUser({ id: r.user_id, name: r.full_name })}
+                    className={cn('flex w-full items-center gap-4 px-4 py-2.5 text-left transition-colors', active ? 'bg-primary/10' : 'hover:bg-foreground/[0.03]')}>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
+                        {r.full_name}
+                        <span className="shrink-0 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">Client</span>
+                        {r.title ? <span className="truncate text-xs font-normal text-muted-foreground">{r.title}</span> : null}
+                      </p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {(r.project_names ?? []).join(' · ') || 'No project tasks yet'}
+                      </p>
+                    </div>
+                    {/* Task-progress bar instead of a capacity bar. */}
+                    <div className={cn('h-2 shrink-0 overflow-hidden rounded-full bg-muted', panelOpen ? 'w-24' : 'w-40')}>
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className={cn('shrink-0 text-right text-sm font-semibold tabular-nums text-foreground', panelOpen ? 'w-20' : 'w-28')}>
+                      {total ? `${done}/${total}` : '—'}
+                      <span className="ml-1 block text-[10px] font-normal text-muted-foreground">{total ? `${pct}% done` : 'no tasks'}</span>
+                    </div>
+                  </button>
+                );
+              }
               const m = stateMeta(r.state);
               // 100% = a full bar. Over-capacity stays full (it can't exceed the
               // track) and is signalled by the rose colour + the % label.
               const width = Math.min(r.allocated_pct, 100);
-              const active = openUser?.id === r.user_id;
               return (
                 <button type="button" key={r.user_id} onClick={() => setOpenUser({ id: r.user_id, name: r.full_name })}
                   className={cn('flex w-full items-center gap-4 px-4 py-2.5 text-left transition-colors', active ? 'bg-primary/10' : 'hover:bg-foreground/[0.03]')}>

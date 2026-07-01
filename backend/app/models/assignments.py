@@ -1,4 +1,6 @@
-from sqlalchemy import Boolean, ForeignKey, Integer
+from typing import Optional
+
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -37,6 +39,11 @@ class UserProjectAccess(Base, TimestampMixin):
         ForeignKey("users.id"), primary_key=True)
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id"), primary_key=True)
+    # The BILLING role this resource plays ON THIS project (e.g. "Developer" on
+    # one project, "Tester" on another). Drives the per-client rate card so one
+    # person can bill at different rates on different projects. NULL = fall back
+    # to the user's global title. Matched (case-insensitive) to ClientRoleRate.
+    role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     user = relationship("User", back_populates="project_access")
     project = relationship("Project", back_populates="user_access")

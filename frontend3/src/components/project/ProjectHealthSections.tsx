@@ -35,6 +35,8 @@ export function SummaryCard({ card }: { card: SummaryCardVM }) {
           <span className={cn('h-2.5 w-2.5 rounded-full', m.dot)} />
           <span className={cn('text-base font-semibold', m.text)}>{m.label}</span>
         </span>
+        {/* Plain-language "why this status", so the pill isn't unexplained. */}
+        {card.sub ? <p className="mt-1.5 text-xs leading-snug text-muted-foreground">{card.sub}</p> : null}
       </div>
     );
   }
@@ -61,6 +63,7 @@ export function SummaryCardRow({ cards }: { cards: SummaryCardVM[] }) {
 // Section 3: critical issues.
 // ----------------------------------------------------------------------------
 const ISSUE_ICON: Record<IssueCategory, typeof Ban> = {
+  health: AlertTriangle,
   blocked: Ban,
   dependency: GitBranch,
   overdue: Clock,

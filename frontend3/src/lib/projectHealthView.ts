@@ -100,6 +100,7 @@ export interface SummaryCardVM {
 }
 
 export type IssueCategory =
+  | 'health'
   | 'blocked' | 'estimate_overrun' | 'overdue' | 'dependency'
   | 'budget' | 'schedule' | 'approval_bottleneck' | 'resource_concentration';
 
@@ -201,15 +202,40 @@ interface IssueSignals {
   breakdown?: ProjectTaskBreakdown;
   overBudget: boolean;
   budgetUsedPct: number | null;
-  scheduleLate: boolean;
-  scheduleLabel: string | null;
   pendingApproval: number | null;
   approved: number | null;
+  // The project's health tier + the plain-language reason it's in that tier.
+  // When the project is unhealthy, the reason IS the headline critical issue.
+  health: ProjectHealth;
+  healthReason: string | null;
+}
+
+// Map a health tier to the critical-issues tone. at-risk = warning, everything
+// worse (critical/blocked) = critical.
+function healthIssueTone(health: ProjectHealth): RiskTone {
+  return health === 'at-risk' ? 'warning' : 'critical';
+}
+function healthIssueLabel(health: ProjectHealth): string {
+  if (health === 'critical') return 'Why it’s critical';
+  if (health === 'blocked') return 'Why it’s blocked';
+  return 'Why it’s at risk';
 }
 
 function buildCriticalIssues(s: IssueSignals): CriticalIssueVM[] {
   const issues: CriticalIssueVM[] = [];
   const b = s.breakdown;
+
+  // Lead with the health reason: if the project is unhealthy, the FIRST thing
+  // shown is the plain-language explanation of that exact status, so the panel
+  // answers "why is this at risk/critical/blocked?" directly.
+  const unhealthy = s.health === 'at-risk' || s.health === 'critical' || s.health === 'blocked';
+  if (unhealthy && s.healthReason) {
+    issues.push({
+      category: 'health', label: healthIssueLabel(s.health),
+      tone: healthIssueTone(s.health), severity: -1,
+      detail: s.healthReason,
+    });
+  }
 
   if (b && b.blocked_tasks.length > 0) {
     const t = b.blocked_tasks[0];
@@ -261,14 +287,9 @@ function buildCriticalIssues(s: IssueSignals): CriticalIssueVM[] {
     });
   }
 
-  // Schedule: only when there is no overdue-task issue already (same underlying
-  // lateness; keep the more specific "Overdue" signal).
-  if (s.scheduleLate && overdueCount === 0 && s.scheduleLabel) {
-    issues.push({
-      category: 'schedule', label: 'Schedule issue', tone: 'warning', severity: 5,
-      detail: s.scheduleLabel,
-    });
-  }
+  // (The old dollar-denominated "Schedule issue: −$X" item was removed: schedule
+  // slippage now reads through the health reason above, and the dollar schedule
+  // variance still lives in the EVM tile at the bottom of the page.)
 
   // Approval bottleneck: a meaningful chunk of logged time is awaiting approval.
   if (
@@ -359,6 +380,9 @@ export function buildProjectHealthView(
   cards.push({
     key: 'status', label: 'Status', value: '', tone: 'neutral', emphasis: false,
     isStatus: true, health,
+    // The plain-language "why this status" (e.g. "Behind pace, 60% done at 80%
+    // elapsed"), so the manager sees the reason, not just the colour.
+    sub: portfolio?.health_reason ?? undefined,
   });
 
   if (taskCompletionPct != null) {
@@ -389,12 +413,9 @@ export function buildProjectHealthView(
     });
   }
 
-  if (scheduleLabel != null) {
-    cards.push({
-      key: 'schedule_variance', label: 'Schedule variance',
-      value: scheduleLabel, tone: scheduleLate ? 'critical' : 'subtle', emphasis: scheduleLate,
-    });
-  }
+  // (The top-row "Schedule variance" summary card was removed: schedule status
+  // now reads through the health reason + the "Why it's at risk" critical issue.
+  // The dollar variance still lives in the Effort & budget and EVM tiles below.)
 
   if (budgetUsed != null) {
     const t = budgetTone(budgetUsed);
@@ -422,7 +443,8 @@ export function buildProjectHealthView(
   // ---- 3. Critical issues. ----
   const criticalIssues = buildCriticalIssues({
     breakdown, overBudget, budgetUsedPct: budgetUsed,
-    scheduleLate, scheduleLabel, pendingApproval, approved,
+    pendingApproval, approved,
+    health, healthReason: portfolio?.health_reason ?? null,
   });
 
   // ---- 4. Execution status (map breakdown slices, no recompute). ----

@@ -62,6 +62,7 @@ import type {
   ClientImportPreview,
   ClientImportResult,
   ClientTeamMember,
+  ClientResource,
   ClientTeamBody,
   Contract,
   ContractBody,
@@ -664,6 +665,7 @@ export const clientsApi = {
     api.post<{ client: Client; domain: string; cascaded_count: number }>('/clients/from-domain', { name, domain }),
   // Client team roster (PMs + members with assignment_role).
   team: (id: number) => api.get<ClientTeamMember[]>(`/clients/${id}/team`),
+  resources: (id: number) => api.get<ClientResource[]>(`/clients/${id}/resources`),
   setTeam: (id: number, data: ClientTeamBody) =>
     api.put<ClientTeamMember[]>(`/clients/${id}/team`, data),
 };

@@ -5,10 +5,13 @@ previously-orphaned per-client role rate cards (ClientRoleRate).
 
 Resolution order (first match wins):
   1. A ClientRoleRate for the entry's project's CLIENT whose `role` matches the
-     user's title (case-insensitive), effective on or before the entry date
-     (the latest such effective_date wins; rows with no effective_date are
-     treated as always-effective and rank below dated ones).
-  2. The project's flat `billable_rate`.
+     resource's role ON THIS PROJECT (user_project_access.role) — so one person
+     can bill as a Developer on one project and a Tester on another.
+  2. A ClientRoleRate matching the user's global `title` (back-compat for
+     resources with no per-project role set).
+  In both cases the card must be effective on or before the entry date (the
+  latest such effective_date wins; undated rows rank below dated ones).
+  3. The project's flat `billable_rate`.
 
 The resolved rate is stamped onto the entry at approval (see crud.time_entry),
 so later edits to a rate card or project rate never re-price approved history.
@@ -21,6 +24,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.assignments import UserProjectAccess
 from app.models.client_extras import ClientRoleRate
 from app.models.project import Project
 from app.models.task import Task  # noqa: F401 - kept for type context
@@ -47,7 +51,20 @@ async def resolve_entry_rate(
     user = await db.get(User, entry.user_id)
     title = (user.title or "").strip().lower() if user else ""
 
-    if title:
+    # The role this resource plays ON THIS project (varies per project), so the
+    # same person can bill as a Developer on one project and a Tester on another.
+    project_role = (await db.execute(
+        select(UserProjectAccess.role).where(
+            UserProjectAccess.user_id == entry.user_id,
+            UserProjectAccess.project_id == entry.project_id,
+        )
+    )).scalar_one_or_none()
+    project_role = (project_role or "").strip().lower()
+
+    # Match keys in priority order: the per-project role first, then the global
+    # title. First key that has an eligible rate card wins.
+    match_keys = [k for k in (project_role, title) if k]
+    if match_keys:
         rows = (await db.execute(
             select(ClientRoleRate).where(
                 ClientRoleRate.tenant_id == entry.tenant_id,
@@ -57,24 +74,25 @@ async def resolve_entry_rate(
 
         on = entry.entry_date or date.today()
 
-        def _eligible(r: ClientRoleRate) -> bool:
-            if (r.role or "").strip().lower() != title:
-                return False
-            return r.effective_date is None or r.effective_date <= on
+        for key in match_keys:
+            def _eligible(r: ClientRoleRate) -> bool:
+                if (r.role or "").strip().lower() != key:
+                    return False
+                return r.effective_date is None or r.effective_date <= on
 
-        # Latest effective date wins; undated rows sort earliest so a dated card
-        # supersedes them.
-        candidates = sorted(
-            (r for r in rows if _eligible(r)),
-            key=lambda r: (r.effective_date or date.min),
-        )
-        if candidates:
-            best = candidates[-1]
-            return ResolvedRate(
-                rate=best.rate,
-                currency=best.currency or (project.currency or "USD"),
-                source="role_rate",
+            # Latest effective date wins; undated rows sort earliest so a dated
+            # card supersedes them.
+            candidates = sorted(
+                (r for r in rows if _eligible(r)),
+                key=lambda r: (r.effective_date or date.min),
             )
+            if candidates:
+                best = candidates[-1]
+                return ResolvedRate(
+                    rate=best.rate,
+                    currency=best.currency or (project.currency or "USD"),
+                    source="role_rate",
+                )
 
     return ResolvedRate(
         rate=project.billable_rate,

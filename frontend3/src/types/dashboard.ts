@@ -106,6 +106,13 @@ export interface ResourcingRow {
   allocated_pct: number;
   state: 'over' | 'ok' | 'under';
   allocations: ResourcingAllocRow[];
+  // Client-side resources on the caller's projects: task progress, no capacity.
+  is_client?: boolean;
+  role?: string | null;
+  task_total?: number;
+  task_done?: number;
+  progress_pct?: number;
+  project_names?: string[];
 }
 export interface TeamResourcing {
   weeks_ahead: number;
@@ -113,6 +120,7 @@ export interface TeamResourcing {
   over_allocated: number;
   under_utilized: number;
   rows: ResourcingRow[];
+  client_count?: number;
 }
 
 // Per-employee detail for the resourcing slide-over panel.
@@ -134,6 +142,8 @@ export interface ResourceTaskRow {
   client_name?: string | null;
   hours: string | number;
   assigned: boolean;
+  status?: 'to_do' | 'in_progress' | 'blocked' | 'done' | null;
+  blocked_reason?: string | null;
 }
 export interface ResourceDetail {
   user_id: number;
@@ -151,6 +161,11 @@ export interface ResourceDetail {
   capacity_summary: string;
   projects: ResourceProjectRow[];
   tasks: ResourceTaskRow[];
+  // Client-side resources: task-only view, no billing/allocation.
+  is_client?: boolean;
+  task_total?: number;
+  task_done?: number;
+  progress_pct?: number;
 }
 export interface PortfolioRow {
   project_id: number;
@@ -323,6 +338,10 @@ export interface MyWorkTask {
   priority?: string | null;
   description?: string | null;
   can_edit?: boolean;
+  due_date?: string | null;
+  blocked_reason?: string | null;
+  blocking_others?: boolean;
+  blocked_by?: { task_id: number; name: string } | null;
 }
 export interface MyWorkProject {
   project_id: number;

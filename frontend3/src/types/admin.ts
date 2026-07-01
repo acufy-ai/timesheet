@@ -361,6 +361,27 @@ export interface ClientTeamMember {
   assignment_role: 'pm' | 'member';
 }
 
+// GET /clients/{id}/resources — everyone actually working on ANY of the client's
+// projects (roster + task assignees), de-duplicated, distinct from the formal
+// client-team assignment above.
+export interface ClientResourceProject {
+  project_id: number;
+  project_name: string;
+  on_roster: boolean;
+  task_count: number;
+  role?: string | null; // per-project billing role (Developer, Tester, ...)
+}
+export interface ClientResource {
+  user_id: number;
+  full_name: string;
+  role: string;
+  title?: string | null;
+  is_pm: boolean;
+  is_client: boolean; // client-side portal user vs internal delivery team
+  project_count: number;
+  projects: ClientResourceProject[];
+}
+
 // PUT /clients/{id}/team body.
 export interface ClientTeamBody {
   pm_ids: number[];

@@ -5,6 +5,7 @@ import { cn } from '@/lib/cn';
 import { fmtMoney } from '@/lib/format';
 import { useResourceDetail } from '@/hooks/useDashboard';
 import { AllocationManager } from './AllocationManager';
+import type { ResourceDetail } from '@/types/dashboard';
 
 // Slide-over panel showing one employee's detail: billing, submitted/approved
 // hours, billed vs cost, a per-project breakdown, and their tasks (with hours +
@@ -46,6 +47,8 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
         <div className="grid flex-1 place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" /></div>
       ) : !d ? (
         <div className="grid flex-1 place-items-center px-6 py-16 text-center text-sm text-muted-foreground">Couldn't load this employee's detail.</div>
+      ) : d.is_client ? (
+        <ClientResourceBody d={d} />
       ) : (
         <div className="flex-1 space-y-4 overflow-y-auto p-4">
             {/* Capacity summary — why this person is over / at / under capacity. */}
@@ -127,6 +130,74 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
         )}
     </aside>
   );
+}
+
+// Client-side resource: no billing or capacity — a progress header plus their
+// tasks grouped by project, so a manager can see client-side progress clearly.
+function ClientResourceBody({ d }: { d: ResourceDetail }) {
+  const total = d.task_total ?? d.tasks.length;
+  const done = d.task_done ?? d.tasks.filter((t) => t.status === 'done').length;
+  const pct = d.progress_pct ?? (total ? Math.round((done / total) * 100) : 0);
+  // Group tasks by project, preserving the server's unfinished-first order.
+  const byProject = new Map<number, { name: string; tasks: typeof d.tasks }>();
+  for (const t of d.tasks) {
+    const g = byProject.get(t.project_id) ?? { name: t.project_name, tasks: [] };
+    g.tasks.push(t);
+    byProject.set(t.project_id, g);
+  }
+  return (
+    <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-sky-700 dark:text-sky-300">Client resource</span>
+          <span className="text-sm font-bold tabular-nums text-foreground">{total ? `${done}/${total} done` : 'No tasks'}</span>
+        </div>
+        {total ? (
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+          </div>
+        ) : null}
+        <p className="mt-1.5 text-[12px] text-muted-foreground">
+          {total
+            ? `${pct}% of their assigned tasks complete. Client-side work isn't billed.`
+            : 'No tasks assigned on your projects yet. Client-side work isn’t billed.'}
+        </p>
+      </div>
+
+      {total === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">Nothing to show yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {[...byProject.values()].map((g, gi) => (
+            <div key={gi} className="rounded-lg border border-border p-3">
+              <p className="mb-1.5 truncate text-sm font-semibold text-foreground">{g.name}</p>
+              <ul className="space-y-1">
+                {g.tasks.map((t, ti) => (
+                  <li key={ti} className="flex items-center justify-between gap-2 text-[12.5px]">
+                    <span className="min-w-0 truncate text-foreground">
+                      {t.task_name}
+                      {t.status === 'blocked' && t.blocked_reason ? (
+                        <span className="ml-1.5 text-[11px] text-amber-600 dark:text-amber-400">— {t.blocked_reason}</span>
+                      ) : null}
+                    </span>
+                    <TaskStatusPill status={t.status ?? 'to_do'} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskStatusPill({ status }: { status: string }) {
+  const meta = status === 'done' ? { label: 'Done', cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' }
+    : status === 'in_progress' ? { label: 'In progress', cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300' }
+    : status === 'blocked' ? { label: 'Blocked', cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' }
+    : { label: 'To do', cls: 'bg-muted text-muted-foreground' };
+  return <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', meta.cls)}>{meta.label}</span>;
 }
 
 // Capacity banner styling per bucket. Uses the same status colours as the

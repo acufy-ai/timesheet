@@ -57,6 +57,7 @@ function KpiWidget({ config, widgetId }: WidgetProps) {
   const financials = wd.financials;
   const revrec = wd.revrec;
   const ontime = wd.ontime;
+  const resourcing = wd.resourcing;
   const loading = portfolio.isLoading || financials.isLoading;
   if (loading) return <Centered><Loader2 className="h-5 w-5 animate-spin" /></Centered>;
   const p = portfolio.data as AnyData | undefined;
@@ -89,16 +90,25 @@ function KpiWidget({ config, widgetId }: WidgetProps) {
     }
   }
   // Explain what this number represents on hover: the scope it spans (how many
-  // projects/clients) + how the metric is composed.
+  // projects/clients) + how the metric is composed + a per-client breakdown for
+  // the additive money/hours metrics (mirrors the Financials tab's hover).
   const projCount = (f?.projects as AnyData[] | undefined)?.length ?? (p?.project_count as number | undefined) ?? 0;
+  const breakdown = kpiBreakdown(metric, {
+    financials: (financials.data as AnyData | undefined)?.projects as AnyData[] | undefined,
+    portfolio: (portfolio.data as AnyData | undefined)?.rows as AnyData[] | undefined,
+    revrec: (revrec.data as AnyData | undefined)?.rows as AnyData[] | undefined,
+    resourcing: (resourcing.data as AnyData | undefined)?.rows as AnyData[] | undefined,
+    ontime: (ontime.data as AnyData | undefined)?.rows as AnyData[] | undefined,
+  });
   const valueTip = (
-    <KpiValueTip metric={metric} label={label} value={value} projCount={projCount} scope={config?.scope} />
+    <KpiValueTip metric={metric} label={label} value={value} projCount={projCount} scope={config?.scope} breakdown={breakdown} />
   );
+  // ONE tooltip per tile: the value carries the definition + scope + breakdown.
+  // The label is plain text (no second tooltip) and the scope line is plain
+  // text, so a tile has a single, rich hover target instead of 3-4 competing ones.
   return (
     <div className="flex h-full flex-col justify-center px-1">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <InfoLabel label={label} side="top" infoKey={KPI_INFO[metric]} />
-      </p>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
       <Tooltip label={valueTip} side="top" maxWidth={280}>
         <p className={cn('mt-0.5 inline-block cursor-help text-2xl font-bold leading-tight tabular-nums', tone)}>{value}</p>
       </Tooltip>
@@ -387,12 +397,25 @@ function OnTimeWidget({ config, widgetId }: WidgetProps) {
   const d = ot.data as AnyData | undefined;
   const pct = d?.team_on_time_pct as number | null | undefined;
   const tone = pct == null ? 'text-foreground' : pct >= 90 ? 'text-emerald-600 dark:text-emerald-400' : pct >= 70 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400';
+  const people: AnyData[] = ((d?.rows as AnyData[]) ?? []).filter((r) => r.on_time_pct != null)
+    .sort((a, b) => Number(a.on_time_pct) - Number(b.on_time_pct));
+  const tip = (
+    <div className="space-y-1">
+      <p className="font-semibold">On-time % by person</p>
+      <ul className="space-y-0.5">
+        {people.slice(0, 12).map((r) => (
+          <li key={r.user_id} className="flex justify-between gap-4 leading-snug"><span className="truncate">{r.full_name}</span><span className="shrink-0 font-medium tabular-nums">{r.on_time_pct}%</span></li>
+        ))}
+        {people.length > 12 ? <li className="text-[11px] text-muted-foreground">+{people.length - 12} more</li> : null}
+      </ul>
+    </div>
+  );
   return (
     <div className="flex h-full flex-col justify-center px-1">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <InfoLabel label="On-time submissions" side="top" />
-      </p>
-      <p className={cn('mt-1 text-3xl font-bold tabular-nums', tone)}>{pct != null ? `${pct}%` : '—'}</p>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">On-time submissions</p>
+      <Tooltip label={people.length ? tip : 'No submission activity in the window.'} side="top" maxWidth={300}>
+        <p className={cn('mt-1 inline-block cursor-help text-3xl font-bold tabular-nums', tone)}>{pct != null ? `${pct}%` : '—'}</p>
+      </Tooltip>
       <p className="text-xs text-muted-foreground">{(d?.rows?.length ?? 0)} people · last 90 days</p>
     </div>
   );
@@ -402,15 +425,18 @@ function OnTimeWidget({ config, widgetId }: WidgetProps) {
 // CPI/SPI/EAC explain themselves on hover (it falls back to plain text when the
 // label has no glossary entry, so no harm for self-evident labels).
 function Metric({ label, value, tone = 'text-foreground', tip }: { label: string; value: string; tone?: string; tip?: React.ReactNode }) {
+  // One tooltip per stat: when a breakdown tip is provided, the WHOLE tile is the
+  // single hover target and the label is plain (no competing InfoLabel popup).
+  // Without a tip, fall back to the InfoLabel so jargon (CPI/SPI) still explains
+  // itself — that's then the only tooltip on the tile.
   const body = (
     <div className={cn('rounded-lg border border-border px-2 py-1.5', tip && 'cursor-help')}>
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <InfoLabel label={label} side="top" />
+        {tip ? label : <InfoLabel label={label} side="top" />}
       </p>
       <p className={cn('text-base font-bold tabular-nums', tone)}>{value}</p>
     </div>
   );
-  // When a per-item breakdown is provided, hovering the WHOLE tile reveals it.
   return tip ? <Tooltip label={tip} side="top" maxWidth={320}>{body}</Tooltip> : body;
 }
 
@@ -486,8 +512,9 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 // Explains what a KPI number represents on hover: its scope (whole portfolio vs
 // a client/project subset, and how many projects feed it) + the metric formula.
-function KpiValueTip({ metric, label, value, projCount, scope }: {
+function KpiValueTip({ metric, label, value, projCount, scope, breakdown }: {
   metric: string; label: string; value: string; projCount: number; scope?: WidgetScope;
+  breakdown?: KpiBreakdown;
 }) {
   const def = infoTextFor(KPI_INFO[metric] ?? label);
   const clients = [...(scope?.clientIds ?? []), ...(scope?.clientId ? [scope.clientId] : [])].length;
@@ -500,12 +527,99 @@ function KpiValueTip({ metric, label, value, projCount, scope }: {
   else if (scoped) across = `${projCount} project${projCount === 1 ? '' : 's'} in the selected scope`;
   else across = `all ${projCount} project${projCount === 1 ? '' : 's'} in your portfolio`;
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <p><span className="font-semibold">{value}</span> is {label.toLowerCase()} across <span className="font-medium">{across}</span>{scope?.userId ? ' (one resource)' : ''}.</p>
+      {/* The metric's breakdown — by client / project / person depending on the
+          metric (mirrors the Financials tab's hover, extended to every KPI). */}
+      {breakdown && breakdown.items.length ? (
+        <div className="border-t border-border/50 pt-1.5">
+          <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{breakdown.heading}</p>
+          <ul className="space-y-0.5">
+            {breakdown.items.slice(0, 10).map((b) => (
+              <li key={b.client} className="flex justify-between gap-4 leading-snug">
+                <span className="truncate">{b.client}</span>
+                <span className="shrink-0 font-medium tabular-nums">{b.text}</span>
+              </li>
+            ))}
+            {breakdown.items.length > 10 ? <li className="text-[11px] text-muted-foreground">+{breakdown.items.length - 10} more</li> : null}
+          </ul>
+        </div>
+      ) : null}
       {def ? <p className="text-[11px] text-muted-foreground">{def}</p> : null}
-      <p className="text-[11px] text-muted-foreground">Live: recomputed from approved time, not a single project or client.</p>
     </div>
   );
+}
+
+interface KpiBreakdown { heading: string; items: { client: string; text: string }[] }
+
+// A per-metric breakdown for ANY KPI tile, from whichever data the metric is
+// composed of. Money/hours/margin split by CLIENT (from financials project
+// rows); attention/count split by PROJECT (portfolio rows); billed/recognized
+// by CLIENT (revrec rows); utilization/on-time by PERSON (resourcing/ontime
+// rows). So every single-value tile reveals what it's made of on hover.
+function kpiBreakdown(metric: string, src: {
+  financials?: AnyData[]; portfolio?: AnyData[]; revrec?: AnyData[]; resourcing?: AnyData[]; ontime?: AnyData[];
+}): KpiBreakdown | undefined {
+  const byClientMoney = (rows: AnyData[] | undefined, field: string, heading: string): KpiBreakdown | undefined => {
+    if (!rows?.length) return undefined;
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.client_name || 'No client', (m.get(r.client_name || 'No client') ?? 0) + Number(r[field] ?? 0));
+    const items = [...m.entries()].filter(([, v]) => v !== 0).sort((a, b) => b[1] - a[1]).map(([client, v]) => ({ client, text: fmtMoney(v) }));
+    return items.length ? { heading, items } : undefined;
+  };
+
+  switch (metric) {
+    case 'revenue': return byClientMoney(src.financials, 'revenue', 'Revenue by client');
+    case 'cost': return byClientMoney(src.financials, 'cost', 'Cost by client');
+    case 'budget': return byClientMoney(src.financials, 'budget_amount', 'Budget by client');
+    case 'billed': return byClientMoney(src.revrec, 'billed', 'Billed by client');
+    case 'recognized': return byClientMoney(src.revrec, 'recognized', 'Recognized by client');
+    case 'billable_hours': {
+      if (!src.financials?.length) return undefined;
+      const m = new Map<string, number>();
+      for (const r of src.financials) m.set(r.client_name || 'No client', (m.get(r.client_name || 'No client') ?? 0) + Number(r.billable_hours ?? 0));
+      const items = [...m.entries()].filter(([, v]) => v !== 0).sort((a, b) => b[1] - a[1]).map(([client, v]) => ({ client, text: `${Math.round(v)}h` }));
+      return items.length ? { heading: 'Billable hours by client', items } : undefined;
+    }
+    case 'margin_pct': {
+      // Margin % by client = (revenue - cost) / revenue, per client.
+      if (!src.financials?.length) return undefined;
+      const m = new Map<string, { rev: number; cost: number }>();
+      for (const r of src.financials) { const k = r.client_name || 'No client'; const e = m.get(k) ?? { rev: 0, cost: 0 }; e.rev += Number(r.revenue ?? 0); e.cost += Number(r.cost ?? 0); m.set(k, e); }
+      const items = [...m.entries()].filter(([, e]) => e.rev > 0).sort((a, b) => ((b[1].rev - b[1].cost) / b[1].rev) - ((a[1].rev - a[1].cost) / a[1].rev))
+        .map(([client, e]) => ({ client, text: `${Math.round(((e.rev - e.cost) / e.rev) * 100)}%` }));
+      return items.length ? { heading: 'Margin % by client', items } : undefined;
+    }
+    case 'at_risk': {
+      // The projects needing attention (critical / blocked / at-risk), by name.
+      const rows = (src.portfolio ?? []).filter((r) => ['critical', 'blocked', 'at-risk'].includes(r.health));
+      if (!rows.length) return undefined;
+      const order: Record<string, number> = { critical: 0, blocked: 1, 'at-risk': 2 };
+      const items = [...rows].sort((a, b) => (order[a.health] ?? 9) - (order[b.health] ?? 9))
+        .map((r) => ({ client: r.project_name, text: healthMeta(r.health).label }));
+      return { heading: 'Projects needing attention', items };
+    }
+    case 'projects': {
+      const rows = src.portfolio ?? [];
+      if (!rows.length) return undefined;
+      return { heading: 'Projects', items: rows.map((r) => ({ client: r.project_name, text: r.client_name || '' })) };
+    }
+    case 'utilization': {
+      const rows = src.resourcing ?? [];
+      if (!rows.length) return undefined;
+      const items = [...rows].sort((a, b) => Number(b.allocated_pct) - Number(a.allocated_pct))
+        .map((r) => ({ client: r.full_name, text: `${r.allocated_pct}%` }));
+      return { heading: 'Allocation by person', items };
+    }
+    case 'on_time': {
+      const rows = (src.ontime ?? []).filter((r) => r.on_time_pct != null);
+      if (!rows.length) return undefined;
+      const items = [...rows].sort((a, b) => Number(a.on_time_pct) - Number(b.on_time_pct))
+        .map((r) => ({ client: r.full_name, text: `${r.on_time_pct}%` }));
+      return { heading: 'On-time % by person', items };
+    }
+    default: return undefined;
+  }
 }
 
 // A short, always-visible line under a scoped tile's value that names what the
@@ -530,11 +644,9 @@ function ScopeLine({ scope }: { scope?: WidgetScope }) {
   if (scope?.taskId) parts.push(nameOf(data?.tasks, scope.taskId, 'title', 'task'));
   if (scope?.userId) parts.push(nameOf(data?.people, scope.userId, 'name', 'resource'));
   const text = parts.join(' · ');
-  return (
-    <Tooltip label={text} side="top" maxWidth={260}>
-      <p className="truncate text-[10px] text-muted-foreground">{text}</p>
-    </Tooltip>
-  );
+  // Plain text (native title only for the truncation case) — no popup tooltip,
+  // so it doesn't compete with the value's rich tooltip on the same tile.
+  return <p className="truncate text-[10px] text-muted-foreground" title={text}>{text}</p>;
 }
 
 // Lists the projects in a given health tier, so hovering "Critical 3" shows

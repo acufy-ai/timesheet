@@ -41,9 +41,9 @@ export const MANAGER_TILES: ManagerTileDef[] = [
   },
   {
     key: 'project-matrix',
-    label: 'Project hours by person',
+    label: 'Project hours by Resource',
     columns: [
-      { key: 'person', label: 'Person', locked: true },
+      { key: 'person', label: 'Resource', locked: true },
       { key: 'projects', label: 'Project columns' },
       { key: 'total', label: 'Total', locked: true },
       { key: 'revenue', label: 'Revenue' },

@@ -406,6 +406,33 @@ class ClientTeamMember(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ClientResourceProject(BaseModel):
+    """One of a client's projects that a resource touches, and how."""
+    project_id: int
+    project_name: str
+    # How the person is connected: on the project roster, and/or assigned tasks.
+    on_roster: bool = False
+    task_count: int = 0  # number of the project's tasks they're assigned to
+    # The billing role this resource plays on THIS project (Developer, Tester,
+    # ...). Drives the client rate card, and can differ per project.
+    role: Optional[str] = None
+
+
+class ClientResource(BaseModel):
+    """A person working on ANY of a client's projects, de-duplicated across
+    projects. Internal resources come from project staffing (roster / task
+    assignees / PMs); client-side people come from their portal access grants.
+    Distinct from the formal client-team assignment (ClientTeamMember)."""
+    user_id: int
+    full_name: str
+    role: str  # the user's org role
+    title: Optional[str] = None
+    is_pm: bool = False  # PM on at least one of the client's projects
+    is_client: bool = False  # a client-side portal user (vs. internal delivery team)
+    project_count: int = 0
+    projects: list[ClientResourceProject] = []
+
+
 # ============================================================================
 # Contract Schemas
 # ============================================================================
@@ -592,6 +619,8 @@ class ProjectBase(BaseModel):
     end_date: Optional[date] = None
     estimated_hours: Optional[Decimal] = None
     budget_amount: Optional[Decimal] = None
+    # Manager-entered work completion (0-100). Drives derived health (pace).
+    percent_complete: Optional[int] = None
     currency: Optional[str] = None
     revenue_recognition: str = "as_billed"  # as_billed | percent_complete
     is_active: bool = True
@@ -634,6 +663,13 @@ class ProjectCreate(ProjectBase):
     def _rate_nonneg(cls, v):
         return _check_nonneg(v, "billable_rate")
 
+    @field_validator("percent_complete")
+    @classmethod
+    def _pct_range(cls, v):
+        if v is not None and not (0 <= v <= 100):
+            raise ValueError("percent_complete must be between 0 and 100")
+        return v
+
     @model_validator(mode="after")
     def _date_order(self):
         _check_date_order(self.start_date, self.end_date)
@@ -651,6 +687,7 @@ class ProjectUpdate(BaseModel):
     end_date: Optional[date] = None
     estimated_hours: Optional[Decimal] = None
     budget_amount: Optional[Decimal] = None
+    percent_complete: Optional[int] = None
     currency: Optional[str] = None
     revenue_recognition: Optional[str] = None
     is_active: Optional[bool] = None
@@ -684,6 +721,13 @@ class ProjectUpdate(BaseModel):
     def _valid_revrec(cls, v):
         if v is not None and v not in ("as_billed", "percent_complete"):
             raise ValueError("revenue_recognition must be 'as_billed' or 'percent_complete'")
+        return v
+
+    @field_validator("percent_complete")
+    @classmethod
+    def _pct_range(cls, v):
+        if v is not None and not (0 <= v <= 100):
+            raise ValueError("percent_complete must be between 0 and 100")
         return v
 
     @field_validator("name")
@@ -1403,6 +1447,8 @@ class ResourceTaskRow(BaseModel):
     client_name: Optional[str] = None
     hours: Decimal = Decimal("0")        # approved hours on this task
     assigned: bool = False               # is the person a TaskAssignee?
+    status: Optional[str] = None         # to_do | in_progress | blocked | done
+    blocked_reason: Optional[str] = None
 
 
 class ResourceProjectRow(BaseModel):
@@ -1440,6 +1486,12 @@ class ResourceDetailResponse(BaseModel):
     capacity_summary: str = ""
     projects: List[ResourceProjectRow] = Field(default_factory=list)
     tasks: List[ResourceTaskRow] = Field(default_factory=list)
+    # Client-side resources aren't billed and carry no forward allocation; the
+    # panel shows task progress instead. `is_client` flips the whole view.
+    is_client: bool = False
+    task_total: int = 0
+    task_done: int = 0
+    progress_pct: int = 0                 # done / total across assigned tasks
 
 
 # ── Dashboard widget scope options (the pickers in the widget config) ─────────
@@ -1489,6 +1541,15 @@ class ResourcingRow(BaseModel):
     allocated_pct: int = 0
     state: str = "ok"  # over | ok | under
     allocations: list[ResourcingAllocRow] = []
+    # Client-side resources (portal users on the caller's projects). These have
+    # no allocation/billing — the row shows task progress instead. `allocated_pct`
+    # / `state` are left at defaults and ignored by the UI when `is_client`.
+    is_client: bool = False
+    role: Optional[str] = None
+    task_total: int = 0
+    task_done: int = 0
+    progress_pct: int = 0
+    project_names: list[str] = []
 
 
 class TeamResourcingResponse(BaseModel):
@@ -1497,6 +1558,7 @@ class TeamResourcingResponse(BaseModel):
     over_allocated: int
     under_utilized: int
     rows: list[ResourcingRow] = []
+    client_count: int = 0
 
 
 # ── Resource allocation (PSA) write/read ─────────────────────────────────────
@@ -1784,6 +1846,12 @@ class ManagerClientsResponse(BaseModel):
 
 
 # ── Employee "My Work" (assigned projects/tasks by client) ──────────────────
+class MyWorkBlockerRef(BaseModel):
+    """A reference to another of the user's tasks that this task waits on."""
+    task_id: int
+    name: str
+
+
 class MyWorkTask(BaseModel):
     task_id: int
     name: str
@@ -1793,6 +1861,14 @@ class MyWorkTask(BaseModel):
     # The caller is assigned to this task, so they can update its status /
     # description from My Work (scoped /tasks/{id}/progress endpoint).
     can_edit: bool = True
+    # Portal-parity fields.
+    due_date: Optional[date] = None
+    blocked_reason: Optional[str] = None
+    # Blocker linkage (from task_dependencies), same semantics as the portal:
+    #   blocking_others: this task blocks another task (holding up other work).
+    #   blocked_by: this task is waiting on another task the user can see, not done.
+    blocking_others: bool = False
+    blocked_by: Optional[MyWorkBlockerRef] = None
 
 
 class MyWorkProject(BaseModel):

@@ -36,7 +36,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { contractsApi, clientPortalApi } from '@/api/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Button, Card, Empty, Input, ListSkeleton, Modal, Toast, TonePill, WorkspaceHeader, RequiredMark, FieldError } from '@/components/ui';
+import { Button, Card, Empty, Input, ListSkeleton, Modal, Pager, Toast, TonePill, WorkspaceHeader, RequiredMark, FieldError } from '@/components/ui';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import type { Tone } from '@/components/ui';
 import { ClientAccessManager } from '@/components/clients/ClientAccessManager';
 import { ImportClientsModal } from '@/components/clients/ImportClientsModal';
@@ -48,6 +49,7 @@ import {
   useAllTasks,
   useClientContacts,
   useClientNotes,
+  useClientResources,
   useClients,
   useClientTeam,
   useContracts,
@@ -81,6 +83,7 @@ import {
 import { useManagerProjectHealth, useSetProjectHealthOverride } from '@/hooks/useDashboard';
 import { healthMeta, MANUAL_HEALTH } from '@/lib/projectHealth';
 import { avatarTone, initials } from '@/lib/avatar';
+import { roleLabel } from '@/lib/roleLabels';
 import { cn } from '@/lib/cn';
 import { staffingPool } from '@/lib/staffing';
 import type {
@@ -95,6 +98,7 @@ import type {
   ClientRoleRateBody,
   ClientStatus,
   ClientTeamMember,
+  ClientResource,
   ContactChannel,
   Contract,
   ContractBody,
@@ -280,7 +284,7 @@ export function ClientsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeClientId = searchParams.get('client') ? Number(searchParams.get('client')) : null;
   const activeTab = (searchParams.get('tab') as
-    | 'projects' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access' | null) ?? 'projects';
+    | 'projects' | 'resources' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access' | null) ?? 'projects';
   // Single writer for the client/tab query params. React Router's
   // setSearchParams does NOT chain functional updates the way useState does, so
   // two back-to-back calls (select client + reset tab) race and the second wins
@@ -300,12 +304,11 @@ export function ClientsPage() {
     setSearchParams(next, { replace: true });
   };
   const setActiveClientId = (id: number | null) => updateSelection({ client: id });
-  const setActiveTab = (tab: 'projects' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access') =>
+  const setActiveTab = (tab: 'projects' | 'resources' | 'contacts' | 'contracts' | 'roles' | 'notes' | 'access') =>
     updateSelection({ tab });
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
   const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'internal' | 'external'>('all');
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
@@ -415,6 +418,8 @@ export function ClientsPage() {
   const activeClient = clients.find((c) => c.id === activeClientId) ?? null;
   const teamQ = useClientTeam(activeClient?.id ?? null);
   const team = (teamQ.data ?? []) as ClientTeamMember[];
+  const resourcesQ = useClientResources(activeClient?.id ?? null);
+  const resources = (resourcesQ.data ?? []) as ClientResource[];
   const contractsQ = useContracts(activeClient?.id ?? null);
   const contracts = (contractsQ.data ?? []) as Contract[];
   const contactsQ = useClientContacts(activeClient?.id ?? null);
@@ -539,8 +544,7 @@ export function ClientsPage() {
               (t.assignee_ids ?? []).some((id) => nameOf(id).toLowerCase().includes(q)),
           ),
       );
-    const matchesType = typeFilter === 'all' || c.client_type === typeFilter;
-    return matchesSearch && matchesType;
+    return matchesSearch;
   });
 
   const totalProjects = projects.length;
@@ -587,18 +591,6 @@ export function ClientsPage() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input className="pl-9" placeholder="Search clients" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <div className="mt-2 flex items-center gap-1.5">
-              {(['all', 'internal', 'external'] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setTypeFilter(t)}
-                  className={cn('pill text-xs capitalize', typeFilter === t ? 'pill-active' : 'pill-idle bg-muted')}
-                >
-                  {t === 'all' ? 'All' : t}
-                </button>
-              ))}
-            </div>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -627,7 +619,7 @@ export function ClientsPage() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-semibold text-foreground">{c.name}</span>
                       <span className="block truncate text-xs text-muted-foreground">
-                        {projCount} {projCount === 1 ? 'project' : 'projects'} · {c.client_type === 'internal' ? 'Internal' : 'External'}
+                        {projCount} {projCount === 1 ? 'project' : 'projects'}
                       </span>
                     </span>
                     <TonePill tone={CLIENT_STATUS_TONE[status]}>{CLIENT_STATUS_LABEL[status]}</TonePill>
@@ -653,6 +645,7 @@ export function ClientsPage() {
               {/* Tabs */}
               <div className="flex flex-wrap items-center gap-1 border-b border-border">
                 <TabButton active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} Icon={Briefcase} label="Projects" count={(projectsByClient.get(activeClient.id) ?? []).length} />
+                <TabButton active={activeTab === 'resources'} onClick={() => setActiveTab('resources')} Icon={Users} label="Resources" count={resources.length} />
                 <TabButton active={activeTab === 'contacts'} onClick={() => setActiveTab('contacts')} Icon={Contact} label="Contacts" count={clientContacts.length} />
                 <TabButton active={activeTab === 'contracts'} onClick={() => setActiveTab('contracts')} Icon={FileText} label="Contracts" count={contracts.length} />
                 <TabButton active={activeTab === 'roles'} onClick={() => setActiveTab('roles')} Icon={Tag} label="Roles" count={roleRates.length} />
@@ -679,6 +672,8 @@ export function ClientsPage() {
                   onDeleteTask={(t) => void removeTask(t)}
                   onAddNote={openNoteFor}
                 />
+              ) : activeTab === 'resources' ? (
+                <ResourcesTab resources={resources} loading={resourcesQ.isLoading} />
               ) : activeTab === 'contacts' ? (
                 <ContactsTab
                   clientId={activeClient.id}
@@ -813,7 +808,6 @@ export function ClientsPage() {
 // ════════════════════════════════════════════════════════════════════════
 
 function ClientHeaderCard({ client, onEdit, onDelete }: { client: Client; onEdit: () => void; onDelete: () => void }) {
-  const internal = client.client_type === 'internal';
   const status: ClientStatus = client.status ?? 'active';
   return (
     <Card className="flex items-start gap-4 p-5">
@@ -824,7 +818,6 @@ function ClientHeaderCard({ client, onEdit, onDelete }: { client: Client; onEdit
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="truncate text-xl font-bold text-foreground">{client.name}</h2>
           <TonePill tone={CLIENT_STATUS_TONE[status]}>{CLIENT_STATUS_LABEL[status]}</TonePill>
-          <TonePill tone={internal ? 'success' : 'neutral'}>{internal ? 'Internal' : 'External'}</TonePill>
         </div>
         {client.company ? <p className="mt-0.5 truncate text-sm text-muted-foreground">{client.company}</p> : null}
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-muted-foreground">
@@ -878,6 +871,120 @@ function TabButton({ active, onClick, Icon, label, count }: { active: boolean; o
         <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-bold', active ? 'bg-primary/12 text-primary' : 'bg-muted text-muted-foreground')}>{count}</span>
       ) : null}
     </button>
+  );
+}
+
+// Everyone working on ANY of the client's projects (project roster / task
+// assignees for internal people; portal grants for external/client-side people),
+// de-duplicated. One flat list with an All/Internal/External filter + pagination.
+const RESOURCE_PAGE_SIZE = 10;
+type ResourceFilter = 'all' | 'internal' | 'external';
+
+function ResourcesTab({ resources, loading }: { resources: ClientResource[]; loading: boolean }) {
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<ResourceFilter>('all');
+  const q = search.trim().toLowerCase();
+  const filtered = useMemo(() => resources.filter((r) => {
+    if (filter === 'internal' && r.is_client) return false;
+    if (filter === 'external' && !r.is_client) return false;
+    if (!q) return true;
+    return r.full_name.toLowerCase().includes(q)
+      || (r.title ?? '').toLowerCase().includes(q)
+      || r.projects.some((p) => p.project_name.toLowerCase().includes(q));
+  }), [resources, filter, q]);
+
+  const { pageItems, page, pages, total, start, end, setPage } = useClientPagination(filtered, RESOURCE_PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [search, filter]);
+
+  if (loading) return <ListSkeleton rows={5} />;
+  if (!resources.length) {
+    return <Empty Icon={Users} title="No resources yet"
+      description="Nobody is staffed on this client's projects yet. Add people to a project's team or assign them tasks and they'll show up here." />;
+  }
+  const counts = {
+    all: resources.length,
+    internal: resources.filter((r) => !r.is_client).length,
+    external: resources.filter((r) => r.is_client).length,
+  };
+  const FILTERS: { key: ResourceFilter; label: string }[] = [
+    { key: 'all', label: 'All' }, { key: 'internal', label: 'Internal' }, { key: 'external', label: 'External' },
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex rounded-full border border-border bg-card p-0.5 text-xs">
+          {FILTERS.map((f) => (
+            <button key={f.key} type="button" onClick={() => setFilter(f.key)}
+              className={cn('rounded-full px-2.5 py-1 font-medium transition-colors',
+                filter === f.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+              {f.label} <span className={cn('tabular-nums', filter === f.key ? 'opacity-80' : 'opacity-60')}>{counts[f.key]}</span>
+            </button>
+          ))}
+        </div>
+        <div className="relative w-56">
+          <Input className="h-8 pl-3 text-xs" placeholder="Search people or projects…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="py-6 text-center text-[13px] text-muted-foreground">No one matches this filter.</p>
+      ) : (
+        <>
+          <div className="overflow-hidden rounded-xl border border-border">
+            {pageItems.map((r, i) => (
+              <ResourceRow key={r.user_id} r={r} showDivider={i > 0} />
+            ))}
+          </div>
+          {pages > 1 ? (
+            <Pager page={page} pages={pages} total={total} start={start} end={end} onPage={setPage} unit="people" />
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+// A compact one-line resource row. Click to expand the project detail.
+function ResourceRow({ r, showDivider }: { r: ClientResource; showDivider: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={cn(showDivider && 'border-t border-border')}>
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-3.5 py-2 text-left hover:bg-foreground/[0.03]">
+        <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+        <span className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[10px] font-semibold', avatarTone(r.full_name))}>
+          {initials(r.full_name)}
+        </span>
+        <span className="truncate text-[13.5px] font-medium text-foreground">{r.full_name}</span>
+        <TonePill tone={r.is_client ? 'info' : 'neutral'}>{roleLabel(r.role)}</TonePill>
+        {r.is_pm ? <TonePill tone="brand">PM</TonePill> : null}
+        {r.title ? <span className="hidden truncate text-[12px] text-muted-foreground sm:inline">{r.title}</span> : null}
+        <span className="ml-auto shrink-0 text-[12px] tabular-nums text-muted-foreground">
+          {r.project_count} {r.project_count === 1 ? 'project' : 'projects'}
+        </span>
+      </button>
+      {open ? (
+        <div className="flex flex-wrap gap-1.5 px-3.5 pb-2.5 pl-[3.75rem]">
+          {r.projects.map((p) => {
+            // Client-side people have "access" to a project; internal people are
+            // just on it (no label needed). Task count reads "N Tasks".
+            const access = r.is_client && p.on_roster ? 'access' : '';
+            const tasks = p.task_count ? `${p.task_count} ${p.task_count === 1 ? 'Task' : 'Tasks'}` : '';
+            const meta = [access, tasks].filter(Boolean).join(' · ');
+            return (
+              <span key={p.project_id}
+                title={`${p.role ? `Billing as ${p.role}` : ''}${p.role && meta ? ' · ' : ''}${meta}`}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-foreground">
+                {p.project_name}
+                {p.role ? (
+                  <span className="rounded-full bg-primary/12 px-1.5 py-px text-[9px] font-semibold text-primary">{p.role}</span>
+                ) : null}
+                {meta ? <span className="text-[10px] text-muted-foreground">{meta}</span> : null}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1061,6 +1168,10 @@ function ClientHealthSelect({ project }: { project: FullProject }) {
     </span>
   );
 }
+// Client-facing health is temporarily hidden from the project row (see
+// ProjectCard). Keep the component alive without rendering it, so re-enabling
+// is a one-line change. `void` marks it intentionally unused for the compiler.
+void ClientHealthSelect;
 
 function ProjectCard({
   project,
@@ -1165,7 +1276,9 @@ function ProjectCard({
         {health ? (
           <ProjectHealthSelect projectId={project.id} health={health.health} isManual={health.isManual} />
         ) : null}
-        <ClientHealthSelect project={project} />
+        {/* Client-facing health control temporarily disabled in the UI (kept in
+            the codebase for when the client portal health surface is revisited). */}
+        {/* <ClientHealthSelect project={project} /> */}
         <TonePill tone={PROJECT_STATUS_TONE[status]}>{PROJECT_STATUS_LABEL[status]}</TonePill>
         <div className="flex shrink-0 items-center gap-0.5">
           <IconButton label="Add note to this project" onClick={() => onAddNote()} Icon={StickyNote} sm />

@@ -306,7 +306,14 @@ const HEALTH_FILTER_ORDER: ProjectHealth[] = [
   'critical', 'blocked', 'at-risk', 'on-track', 'excellent', 'not-started', 'not-set',
 ];
 
-type ClientGroup = { clientId: number | null; clientName: string; projects: ProjectHealthRow[] };
+type ClientGroup = {
+  clientId: number | null;
+  clientName: string;
+  projects: ProjectHealthRow[];
+  totalHours: number;              // sum of the group's logged hours
+  worstHealth: string;             // most-urgent health tier in the group
+  worstCount: number;              // how many projects are in that worst tier
+};
 
 // Financials tile: summary tiles + a per-project table. Paginated so the widget
 // stays a fixed height regardless of how many projects the manager runs.
@@ -387,20 +394,16 @@ function FinancialsWidget({
                 {showCol('budget_used') ? (
                   <td className="px-4 py-3">
                     {row.budget_used_pct != null ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="tabular-nums text-foreground">{row.budget_used_pct}%</span>
-                        <span className="text-[11px] text-muted-foreground">of {fmtMoney(row.budget_amount ?? 0, row.currency)}</span>
-                      </span>
+                      <BurnBar pct={row.budget_used_pct} used={Number(row.revenue)}
+                        total={Number(row.budget_amount ?? 0)} currency={row.currency} />
                     ) : <span className="text-muted-foreground">N/A</span>}
                   </td>
                 ) : null}
                 {showCol('contract_used') ? (
                   <td className="px-4 py-3">
                     {row.contract_used_pct != null ? (
-                      <span className="inline-flex items-center gap-1.5" title={row.contract_title ?? undefined}>
-                        <span className="tabular-nums text-foreground">{row.contract_used_pct}%</span>
-                        <span className="text-[11px] text-muted-foreground">of {fmtMoney(row.contract_value ?? 0, row.currency)}</span>
-                      </span>
+                      <BurnBar pct={row.contract_used_pct} used={Number(row.revenue)}
+                        total={Number(row.contract_value ?? 0)} currency={row.currency} title={row.contract_title ?? undefined} />
                     ) : <span className="text-muted-foreground">—</span>}
                   </td>
                 ) : null}
@@ -416,6 +419,32 @@ function FinancialsWidget({
   );
 }
 
+// A burn progress bar for the Financials "Contract billed" cell: "$used of
+// $total" above, the % (bold; red "over" when >100%) on the right, and a bar
+// that fills to the % (capped at 100 visually) — green under, red when over.
+function BurnBar({ pct, used, total, currency, title }: {
+  pct: number; used: number; total: number; currency?: string | null; title?: string;
+}) {
+  const over = pct > 100;
+  const cur = currency ?? undefined;
+  return (
+    <div className="min-w-[9rem]" title={title}>
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] text-muted-foreground">
+          {fmtMoney(used, cur)} <span className="opacity-70">of {fmtMoney(total, cur)}</span>
+        </span>
+        <span className={cn('shrink-0 text-[13px] font-bold tabular-nums', over ? 'text-rose-600 dark:text-rose-400' : 'text-foreground')}>
+          {pct}%{over ? <span className="ml-1 text-[11px] font-medium">over</span> : null}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className={cn('h-full rounded-full', over ? 'bg-rose-500' : 'bg-emerald-600')}
+          style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function ProjectsWidget({
   rows, loading, showCol, onNavigate,
 }: {
@@ -428,6 +457,9 @@ function ProjectsWidget({
   const [healthFilter, setHealthFilter] = useState<ProjectHealth | null>(null);
   const [page, setPage] = useState(1);
   const [healthConfigOpen, setHealthConfigOpen] = useState(false);
+  // Group the list by client (bands per client). On by default so projects are
+  // organized under their client; toggle off for a flat list.
+  const [groupByClient, setGroupByClient] = useState(true);
 
   // 1) Search any project/client metadata.
   const q = search.trim().toLowerCase();
@@ -441,12 +473,12 @@ function ProjectsWidget({
     ].some((f) => f.toLowerCase().includes(q)));
   }, [rows, q]);
 
-  // The Client column is the source of truth for which client a project belongs
-  // to. When it's shown, grouping by client would just repeat that value in a
-  // band above each group — redundant and confusing under the Project header.
-  // So: client column ON  -> flat project list (Client column carries it).
-  //     client column OFF -> grouped-by-client bands (so context isn't lost).
-  const grouped = !showCol('client');
+  // Group by client when the toggle is on (default). In grouped mode the Client
+  // column is redundant (the band header carries the client), so it's dropped;
+  // in flat mode the Client column (if enabled) carries the client per row.
+  const grouped = groupByClient;
+  // Whether to render the Client column: only in flat mode, and only if enabled.
+  const showClientCol = !grouped && showCol('client');
 
   // 2) Health filter (a real filter, not a reorder): keep only projects with the
   //    selected health, across all clients.
@@ -469,11 +501,25 @@ function ProjectsWidget({
     for (const r of visible) {
       const key = r.client_id ?? null;
       let g = byClient.get(key);
-      if (!g) { g = { clientId: key, clientName: r.client_name || 'No client', projects: [] }; byClient.set(key, g); }
+      if (!g) {
+        g = { clientId: key, clientName: r.client_name || 'No client', projects: [], totalHours: 0, worstHealth: 'not-set', worstCount: 0 };
+        byClient.set(key, g);
+      }
       g.projects.push(r);
     }
     const list = [...byClient.values()];
-    list.forEach((g) => g.projects.sort((a, b) => a.project_name.localeCompare(b.project_name)));
+    list.forEach((g) => {
+      g.projects.sort((a, b) => a.project_name.localeCompare(b.project_name));
+      // Per-client rollup: total logged hours + the most-urgent health tier and
+      // how many projects are in it (so the band reads "2 critical projects").
+      g.totalHours = g.projects.reduce((s, p) => s + Number(p.hours_this_week ?? 0), 0);
+      let worstRank = 99;
+      for (const p of g.projects) {
+        const rank = healthMeta(p.health).rank;
+        if (rank < worstRank) { worstRank = rank; g.worstHealth = p.health; }
+      }
+      g.worstCount = g.projects.filter((p) => p.health === g.worstHealth).length;
+    });
     list.sort((a, b) => a.clientName.localeCompare(b.clientName));
     return list;
   }, [visible]);
@@ -487,8 +533,6 @@ function ProjectsWidget({
   const start = (safePage - 1) * pageSize;
   const pageGroups = groups.slice(start, start + pageSize);
   const pageRows = flat.slice(start, start + pageSize);
-
-  const colCount = 2 + (showCol('client') ? 1 : 0) + (showCol('hours_this_week') ? 1 : 0) + (showCol('budget') ? 1 : 0);
 
   return (
     <Card>
@@ -504,6 +548,15 @@ function ProjectsWidget({
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             />
           </div>
+          <button
+            type="button"
+            onClick={() => { setGroupByClient((v) => !v); setPage(1); }}
+            aria-pressed={groupByClient}
+            className={cn('inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors',
+              groupByClient ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground hover:text-foreground')}
+          >
+            <Building2 className="h-3.5 w-3.5" /> Group by client
+          </button>
           <button
             type="button"
             onClick={() => setHealthConfigOpen(true)}
@@ -542,8 +595,8 @@ function ProjectsWidget({
                 {/* Shared header treatment: subtle themed tint + divider so the
                     header reads distinctly from the data rows across all themes. */}
                 <tr className="table-header-row">
-                  <th className="table-header-cell">Project</th>
-                  {showCol('client') ? <th className="table-header-cell">Client</th> : null}
+                  <th className="table-header-cell">{grouped ? 'Client / Project' : 'Project'}</th>
+                  {showClientCol ? <th className="table-header-cell">Client</th> : null}
                   {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged hours" /></th> : null}
                   {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Billed %" infoKey="budget burn" /></th> : null}
                   <th className="table-header-cell">
@@ -558,23 +611,34 @@ function ProjectsWidget({
                 {grouped
                   ? pageGroups.map((g) => (
                       <Fragment key={g.clientId ?? 'none'}>
-                        {/* Client group header (only when the Client column is hidden). */}
-                        <tr className="border-b border-border bg-foreground/[0.02]">
-                          <td colSpan={colCount} className="px-4 py-2">
+                        {/* Client band: name + project count, with a per-client
+                            rollup (total logged hours + a health summary) aligned
+                            to the columns so the band summarises the group. */}
+                        <tr className="border-l-2 border-l-primary/50 bg-foreground/[0.03]">
+                          <td className="border-b border-border px-4 py-2.5">
                             <span className="inline-flex items-center gap-2">
-                              <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                              <Building2 className="h-4 w-4 text-primary/70" />
                               {g.clientId != null ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onNavigate(`/client-management?client=${g.clientId}`)}
-                                  className="text-sm font-semibold text-foreground underline-offset-2 hover:text-primary hover:underline"
-                                >
+                                <button type="button" onClick={() => onNavigate(`/client-management?client=${g.clientId}`)}
+                                  className="text-sm font-bold text-foreground underline-offset-2 hover:text-primary hover:underline">
                                   {g.clientName}
                                 </button>
                               ) : (
-                                <span className="text-sm font-semibold text-foreground">{g.clientName}</span>
+                                <span className="text-sm font-bold text-foreground">{g.clientName}</span>
                               )}
-                              <span className="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground">{g.projects.length}</span>
+                              <span className="rounded-full bg-muted px-1.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{g.projects.length}</span>
+                            </span>
+                          </td>
+                          {showCol('hours_this_week') ? (
+                            <td className="border-b border-border px-4 py-2.5 tabular-nums text-[12px] text-muted-foreground">
+                              {Math.round(g.totalHours)}h total
+                            </td>
+                          ) : null}
+                          {showCol('budget') ? <td className="border-b border-border" /> : null}
+                          <td className="border-b border-border px-4 py-2.5" colSpan={showCol('contract_used') ? 2 : 1}>
+                            <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                              <span className={cn('h-1.5 w-1.5 rounded-full', healthMeta(g.worstHealth).dot)} />
+                              {g.worstCount} {healthMeta(g.worstHealth).label.toLowerCase()} {g.worstCount === 1 ? 'project' : 'projects'}
                             </span>
                           </td>
                         </tr>
@@ -643,7 +707,9 @@ function ProjectRow({
           </button>
         ) : <span>{row.project_name}</span>}
       </td>
-      {showCol('client') ? (
+      {/* In grouped mode (indent) the client is shown by the band header, so the
+          per-row client cell is dropped. */}
+      {showCol('client') && !indent ? (
         <td className="px-4 py-3 text-muted-foreground">
           {openClient ? (
             <button type="button" onClick={(e) => { e.stopPropagation(); openClient(); }}
@@ -769,7 +835,7 @@ function ProjectMatrixCard({ data, columns = [] }: { data: TeamProjectMatrix; co
   return (
     <Card>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <p className="text-sm font-semibold text-foreground">Project hours by person</p>
+        <p className="text-sm font-semibold text-foreground">Project hours by Resource</p>
         <div className="flex items-center gap-3">
           <p className="hidden text-xs text-muted-foreground sm:block">hours: last {data.days_back}d · revenue: all-time · approved</p>
           <button

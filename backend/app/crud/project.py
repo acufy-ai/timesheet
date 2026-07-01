@@ -167,20 +167,29 @@ async def get_project_resource_ids(db: AsyncSession, project_id: int) -> list[in
     return list(result.scalars().all())
 
 
-async def set_project_roster(db: AsyncSession, project_id: int, user_ids: list[int]) -> None:
-    """Replace a project's roster (user_project_access) with user_ids."""
+async def set_project_roster(
+    db: AsyncSession, project_id: int, user_ids: list[int],
+    roles: Optional[dict[int, Optional[str]]] = None,
+) -> None:
+    """Replace a project's roster (user_project_access) with user_ids. When
+    ``roles`` is given, it sets each resource's per-project billing role (the
+    role they play on THIS project, which drives the client rate card). A user
+    absent from ``roles`` keeps their current role; pass None to clear it."""
     target = set(user_ids)
+    roles = roles or {}
     rows = (
         await db.execute(
             select(UserProjectAccess).where(UserProjectAccess.project_id == project_id)
         )
     ).scalars().all()
-    existing = {r.user_id for r in rows}
+    existing = {r.user_id: r for r in rows}
     for row in rows:
         if row.user_id not in target:
             await db.delete(row)
-    for uid in target - existing:
-        db.add(UserProjectAccess(user_id=uid, project_id=project_id))
+        elif row.user_id in roles:
+            row.role = (roles[row.user_id] or None)
+    for uid in target - set(existing):
+        db.add(UserProjectAccess(user_id=uid, project_id=project_id, role=roles.get(uid) or None))
     await db.commit()
 
 

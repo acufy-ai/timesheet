@@ -187,8 +187,10 @@ export function ProjectCard({
             <span className="text-[15px] font-semibold">{project.name}</span>
             {project.code ? <span className="rounded-full bg-muted px-2 text-[10px] font-semibold text-muted-foreground">{project.code}</span> : null}
             {project.status ? <TonePill tone={STATUS_TONE[project.status] ?? 'neutral'}>{fmt(project.status)}</TonePill> : null}
-            {/* Client-facing health — rendered only when the team set it. */}
-            {project.client_health ? <ClientHealthPill health={project.client_health} note={project.client_health_note} /> : null}
+            {/* Client-facing health is temporarily disabled across the app (the
+                team can't set it right now), so the portal never shows a health
+                pill. Re-enable alongside the ClientHealthSelect control. */}
+            {/* {project.client_health ? <ClientHealthPill health={project.client_health} note={project.client_health_note} /> : null} */}
           </span>
           {project.client_name ? <span className="block text-[12px] text-muted-foreground">{project.client_name}</span> : null}
         </span>
@@ -532,6 +534,8 @@ function ClientHealthPill({ health, note }: { health: string; note?: string | nu
     </span>
   );
 }
+// Kept but not rendered while client-facing health is disabled app-wide.
+void ClientHealthPill;
 
 // Progress bar + meta (target date, contact, attention) shown atop an open
 // project, answering "where does my project stand?".

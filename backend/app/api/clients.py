@@ -5,7 +5,10 @@ from pydantic import BaseModel as PydanticBaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.schemas import ClientResponse, ClientCreate, ClientUpdate, ClientTeamMember
+from app.schemas import (
+    ClientResponse, ClientCreate, ClientUpdate, ClientTeamMember,
+    ClientResource, ClientResourceProject,
+)
 from app.crud.client import get_client_by_id, get_client_by_name, create_client, update_client, delete_client, list_clients
 from app.crud.time_entry import count_protected_entries_for_client
 from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review
@@ -626,6 +629,138 @@ async def get_client_team(
         )
         for a, u in rows
     ]
+
+
+@router.get("/{client_id}/resources", response_model=list[ClientResource])
+async def get_client_resources(
+    client_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> list:
+    """Every internal person working on ANY of this client's projects, derived
+    from actual staffing (project roster + task assignees + PMs), de-duplicated
+    across projects. Distinct from the formal client-team assignment.
+
+    Each resource carries the list of the client's projects they touch and how
+    (on the roster, and/or how many of the project's tasks they're assigned to)."""
+    from app.models.assignments import UserProjectAccess, TaskAssignee, ProjectManager
+    from app.models.project import Project
+    from app.models.task import Task
+
+    client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await assert_client_access(db, current_user, client_id)
+
+    # The client's projects.
+    proj_rows = (await db.execute(
+        select(Project.id, Project.name).where(
+            Project.client_id == client_id, Project.tenant_id == current_user.tenant_id)
+    )).all()
+    project_name = {pid: name for pid, name in proj_rows}
+    project_ids = list(project_name.keys())
+    if not project_ids:
+        return []
+
+    # Accumulator: user_id -> {project_id -> {on_roster, task_count}}, plus pm flag.
+    from collections import defaultdict
+    per_user: dict[int, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {"on_roster": False, "task_count": 0, "role": None}))
+    pm_user_ids: set[int] = set()
+
+    # Project roster (UserProjectAccess) — carry the per-project billing role.
+    for uid, pid, prole in (await db.execute(
+        select(UserProjectAccess.user_id, UserProjectAccess.project_id, UserProjectAccess.role)
+        .where(UserProjectAccess.project_id.in_(project_ids))
+    )).all():
+        per_user[uid][pid]["on_roster"] = True
+        per_user[uid][pid]["role"] = prole
+
+    # PMs of the client's projects.
+    for uid, pid in (await db.execute(
+        select(ProjectManager.user_id, ProjectManager.project_id)
+        .where(ProjectManager.project_id.in_(project_ids))
+    )).all():
+        per_user[uid][pid]["on_roster"] = True
+        pm_user_ids.add(uid)
+
+    # Task assignees on the client's projects (join task -> project).
+    for uid, pid in (await db.execute(
+        select(TaskAssignee.user_id, Task.project_id)
+        .join(Task, Task.id == TaskAssignee.task_id)
+        .where(Task.project_id.in_(project_ids))
+    )).all():
+        per_user[uid][pid]["task_count"] += 1
+
+    # ── Client-side people: portal users with a grant covering this client's
+    # projects (grant -> project, or grant -> task -> the client's project). ──
+    from app.models.client_access_grant import ClientAccessGrant
+    per_client_user: dict[int, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {"on_roster": False, "task_count": 0, "role": None}))
+    grants = (await db.execute(
+        select(ClientAccessGrant.user_id, ClientAccessGrant.project_id, ClientAccessGrant.task_id)
+        .where(ClientAccessGrant.tenant_id == current_user.tenant_id)
+    )).all()
+    # Resolve task grants to their project (only tasks within this client's projects).
+    grant_task_ids = [tid for _, _, tid in grants if tid is not None]
+    task_project: dict[int, int] = {}
+    if grant_task_ids:
+        task_project = {tid: pid for tid, pid in (await db.execute(
+            select(Task.id, Task.project_id).where(Task.id.in_(grant_task_ids), Task.project_id.in_(project_ids))
+        )).all()}
+    project_id_set = set(project_ids)
+    for guid, gpid, gtid in grants:
+        if gpid is not None and gpid in project_id_set:
+            per_client_user[guid][gpid]["on_roster"] = True   # project-level grant
+        elif gtid is not None and gtid in task_project:
+            per_client_user[guid][task_project[gtid]]["task_count"] += 1
+
+    # Resolve all users (internal for per_user, client-side for per_client_user).
+    all_uids = set(per_user.keys()) | set(per_client_user.keys())
+    if not all_uids:
+        return []
+    users = {u.id: u for u in (await db.execute(
+        select(User).where(User.id.in_(list(all_uids)))
+    )).scalars().all()}
+
+    def _rows(projs: dict) -> list[ClientResourceProject]:
+        rows = [
+            ClientResourceProject(
+                project_id=pid, project_name=project_name.get(pid, f"Project {pid}"),
+                on_roster=info["on_roster"], task_count=info["task_count"],
+                role=info.get("role"),
+            )
+            for pid, info in projs.items()
+        ]
+        rows.sort(key=lambda r: r.project_name.lower())
+        return rows
+
+    out: list[ClientResource] = []
+    # Internal delivery team (exclude external — they surface as client-side below).
+    for uid, projs in per_user.items():
+        u = users.get(uid)
+        if u is None or u.is_external:
+            continue
+        rows = _rows(projs)
+        out.append(ClientResource(
+            user_id=uid, full_name=u.full_name,
+            role=u.role.value if hasattr(u.role, "value") else str(u.role),
+            title=u.title, is_pm=uid in pm_user_ids, is_client=False,
+            project_count=len(rows), projects=rows,
+        ))
+    # Client-side portal users.
+    for uid, projs in per_client_user.items():
+        u = users.get(uid)
+        if u is None:
+            continue
+        rows = _rows(projs)
+        out.append(ClientResource(
+            user_id=uid, full_name=u.full_name,
+            role=u.role.value if hasattr(u.role, "value") else str(u.role),
+            title=u.title, is_pm=False, is_client=True,
+            project_count=len(rows), projects=rows,
+        ))
+    # Internal first, then client-side; alphabetical within each.
+    out.sort(key=lambda r: (r.is_client, r.full_name.lower()))
+    return out
 
 
 async def _write_client_roster(

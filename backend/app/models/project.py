@@ -42,6 +42,14 @@ class Project(Base, TimestampMixin):
         Numeric(10, 2), nullable=True)
     budget_amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(12, 2), nullable=True)
+    # Manager-entered work completion, 0-100. This is a hand-entered INPUT (one
+    # of the four the PM owns: budgeted hours, duration, hours logged, % done),
+    # NOT derived. Health is derived FROM it (schedule pace = %complete / %time
+    # elapsed; budget pace = %complete / %hours burned). When NULL, health falls
+    # back to the task-completion ratio (done / total tasks) so it never lies
+    # about progress the way dollar-burn-only did.
+    percent_complete: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True)
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     # PSA revenue-recognition method: how recognized revenue is computed.
     #   as_billed        = approved billable hours x rate (T&M; the default).

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Briefcase, Check, ChevronRight, Folder, Loader2, Pencil, StickyNote, X } from 'lucide-react';
+import { AlertTriangle, Briefcase, Check, ChevronRight, Folder, Loader2, Pencil, StickyNote, X } from 'lucide-react';
 
 import { Card, Empty, TonePill } from '@/components/ui';
 import { NoteModal, type NoteTarget } from '@/components/notes/NoteModal';
@@ -16,9 +16,24 @@ const STATUS_TONE: Record<string, 'success' | 'brand' | 'info' | 'neutral' | 'wa
 const PRIORITY_TONE: Record<string, 'neutral' | 'warning' | 'danger'> = {
   low: 'neutral', medium: 'warning', high: 'danger',
 };
-const TASK_STATUSES = ['to_do', 'in_progress', 'done'] as const;
+const TASK_STATUSES = ['to_do', 'in_progress', 'blocked', 'done'] as const;
 const fmt = (s?: string | null) => (s ? s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '');
 const num = (v: string | number) => Math.round(Number(v));
+
+// Due-date badge: overdue (red) / due soon ≤3d (amber) / future (muted). A done
+// task shows no urgency. Mirrors the client portal.
+function DueBadge({ due, done }: { due: string; done?: boolean }) {
+  const d = new Date(due + 'T00:00:00');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+  const label = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  let cls = 'bg-muted text-muted-foreground'; let text = `Due ${label}`;
+  if (!done) {
+    if (days < 0) { cls = 'bg-rose-500/15 text-rose-600 dark:text-rose-400'; text = `Overdue · ${label}`; }
+    else if (days <= 3) { cls = 'bg-amber-500/15 text-amber-600 dark:text-amber-400'; text = days === 0 ? 'Due today' : `Due ${label}`; }
+  }
+  return <span className={cn('inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold', cls)}>{text}</span>;
+}
 
 // An assignee's task row in My Work: status is an inline dropdown and the
 // description is editable (scoped /tasks/{id}/progress). Read-only fallback if
@@ -44,11 +59,30 @@ function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (ton
       },
     );
   };
+  const done = task.status === 'done';
+  const toggleDone = () => { if (canEdit) saveStatus(done ? 'to_do' : 'done'); };
 
   return (
     <div className="rounded-md px-2 py-1.5 hover:bg-primary/[0.04]">
       <div className="flex items-center justify-between gap-2">
-        <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{task.name}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          {/* Completion checkbox: check = done, uncheck = to_do. */}
+          <button type="button" onClick={toggleDone} disabled={!canEdit || update.isPending}
+            title={canEdit ? (done ? 'Mark as not done' : 'Mark as done') : (done ? 'Completed' : 'Not done')}
+            className={cn('grid h-4 w-4 shrink-0 place-items-center rounded border-[1.5px] transition-colors',
+              done ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-border text-transparent',
+              canEdit ? 'cursor-pointer hover:border-emerald-500/60' : 'cursor-default opacity-70')}>
+            <Check className="h-3 w-3" />
+          </button>
+          <span className={cn('truncate text-[13px] text-foreground', done && 'text-muted-foreground line-through')}>{task.name}</span>
+          {task.due_date ? <DueBadge due={task.due_date} done={done} /> : null}
+          {task.blocking_others && !done ? (
+            <span title="Other work is waiting on this task"
+              className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-rose-600 dark:text-rose-400">
+              <AlertTriangle className="h-2.5 w-2.5" /> Blocking
+            </span>
+          ) : null}
+        </span>
         <span className="flex shrink-0 items-center gap-1.5">
           {task.priority ? <TonePill tone={PRIORITY_TONE[task.priority] ?? 'neutral'}>{fmt(task.priority)}</TonePill> : null}
           {canEdit ? (
@@ -121,6 +155,15 @@ function TaskRow({ task, onFlash, onAddNote }: { task: MyWorkTask; onFlash: (ton
         >
           Add a description
         </button>
+      ) : null}
+      {/* Blocked reason (when status = blocked) and blocker linkage. */}
+      {task.status === 'blocked' && task.blocked_reason ? (
+        <p className="mt-1 text-[11.5px] text-rose-600 dark:text-rose-400">Blocked: {task.blocked_reason}</p>
+      ) : null}
+      {task.blocked_by ? (
+        <p className="mt-1 text-[11.5px] text-amber-700 dark:text-amber-400">
+          Waiting on task: <span className="font-semibold">{task.blocked_by.name}</span>
+        </p>
       ) : null}
     </div>
   );
@@ -283,20 +326,45 @@ export function MyWorkPage() {
                         <div className="border-t border-border bg-muted/30 px-4 py-3">
                           {p.tasks.length === 0 ? (
                             <p className="py-1 text-[12.5px] text-muted-foreground">No specific tasks assigned — you have project-level access.</p>
-                          ) : (
-                            <>
-                              <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                                <span>Tasks in {p.project_name}</span>
-                                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">{p.tasks.length}</span>
+                          ) : (() => {
+                            // "Needs your attention" = editable, non-done tasks
+                            // sorted overdue→soonest (no due date last). The rest
+                            // go under "All tasks".
+                            const attention = p.tasks
+                              .filter((t) => t.can_edit !== false && t.status !== 'done')
+                              .sort((a, b) => (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999'));
+                            const attentionIds = new Set(attention.map((t) => t.task_id));
+                            const rest = p.tasks.filter((t) => !attentionIds.has(t.task_id));
+                            const rowFor = (t: MyWorkTask) => (
+                              <TaskRow key={t.task_id} task={t} onFlash={flashAndFade} onAddNote={() => addNote(activeClient.client_id, p, t)} />
+                            );
+                            return (
+                              <div className="space-y-3">
+                                {attention.length ? (
+                                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-2">
+                                    <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                                      <AlertTriangle className="h-3.5 w-3.5" /> Needs your attention
+                                      <span className="ml-auto rounded-full bg-amber-500/15 px-1.5 text-[10px] font-bold tabular-nums">{attention.length}</span>
+                                    </div>
+                                    <div className="space-y-1">{attention.map(rowFor)}</div>
+                                  </div>
+                                ) : null}
+                                {rest.length ? (
+                                  <div>
+                                    {attention.length ? (
+                                      <p className="mb-1 px-1 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">All tasks</p>
+                                    ) : (
+                                      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                                        <span>Tasks in {p.project_name}</span>
+                                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">{p.tasks.length}</span>
+                                      </div>
+                                    )}
+                                    <div className="space-y-1 border-l-2 border-primary/20 pl-2.5">{rest.map(rowFor)}</div>
+                                  </div>
+                                ) : null}
                               </div>
-                              {/* Indented + ruled so the tasks clearly belong to the project above. */}
-                              <div className="space-y-1 border-l-2 border-primary/20 pl-2.5">
-                                {p.tasks.map((t) => (
-                                  <TaskRow key={t.task_id} task={t} onFlash={flashAndFade} onAddNote={() => addNote(activeClient.client_id, p, t)} />
-                                ))}
-                              </div>
-                            </>
-                          )}
+                            );
+                          })()}
                         </div>
                       ) : null}
                     </Card>
