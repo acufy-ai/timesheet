@@ -2660,9 +2660,8 @@ async def get_team_resourcing(
     WORKLOAD_LOOKBACK_WEEKS = 8
     wl_start = today - timedelta(weeks=WORKLOAD_LOOKBACK_WEEKS)
     hours_by_user: dict[int, Decimal] = {}
-    weeks_by_user: dict[int, set] = {}
-    for uid, edate, hrs in (await db.execute(
-        select(TimeEntry.user_id, TimeEntry.entry_date, TimeEntry.hours)
+    for uid, hrs in (await db.execute(
+        select(TimeEntry.user_id, func.coalesce(func.sum(TimeEntry.hours), 0))
         .where(
             TimeEntry.user_id.in_(team_ids or [-1]),
             TimeEntry.tenant_id == current_user.tenant_id,
@@ -2670,10 +2669,9 @@ async def get_team_resourcing(
             TimeEntry.entry_date >= wl_start,
             TimeEntry.entry_date <= today,
         )
+        .group_by(TimeEntry.user_id)
     )).all():
-        hours_by_user[uid] = hours_by_user.get(uid, Decimal("0")) + Decimal(str(hrs or 0))
-        # ISO week key so hours cluster by calendar week.
-        weeks_by_user.setdefault(uid, set()).add((edate.isocalendar().year, edate.isocalendar().week))
+        hours_by_user[uid] = Decimal(str(hrs or 0))
 
     rows: list[ResourcingRow] = []
     over = under = 0
@@ -2686,12 +2684,12 @@ async def get_team_resourcing(
         user_allocs = by_user.get(uid, [])
         c = compute_capacity(user_allocs, cap, today, window_end)
         planned = c["planned_by_proj"]
-        # Workload % = avg weekly hours over the weeks the person actually worked.
-        worked_weeks = max(len(weeks_by_user.get(uid, set())), 1)
-        avg_weekly = hours_by_user.get(uid, Decimal("0")) / Decimal(worked_weeks)
+        # Workload % = average weekly hours over the FULL look-back window, as a
+        # share of weekly capacity. Fixed denominator (the window's weeks) so the
+        # figure is a true recent pace, not inflated by clustering.
+        avg_weekly = hours_by_user.get(uid, Decimal("0")) / Decimal(WORKLOAD_LOOKBACK_WEEKS)
         workload_pct = int(round(avg_weekly / cap * 100)) if cap and cap > 0 else 0
-        # Cap the display at 150 so an outlier crunch week doesn't blow the scale.
-        workload_pct = min(workload_pct, 150)
+        workload_pct = min(workload_pct, 150)  # clamp outliers so the scale holds
         projects: list[ResourcingAllocRow] = []
         for a in user_allocs:
             projects.append(ResourcingAllocRow(
