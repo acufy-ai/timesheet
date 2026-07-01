@@ -183,7 +183,7 @@ export function ExecutionStatus({
           ) : <p className="text-sm text-muted-foreground">No tasks on this project.</p>}
         </ExecCard>
 
-        <ExecCard title="Workload by person">
+        <ExecCard title="Workload by resource">
           {workload.length ? (
             <ul className="space-y-2.5">
               {workload.map((p) => (
