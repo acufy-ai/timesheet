@@ -150,10 +150,13 @@ export function ProjectReportPage() {
           {/* Section 4: Execution status */}
           {visibility.execution ? (
             <ExecutionStatus
-              highestEffort={view.execution.highestEffort}
+              tasks={view.execution.tasks}
               effortTotal={view.execution.effortTotal}
-              overdueUnfinished={view.execution.overdueUnfinished}
               workload={view.execution.workload}
+              projectId={projectId}
+              projectName={header.projectName}
+              managerName={breakdown.data?.manager_name}
+              clientName={header.clientName}
             />
           ) : null}
 

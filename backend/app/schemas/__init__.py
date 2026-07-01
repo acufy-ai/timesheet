@@ -1329,6 +1329,9 @@ class ManagerProjectHealthRow(BaseModel):
     # the project has no end_date set ("Open").
     days_until_end: Optional[int]
     hours_this_week: Decimal
+    # Allocated hours = sum of the project's task estimates (the plan). Shown as
+    # "allocated vs logged" on the dashboard. None when no task has an estimate.
+    allocated_hours: Optional[Decimal] = None
     # Budget consumed as percentage. None when no estimated_hours set.
     budget_pct: Optional[int]
     # Hours remaining against the budget. Negative when over.
@@ -1751,6 +1754,7 @@ class ProjectHealthOverrideResponse(BaseModel):
 class TaskBreakdownTask(BaseModel):
     task_id: int
     name: str
+    description: Optional[str] = None  # for the task-detail popup
     status: str                       # to_do | in_progress | blocked | done
     hours: Decimal = Decimal("0")     # approved hours logged
     cost: Decimal = Decimal("0")      # approved cost (hours × cost rate)
@@ -1786,22 +1790,36 @@ class TaskBlockingEdge(BaseModel):
     dependent_started: bool = False
 
 
+class PersonTaskHours(BaseModel):
+    """One task a person logged hours on, within a single project."""
+    task_id: int
+    task_name: str
+    hours: Decimal = Decimal("0")
+
+
 class TaskBreakdownPerson(BaseModel):
     user_id: int
     full_name: str
     hours: Decimal = Decimal("0")
     pct_of_hours: int = 0
+    # Per-task split of this person's hours ON THIS PROJECT (not their whole
+    # cross-project workload). Powers the "who works on what" drill-down.
+    tasks: list[PersonTaskHours] = []
 
 
 class ProjectTaskBreakdownResponse(BaseModel):
     project_id: int
     project_name: str
+    manager_name: Optional[str] = None   # the project's manager (for task popup)
     total_tasks: int = 0
     done_tasks: int = 0
     open_tasks: int = 0               # not done (to_do + in_progress)
     total_hours: Decimal = Decimal("0")
     is_overdue: bool = False
     days_overdue: int = 0
+    # EVERY task on the project (allocated estimate + logged hours), for the
+    # "Tasks" tile that lists them all (not just top-N by effort).
+    all_tasks: list[TaskBreakdownTask] = []
     # Where the effort/money went — top tasks by hours (each carries cost too).
     top_tasks: list[TaskBreakdownTask] = []
     # Open work while the project is at/past its end date — what's holding completion.

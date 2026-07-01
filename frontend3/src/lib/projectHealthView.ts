@@ -112,29 +112,29 @@ export interface CriticalIssueVM {
   severity: number;               // sort key, lower = surface first
 }
 
-export interface EffortTaskVM {
+import type { TaskBreakdownTask } from '@/types/dashboard';
+
+export interface TaskRowVM {
   taskId: number;
   name: string;
-  right: string;                   // "120h" or "120h · $18k"
-  pct: number;                     // 0..100 bar width
+  logged: number;                  // logged hours
+  allocated: number | null;        // task estimate (allocated hours), null if none
+  right: string;                   // "130h / 100h" or "130h" when no estimate
+  over: boolean;                   // logged materially exceeds allocated -> red
+  pct: number;                     // 0..100 bar width (share of logged hours)
+  task: TaskBreakdownTask;         // raw task, for the detail popup
 }
-export interface OverdueTaskVM {
-  taskId: number;
-  name: string;
-  statusLabel: string;
-  statusTone: RiskTone;
-  daysOverdue: number | null;
-}
+export interface WorkloadTaskVM { taskId: number; name: string; hours: number; }
 export interface WorkloadPersonVM {
   userId: number;
   name: string;
   right: string;                   // "120h · 42%"
   pct: number;
+  tasks: WorkloadTaskVM[];         // per-task hours ON THIS PROJECT
 }
 export interface ExecutionVM {
-  highestEffort: EffortTaskVM[];
-  effortTotal: string | null;      // "382h" or "382h · $36k" — the denominator the bars are shares of
-  overdueUnfinished: OverdueTaskVM[];
+  tasks: TaskRowVM[];              // ALL tasks (item 5), each with allocated/logged
+  effortTotal: string | null;      // "382h · $36k" total effort
   workload: WorkloadPersonVM[];
 }
 
@@ -397,11 +397,26 @@ export function buildProjectHealthView(
   }
 
   if (logged != null || approved != null) {
+    // "Hours" tile: allocated (sum of task estimates) vs logged, colored by how
+    // logged compares to the plan — red over, green comfortably under, amber near.
+    const loggedH = round(logged ?? approved ?? 0);
+    const allocatedH = breakdown
+      ? Math.round(breakdown.all_tasks.reduce((s, t) => s + Number(t.estimated_hours ?? 0), 0))
+      : 0;
+    let hoursTone: RiskTone = 'neutral';
+    let sub: string | undefined = approved != null ? `${round(approved)}h approved` : undefined;
+    if (allocatedH > 0) {
+      const ratio = loggedH / allocatedH;
+      hoursTone = ratio > 1.02 ? 'critical' : ratio >= 0.9 ? 'warning' : 'subtle';
+      sub = `${allocatedH}h allocated`;
+    }
     cards.push({
-      key: 'logged_hours', label: 'Logged hours',
-      value: hrs(logged ?? approved),
-      sub: approved != null ? `${round(approved)}h approved` : undefined,
-      tone: 'neutral', emphasis: false,
+      key: 'logged_hours', label: 'Hours',
+      value: allocatedH > 0 ? `${loggedH}h / ${allocatedH}h` : `${loggedH}h`,
+      sub,
+      // Emphasize (color) whenever we have an allocation, so under=green,
+      // near=amber, over=red all show. Plain when there's no allocation.
+      tone: hoursTone, emphasis: allocatedH > 0,
     });
   }
 
@@ -448,39 +463,33 @@ export function buildProjectHealthView(
     health, healthReason: portfolio?.health_reason ?? null,
   });
 
-  // ---- 4. Execution status (map breakdown slices, no recompute). ----
-  const showCost = !!breakdown?.top_tasks.some((t) => num(t.cost) != null && Number(t.cost) > 0);
-  const highestEffort: EffortTaskVM[] = (breakdown?.top_tasks ?? []).map((t) => ({
-    taskId: t.task_id, name: t.name,
-    right: showCost ? `${round(Number(t.hours))}h · ${fmtMoney(t.cost, currency)}` : `${round(Number(t.hours))}h`,
-    pct: clampPct(t.pct_of_hours),
-  }));
-  // Total effort = ALL logged hours on the project (the denominator the effort
-  // bars are shares of), so the tile shows what 100% represents. Uses the
-  // project-wide approved hours, not just the shown top-N tasks.
-  const effortTotal: string | null = (breakdown && breakdown.top_tasks.length)
+  // ---- 4. Execution status: the "Tasks" tile lists EVERY task with allocated
+  // (estimate) vs logged hours, colored red when logged materially exceeds the
+  // allocation. Total effort footer sums all logged hours (+ cost). ----
+  const showCost = !!breakdown?.all_tasks.some((t) => num(t.cost) != null && Number(t.cost) > 0);
+  const tasks: TaskRowVM[] = (breakdown?.all_tasks ?? []).map((t) => {
+    const logged = round(Number(t.hours));
+    const est = t.estimated_hours != null ? round(Number(t.estimated_hours)) : null;
+    const over = est != null && est > 0 && logged > est * 1.02;
+    return {
+      taskId: t.task_id, name: t.name, logged, allocated: est,
+      right: est != null ? `${logged}h / ${est}h` : `${logged}h`,
+      over, pct: clampPct(t.pct_of_hours), task: t,
+    };
+  });
+  const effortTotal: string | null = (breakdown && breakdown.all_tasks.length)
     ? (() => {
-        const h = approved != null ? round(approved) : round((breakdown.top_tasks).reduce((s, t) => s + Number(t.hours), 0));
+        const h = round(breakdown.all_tasks.reduce((s, t) => s + Number(t.hours), 0));
         const c = showCost && cost != null ? ` · ${fmtMoney(cost, currency)}` : '';
         return `${h}h${c}`;
       })()
     : null;
-  // Prefer the explicit overdue list; else unfinished-at-deadline (still unfinished).
-  const overdueSource = breakdown
-    ? (breakdown.overdue_tasks.length > 0
-      ? breakdown.overdue_tasks
-      : breakdown.unfinished_at_deadline.filter((t) => t.status !== 'done'))
-    : [];
-  const overdueUnfinished: OverdueTaskVM[] = overdueSource.map((t) => ({
-    taskId: t.task_id, name: t.name,
-    statusLabel: TASK_STATUS_LABEL[t.status] ?? t.status,
-    statusTone: TASK_STATUS_TONE[t.status] ?? 'neutral',
-    daysOverdue: t.days_overdue ?? null,
-  }));
+  // Workload by person: total + the per-task split ON THIS PROJECT (item 9).
   const workload: WorkloadPersonVM[] = (breakdown?.by_person ?? []).map((p) => ({
     userId: p.user_id, name: p.full_name,
     right: `${round(Number(p.hours))}h · ${p.pct_of_hours}%`,
     pct: clampPct(p.pct_of_hours),
+    tasks: (p.tasks ?? []).map((pt) => ({ taskId: pt.task_id, name: pt.task_name, hours: round(Number(pt.hours)) })),
   }));
 
   // ---- 5. Financial KPIs. ----
@@ -585,7 +594,7 @@ export function buildProjectHealthView(
 
   return {
     header, summaryCards: cards, criticalIssues,
-    execution: { highestEffort, effortTotal, overdueUnfinished, workload },
+    execution: { tasks, effortTotal, workload },
     financialKpis, effortBudget: { rows: ebRows },
     evm: evmVM, revRec: revRecVM, visibility, footerNote: FOOTER_NOTE,
   };

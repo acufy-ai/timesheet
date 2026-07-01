@@ -64,6 +64,7 @@ from app.schemas import (
     ProjectTaskBreakdownResponse,
     TaskBreakdownTask,
     TaskBreakdownPerson,
+    PersonTaskHours,
     TaskBlockingEdge,
     TeamDailyOverviewResponse,
     TeamRejectionReason,
@@ -415,11 +416,12 @@ def _classify_by_pace(
             # "only" reads wrong when tasks are actually fairly complete.
             lead = "only " if pct_complete is not None and pct_complete < 50 else ""
             reasons.append(f"{budget} but {lead}{tasks}")
-        if overdue:
-            reasons.append(f"the deadline passed {abs(days_until_end)} days ago")
+        # NOTE: the "deadline passed X days ago" clause was intentionally dropped
+        # from the reason — over-budget is the lead story. (Overdue still
+        # contributes to the CLASSIFICATION as critical above.)
         elif well_behind and schedule:
             reasons.append(f"{tasks} but {schedule}")
-        base = "; ".join(reasons) if reasons else "the project is behind on both budget and schedule"
+        base = "; ".join(reasons) if reasons else "the project is over budget"
         return "critical", base[0].upper() + base[1:] + "."
     # 2. Blocked — after critical, so over-budget + blocked reads as critical.
     if has_blocked_task:
@@ -1698,6 +1700,15 @@ async def get_manager_project_health(
         db, project_ids, current_user.tenant_id
     )
 
+    # Allocated hours per project = sum of the project's task estimates (the
+    # plan). Shown as "allocated vs logged" on the dashboard widget.
+    from app.models.task import Task as _TaskM
+    alloc_by_project = {pid: Decimal(str(h or 0)) for pid, h in (await db.execute(
+        select(_TaskM.project_id, func.coalesce(func.sum(_TaskM.estimated_hours), 0))
+        .where(_TaskM.project_id.in_(project_ids), _TaskM.is_active.is_(True))
+        .group_by(_TaskM.project_id)
+    )).all()}
+
     # 3) LOGGED HOURS per project (all-time, not week-scoped). This column used to
     # be "hours this week", but at the start of a week it reads 0 even when the
     # project has real budget/financials (which aggregate all-time), so it looked
@@ -1802,6 +1813,7 @@ async def get_manager_project_health(
                 client_name=project.client.name if project.client else "",
                 days_until_end=days_until_end,
                 hours_this_week=hours_this_week,
+                allocated_hours=(alloc_by_project.get(project.id) or None),
                 budget_pct=budget_pct,
                 budget_hours_remaining=budget_remaining,
                 health=health,
@@ -3626,6 +3638,8 @@ async def get_project_task_breakdown(
 
     per_task: dict[int, dict] = {}
     per_person: dict[int, Decimal] = {}
+    # (user_id -> {task_id -> hours}) for the per-person, per-task drill-down.
+    per_person_task: dict[int, dict[int, Decimal]] = {}
     total_hours = Decimal("0")
     for e in entries:
         hrs = e.hours or Decimal("0")
@@ -3637,6 +3651,8 @@ async def get_project_task_breakdown(
             d["cost"] += entry_cost_amount(e)
             if e.is_billable:
                 d["revenue"] += entry_billed_amount(e, project)
+            pt = per_person_task.setdefault(e.user_id, {})
+            pt[e.task_id] = pt.get(e.task_id, Decimal("0")) + hrs
 
     def pct(part: Decimal) -> int:
         return int(round(part / total_hours * 100)) if total_hours > 0 else 0
@@ -3658,7 +3674,7 @@ async def get_project_task_breakdown(
         if t.due_date is not None and t.due_date < today:
             days_od = (today - t.due_date).days
         return TaskBreakdownTask(
-            task_id=t.id, name=t.name,
+            task_id=t.id, name=t.name, description=t.description,
             status=t.status.value if hasattr(t.status, "value") else str(t.status),
             hours=hrs, cost=agg["cost"], revenue=agg["revenue"],
             pct_of_hours=pct(hrs),
@@ -3680,6 +3696,13 @@ async def get_project_task_breakdown(
     # Top tasks by hours (where the effort/budget went).
     ranked = sorted(tasks, key=lambda t: per_task.get(t.id, {}).get("hours", Decimal("0")), reverse=True)
     top_tasks = [task_row(t) for t in ranked if per_task.get(t.id, {}).get("hours", Decimal("0")) > 0][:6]
+    # ALL tasks (allocated + logged), sorted by logged hours desc then name, for
+    # the "Tasks" tile that lists every task — not just the top effort ones.
+    all_tasks = [task_row(t) for t in sorted(
+        tasks,
+        key=lambda t: (-float(per_task.get(t.id, {}).get("hours", Decimal("0"))), t.name.lower()),
+    )]
+    task_name_by_id = {t.id: t.name for t in tasks}
 
     days_overdue = (today - project.end_date).days if project.end_date and project.end_date < today else 0
     is_overdue = days_overdue > 0
@@ -3698,11 +3721,29 @@ async def get_project_task_breakdown(
     name_by_user = {uid: n for uid, n in (await db.execute(
         select(User.id, User.full_name).where(User.id.in_(list(per_person.keys()) or [-1]))
     )).all()}
+
+    def _person_tasks(uid: int) -> list[PersonTaskHours]:
+        rows = [
+            PersonTaskHours(task_id=tid, task_name=task_name_by_id.get(tid, f"Task {tid}"), hours=h)
+            for tid, h in per_person_task.get(uid, {}).items()
+        ]
+        rows.sort(key=lambda r: float(r.hours), reverse=True)
+        return rows
+
     by_person = sorted(
-        [TaskBreakdownPerson(user_id=uid, full_name=name_by_user.get(uid, "—"), hours=h, pct_of_hours=pct(h))
-         for uid, h in per_person.items()],
+        [TaskBreakdownPerson(
+            user_id=uid, full_name=name_by_user.get(uid, "—"), hours=h,
+            pct_of_hours=pct(h), tasks=_person_tasks(uid),
+        ) for uid, h in per_person.items()],
         key=lambda p: p.hours, reverse=True,
     )[:8]
+
+    # Project manager name (for the task-detail popup).
+    manager_name = None
+    if project.manager_id is not None:
+        manager_name = (await db.execute(
+            select(User.full_name).where(User.id == project.manager_id)
+        )).scalar()
 
     # ── Phase 2 cause signals (each empty until the data is captured) ────────
     # Blocked: status == blocked. Carries blocked_reason for the "why" line.
@@ -3794,9 +3835,10 @@ async def get_project_task_breakdown(
         notes.append(f"{len(stalled)} task{'s' if len(stalled) != 1 else ''} not started (no time logged yet).")
 
     return ProjectTaskBreakdownResponse(
-        project_id=project.id, project_name=project.name,
+        project_id=project.id, project_name=project.name, manager_name=manager_name,
         total_tasks=len(tasks), done_tasks=len(done), open_tasks=len(open_tasks),
         total_hours=total_hours, is_overdue=is_overdue, days_overdue=days_overdue,
+        all_tasks=all_tasks,
         top_tasks=top_tasks, unfinished_at_deadline=unfinished[:6],
         stalled_tasks=stalled[:6], by_person=by_person,
         blocked_tasks=blocked_tasks[:6],

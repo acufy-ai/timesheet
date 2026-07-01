@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { BarChart3, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
+import { BarChart3, Building2, Layers, LayoutDashboard, Loader2, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
 
 import { Input, Pager, Tooltip, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,21 +15,6 @@ import { HealthRulesModal } from '@/components/dashboard/HealthRulesModal';
 import { fmtMoney } from '@/lib/format';
 import { healthMeta } from '@/lib/projectHealth';
 
-// A clickable client cell that routes to the client's page. Shared by the
-// Insights tables so client names behave consistently.
-function ClientLink({ clientId, name }: { clientId?: number | null; name: string }) {
-  const navigate = useNavigate();
-  if (!clientId) return <span className="text-[11px] text-muted-foreground">{name}</span>;
-  return (
-    <button
-      type="button"
-      onClick={(e) => { e.stopPropagation(); navigate(`/client-management?client=${clientId}`); }}
-      className="text-[11px] text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
-    >
-      {name}
-    </button>
-  );
-}
 
 // PSA "Insights" — the manager/viewer analytics section. Holds Financials,
 // Resourcing, Portfolio, and Forecasts as the program builds them out. Admin
@@ -237,6 +222,29 @@ function PortfolioTab() {
       || (r.client_name ?? '').toLowerCase().includes(term)
       || healthMeta(r.health).label.toLowerCase().includes(term));
   }, [q.data, search]);
+  // Group the (filtered) projects by client, like the dashboard's Projects
+  // widget: a client band, then its projects, with the worst health rolled up.
+  const groups = useMemo(() => {
+    const byClient = new Map<number | null, { clientId: number | null; clientName: string; projects: typeof rows; worstHealth: string; worstCount: number }>();
+    for (const r of rows) {
+      const key = r.client_id ?? null;
+      let g = byClient.get(key);
+      if (!g) { g = { clientId: key, clientName: r.client_name || 'No client', projects: [], worstHealth: 'not-set', worstCount: 0 }; byClient.set(key, g); }
+      g.projects.push(r);
+    }
+    const list = [...byClient.values()];
+    for (const g of list) {
+      g.projects.sort((a, b) => a.project_name.localeCompare(b.project_name));
+      let worstRank = 99;
+      for (const p of g.projects) {
+        const rank = healthMeta(p.health).rank;
+        if (rank < worstRank) { worstRank = rank; g.worstHealth = p.health; }
+      }
+      g.worstCount = g.projects.filter((p) => p.health === g.worstHealth).length;
+    }
+    list.sort((a, b) => a.clientName.localeCompare(b.clientName));
+    return list;
+  }, [rows]);
   if (q.isLoading) {
     return <div className="grid place-items-center py-16 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
   }
@@ -299,40 +307,58 @@ function PortfolioTab() {
               {rows.length === 0 ? (
                 <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">No projects match your search.</td></tr>
               ) : null}
-              {rows.map((r) => {
-                const h = healthMeta(r.health);
-                const pill = (
-                  <span className="inline-flex cursor-help items-center gap-1.5">
-                    <span className={cn('h-2 w-2 rounded-full', h.dot)} />
-                    <span className={cn('text-xs font-medium', h.text)}>{h.label}</span>
-                  </span>
-                );
+              {groups.map((g) => {
+                const wm = healthMeta(g.worstHealth);
                 return (
-                  <tr
-                    key={r.project_id}
-                    onClick={() => navigate(`/insights/project/${r.project_id}?from=portfolio`)}
-                    className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-foreground/[0.03]"
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-foreground">{r.project_name}</div>
-                      <ClientLink clientId={r.client_id} name={r.client_name} />
-                    </td>
-                    <td className="px-4 py-3">
-                      {r.health_reason
-                        ? <Tooltip label={r.health_reason} side="top" maxWidth={240}>{pill}</Tooltip>
-                        : pill}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">{fmtMoney(r.revenue, r.currency)}</td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {r.margin_pct != null ? <span className={cn('font-semibold', marginColor(r.margin_pct))}>{r.margin_pct}%</span> : <span className="text-muted-foreground">N/A</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {r.budget_used_pct != null ? <span className={r.budget_used_pct > 100 ? 'text-rose-600 dark:text-rose-400' : r.budget_used_pct > 80 ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}>{r.budget_used_pct}%</span> : <span className="text-muted-foreground">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                      {r.days_until_end != null ? (r.days_until_end < 0 ? `${Math.abs(r.days_until_end)}d overdue` : `${r.days_until_end}d`) : '—'}
-                    </td>
-                  </tr>
+                  <Fragment key={g.clientId ?? 'none'}>
+                    <tr className="border-l-2 border-l-primary/50 bg-foreground/[0.03]">
+                      <td className="border-b border-border px-4 py-2.5" colSpan={2}>
+                        <span className="inline-flex items-center gap-2">
+                          <Building2 className="h-4 w-4 text-primary/70" />
+                          {g.clientId != null ? (
+                            <button type="button" onClick={() => navigate(`/client-management?client=${g.clientId}`)}
+                              className="text-sm font-bold text-foreground underline-offset-2 hover:text-primary hover:underline">{g.clientName}</button>
+                          ) : <span className="text-sm font-bold text-foreground">{g.clientName}</span>}
+                          <span className="rounded-full bg-muted px-1.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{g.projects.length}</span>
+                        </span>
+                      </td>
+                      <td className="border-b border-border px-4 py-2.5 text-right" colSpan={4}>
+                        <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                          <span className={cn('h-1.5 w-1.5 rounded-full', wm.dot)} />
+                          {g.worstCount} {wm.label.toLowerCase()} {g.worstCount === 1 ? 'project' : 'projects'}
+                        </span>
+                      </td>
+                    </tr>
+                    {g.projects.map((r) => {
+                      const h = healthMeta(r.health);
+                      const pill = (
+                        <span className="inline-flex cursor-help items-center gap-1.5">
+                          <span className={cn('h-2 w-2 rounded-full', h.dot)} />
+                          <span className={cn('text-xs font-medium', h.text)}>{h.label}</span>
+                        </span>
+                      );
+                      return (
+                        <tr key={r.project_id}
+                          onClick={() => navigate(`/insights/project/${r.project_id}?from=portfolio`)}
+                          className="cursor-pointer border-b border-border/60 hover:bg-foreground/[0.03]">
+                          <td className="py-3 pl-9 pr-4"><div className="font-medium text-foreground">{r.project_name}</div></td>
+                          <td className="px-4 py-3">
+                            {r.health_reason ? <Tooltip label={r.health_reason} side="top" maxWidth={240}>{pill}</Tooltip> : pill}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">{fmtMoney(r.revenue, r.currency)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            {r.margin_pct != null ? <span className={cn('font-semibold', marginColor(r.margin_pct))}>{r.margin_pct}%</span> : <span className="text-muted-foreground">N/A</span>}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            {r.budget_used_pct != null ? <span className={r.budget_used_pct > 100 ? 'text-rose-600 dark:text-rose-400' : r.budget_used_pct > 80 ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}>{r.budget_used_pct}%</span> : <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                            {r.days_until_end != null ? (r.days_until_end < 0 ? `${Math.abs(r.days_until_end)}d overdue` : `${r.days_until_end}d`) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
                 );
               })}
             </tbody>

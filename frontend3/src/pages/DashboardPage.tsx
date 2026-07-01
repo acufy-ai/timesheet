@@ -311,6 +311,7 @@ type ClientGroup = {
   clientName: string;
   projects: ProjectHealthRow[];
   totalHours: number;              // sum of the group's logged hours
+  totalAllocated: number;          // sum of the group's allocated (task-estimate) hours
   worstHealth: string;             // most-urgent health tier in the group
   worstCount: number;              // how many projects are in that worst tier
 };
@@ -502,7 +503,7 @@ function ProjectsWidget({
       const key = r.client_id ?? null;
       let g = byClient.get(key);
       if (!g) {
-        g = { clientId: key, clientName: r.client_name || 'No client', projects: [], totalHours: 0, worstHealth: 'not-set', worstCount: 0 };
+        g = { clientId: key, clientName: r.client_name || 'No client', projects: [], totalHours: 0, totalAllocated: 0, worstHealth: 'not-set', worstCount: 0 };
         byClient.set(key, g);
       }
       g.projects.push(r);
@@ -513,6 +514,7 @@ function ProjectsWidget({
       // Per-client rollup: total logged hours + the most-urgent health tier and
       // how many projects are in it (so the band reads "2 critical projects").
       g.totalHours = g.projects.reduce((s, p) => s + Number(p.hours_this_week ?? 0), 0);
+      g.totalAllocated = g.projects.reduce((s, p) => s + Number(p.allocated_hours ?? 0), 0);
       let worstRank = 99;
       for (const p of g.projects) {
         const rank = healthMeta(p.health).rank;
@@ -597,7 +599,7 @@ function ProjectsWidget({
                 <tr className="table-header-row">
                   <th className="table-header-cell">{grouped ? 'Client / Project' : 'Project'}</th>
                   {showClientCol ? <th className="table-header-cell">Client</th> : null}
-                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged hours" /></th> : null}
+                  {showCol('hours_this_week') ? <th className="table-header-cell"><InfoLabel label="Logged / allocated" /></th> : null}
                   {showCol('budget') ? <th className="table-header-cell"><InfoLabel label="Billed %" infoKey="budget burn" /></th> : null}
                   <th className="table-header-cell">
                     <span className="inline-flex items-center gap-1">
@@ -631,7 +633,7 @@ function ProjectsWidget({
                           </td>
                           {showCol('hours_this_week') ? (
                             <td className="border-b border-border px-4 py-2.5 tabular-nums text-[12px] text-muted-foreground">
-                              {Math.round(g.totalHours)}h total
+                              {Math.round(g.totalHours)}h{g.totalAllocated > 0 ? ` / ${Math.round(g.totalAllocated)}h` : ''} total
                             </td>
                           ) : null}
                           {showCol('budget') ? <td className="border-b border-border" /> : null}
@@ -721,7 +723,12 @@ function ProjectRow({
         </td>
       ) : null}
       {showCol('hours_this_week') ? (
-        <td className="px-4 py-3 tabular-nums text-foreground">{Math.round(Number(row.hours_this_week))}h</td>
+        <td className="px-4 py-3 tabular-nums text-foreground">
+          {Math.round(Number(row.hours_this_week))}h
+          {row.allocated_hours != null && Number(row.allocated_hours) > 0 ? (
+            <span className="text-muted-foreground"> / {Math.round(Number(row.allocated_hours))}h</span>
+          ) : null}
+        </td>
       ) : null}
       {showCol('budget') ? (
         <td className="px-4 py-3 text-muted-foreground">{row.budget_pct != null ? `${row.budget_pct}%` : 'N/A'}</td>

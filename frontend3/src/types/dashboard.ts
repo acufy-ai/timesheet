@@ -46,6 +46,7 @@ export interface ProjectHealthRow {
   client_name: string;
   days_until_end: number | null;
   hours_this_week: string;
+  allocated_hours?: string | number | null;
   budget_pct: number | null;
   budget_hours_remaining: number | null;
   health: ProjectHealth;
@@ -262,6 +263,7 @@ export interface HealthConfigResponse {
 export interface TaskBreakdownTask {
   task_id: number;
   name: string;
+  description?: string | null;
   status: string;
   hours: string | number;
   cost: string | number;
@@ -276,11 +278,17 @@ export interface TaskBreakdownTask {
   over_estimate_pct?: number | null;
   days_overdue?: number | null;
 }
+export interface PersonTaskHours {
+  task_id: number;
+  task_name: string;
+  hours: string | number;
+}
 export interface TaskBreakdownPerson {
   user_id: number;
   full_name: string;
   hours: string | number;
   pct_of_hours: number;
+  tasks?: PersonTaskHours[];
 }
 export interface TaskBlockingEdge {
   task_id: number;
@@ -294,12 +302,14 @@ export interface TaskBlockingEdge {
 export interface ProjectTaskBreakdown {
   project_id: number;
   project_name: string;
+  manager_name?: string | null;
   total_tasks: number;
   done_tasks: number;
   open_tasks: number;
   total_hours: string | number;
   is_overdue: boolean;
   days_overdue: number;
+  all_tasks: TaskBreakdownTask[];
   top_tasks: TaskBreakdownTask[];
   unfinished_at_deadline: TaskBreakdownTask[];
   stalled_tasks: TaskBreakdownTask[];
