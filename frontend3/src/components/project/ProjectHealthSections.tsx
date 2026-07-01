@@ -4,7 +4,6 @@
 // components render for every project so the layout stays identical.
 
 import { useState, type ReactNode } from 'react';
-import { AlertTriangle, Ban, Clock, GitBranch, TrendingUp, Users, DollarSign, CalendarClock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { healthMeta } from '@/lib/projectHealth';
@@ -16,7 +15,6 @@ import {
   TASK_STATUS_LABEL,
   type SummaryCardVM,
   type CriticalIssueVM,
-  type IssueCategory,
   type TaskRowVM,
   type WorkloadPersonVM,
   type KpiVM,
@@ -80,42 +78,31 @@ export function SummaryCardRow({ cards }: { cards: SummaryCardVM[] }) {
 // ----------------------------------------------------------------------------
 // Section 3: critical issues.
 // ----------------------------------------------------------------------------
-const ISSUE_ICON: Record<IssueCategory, typeof Ban> = {
-  health: AlertTriangle,
-  blocked: Ban,
-  dependency: GitBranch,
-  overdue: Clock,
-  budget: DollarSign,
-  estimate_overrun: TrendingUp,
-  schedule: CalendarClock,
-  approval_bottleneck: AlertTriangle,
-  resource_concentration: Users,
-};
-
 export function CriticalIssuesPanel({ issues }: { issues: CriticalIssueVM[] }) {
-  return (
-    <section>
-      <h2 className="mb-2 text-sm font-semibold text-foreground">Critical issues requiring attention</h2>
-      {issues.length === 0 ? (
+  if (issues.length === 0) {
+    return (
+      <section>
         <div className="rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
           No major issues detected.
         </div>
-      ) : (
-        <ul className="space-y-2 rounded-2xl border border-border bg-card px-4 py-3">
-          {issues.map((it) => {
-            const Icon = ISSUE_ICON[it.category];
-            return (
-              <li key={it.category} className="flex gap-2.5 text-sm">
-                <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', riskText(it.tone))} />
-                <span className="text-foreground">
-                  <span className="font-medium">{it.label}:</span>{' '}
-                  <span className="text-muted-foreground">{it.detail}</span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      </section>
+    );
+  }
+  return (
+    <section>
+      {/* No section heading + no icons per design — each issue is a plain red
+          line: a small red dot bullet, the label, then the detail. */}
+      <ul className="space-y-2 rounded-2xl border border-border bg-card px-4 py-3">
+        {issues.map((it) => (
+          <li key={it.category} className="flex items-baseline gap-2.5 text-sm text-rose-600 dark:text-rose-400">
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" />
+            <span>
+              <span className="font-semibold">{it.label}:</span>{' '}
+              <span>{it.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
