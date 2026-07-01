@@ -42,6 +42,22 @@ export function SummaryCard({ card }: { card: SummaryCardVM }) {
       </div>
     );
   }
+  // Hours card: "allocated / logged" with only the logged figure colored.
+  if (card.hours) {
+    return (
+      <div className="rounded-2xl border border-border bg-card px-4 py-3">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{card.label}</p>
+        {card.sub ? <p className="text-[11px] text-muted-foreground">{card.sub}</p> : null}
+        <p className="mt-1 text-xl font-bold tabular-nums">
+          <span className="text-foreground">{card.hours.allocated}</span>
+          <span className="text-muted-foreground"> / </span>
+          <span className={card.hours.loggedTone === 'neutral' ? 'text-foreground' : riskText(card.hours.loggedTone)}>
+            {card.hours.logged}
+          </span>
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="rounded-2xl border border-border bg-card px-4 py-3">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{card.label}</p>

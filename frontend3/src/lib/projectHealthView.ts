@@ -97,6 +97,9 @@ export interface SummaryCardVM {
   emphasis: boolean;               // figure rendered bold + colored
   isStatus?: boolean;              // Status card renders via healthMeta()
   health?: ProjectHealth;          // for the Status card only
+  // The Hours card renders as "allocated / logged" where ONLY the logged part
+  // is colored (over=red, under=green, close=neutral); allocated stays neutral.
+  hours?: { allocated: string; logged: string; loggedTone: RiskTone };
 }
 
 export type IssueCategory =
@@ -397,24 +400,25 @@ export function buildProjectHealthView(
   }
 
   if (logged != null || approved != null) {
-    // "Hours" tile: allocated (sum of task estimates) / logged. Hours are the
-    // EFFORT axis, separate from the dollar budget that drives health — so this
-    // only turns red when hours are MATERIALLY over the plan (>15%); a small
-    // difference reads neutral (the budget tile carries the money story).
+    // "Hours" tile: tagline "allocated / logged", value = allocated (black) then
+    // logged (colored). Only the LOGGED figure is colored — red when over the
+    // allocation, green when comfortably under, neutral when close. Allocated is
+    // always neutral (it's the plan, not a status).
     const loggedH = round(logged ?? approved ?? 0);
     const allocatedH = breakdown
       ? Math.round(breakdown.all_tasks.reduce((s, t) => s + Number(t.estimated_hours ?? 0), 0))
       : 0;
-    let hoursTone: RiskTone = 'neutral';
-    let emphasize = false;
-    if (allocatedH > 0 && loggedH > allocatedH * 1.15) {
-      hoursTone = 'critical'; emphasize = true;  // effort materially over plan
+    let loggedTone: RiskTone = 'neutral';
+    if (allocatedH > 0) {
+      const ratio = loggedH / allocatedH;
+      loggedTone = ratio > 1.02 ? 'critical' : ratio < 0.9 ? 'subtle' : 'neutral';
     }
     cards.push({
       key: 'logged_hours', label: 'Hours',
       value: allocatedH > 0 ? `${allocatedH}h / ${loggedH}h` : `${loggedH}h`,
       sub: allocatedH > 0 ? 'allocated / logged' : (approved != null ? `${round(approved)}h approved` : undefined),
-      tone: hoursTone, emphasis: emphasize,
+      tone: 'neutral', emphasis: false,
+      hours: allocatedH > 0 ? { allocated: `${allocatedH}h`, logged: `${loggedH}h`, loggedTone } : undefined,
     });
   }
 
