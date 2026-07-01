@@ -412,10 +412,15 @@ export function buildProjectHealthView(
     const allocatedH = breakdown
       ? Math.round(breakdown.all_tasks.reduce((s, t) => s + Number(t.estimated_hours ?? 0), 0))
       : 0;
+    // The logged figure is red when the project is OVER BUDGET (same dollar signal
+    // as the Status/Budget cards, so the tile agrees with the headline), OR when
+    // logged hours exceed the allocation. Green only when comfortably under both.
     let loggedTone: RiskTone = 'neutral';
-    if (allocatedH > 0) {
+    if (overBudget) {
+      loggedTone = 'critical';
+    } else if (allocatedH > 0) {
       const ratio = loggedH / allocatedH;
-      loggedTone = ratio > 1.02 ? 'critical' : ratio < 0.95 ? 'subtle' : 'neutral';
+      loggedTone = ratio > 1.0 ? 'critical' : ratio < 0.95 ? 'subtle' : 'neutral';
     }
     cards.push({
       key: 'logged_hours', label: 'Hours',
