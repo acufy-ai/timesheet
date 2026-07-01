@@ -6,6 +6,9 @@ import { fmtMoney } from '@/lib/format';
 import { useResourceDetail } from '@/hooks/useDashboard';
 import { AllocationManager } from './AllocationManager';
 import type { ResourceDetail } from '@/types/dashboard';
+// AllocationManager is temporarily not rendered (planned allocations hidden);
+// keep the import alive so re-enabling is a one-line uncomment.
+void AllocationManager;
 
 // Slide-over panel showing one employee's detail: billing, submitted/approved
 // hours, billed vs cost, a per-project breakdown, and their tasks (with hours +
@@ -56,16 +59,18 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
               <div className={cn('rounded-lg border p-3', capacityClasses(d.capacity_state))}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-wide">{capacityLabel(d.capacity_state)}</span>
-                  <span className="text-sm font-bold tabular-nums">{d.allocated_pct}% allocated</span>
+                  <span className="text-sm font-bold tabular-nums">{d.allocated_pct}% utilized</span>
                 </div>
                 <p className="mt-1 text-[12px] opacity-90">{d.capacity_summary}</p>
               </div>
             ) : null}
 
-            {/* Plan forward work — placed right under the capacity summary it
-                drives, so allocating/adjusting is the first thing you reach. The
-                numbers above recompute as these change. */}
-            {userId != null ? <AllocationManager userId={userId} /> : null}
+            {/* Planned allocations (the AllocationManager) are hidden for now:
+                they're a separate MANUAL forward-booking that doesn't sync with
+                task assignment, and the headline % is driven by logged hours, so
+                the section confused more than it helped. Kept the component +
+                model for a future, synced forward-planning surface. */}
+            {/* {userId != null ? <AllocationManager userId={userId} /> : null} */}
 
             {/* Billing + hours summary */}
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border">
@@ -90,9 +95,7 @@ export function ResourceDetailPanel({ userId, name, onClose }: {
                           <div className="min-w-0">
                             <p className="flex items-center gap-1.5 truncate text-sm font-semibold text-foreground">
                               {p.project_name}
-                              {p.planned_pct != null ? (
-                                <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{p.planned_pct}% planned</span>
-                              ) : null}
+                              {/* "% planned" chip hidden with the planned-allocations feature. */}
                             </p>
                             {p.client_name ? <p className="truncate text-[11px] text-muted-foreground">{p.client_name}</p> : null}
                           </div>
@@ -209,8 +212,8 @@ function capacityClasses(state: string): string {
 }
 function capacityLabel(state: string): string {
   if (state === 'over') return 'Over capacity';
-  if (state === 'under') return 'Available capacity';
-  return 'At target capacity';
+  if (state === 'under') return 'Light workload';
+  return 'On target';
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {

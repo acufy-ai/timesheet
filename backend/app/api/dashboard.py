@@ -200,6 +200,42 @@ async def _get_scoped_project_ids(db: AsyncSession, current_user: "User") -> lis
     return list((await db.execute(base)).scalars().all())
 
 
+async def _users_on_projects(
+    db: AsyncSession, project_ids: list[int], tenant_id: int
+) -> set[int]:
+    """User ids who PARTICIPATE in any of ``project_ids`` — via approved logged
+    time, the project roster (user_project_access), or a task assignment. Used to
+    keep the resourcing/workload list to people who actually work on the
+    manager's projects (not the whole report tree)."""
+    if not project_ids:
+        return set()
+    from app.models.assignments import UserProjectAccess, TaskAssignee
+    from app.models.task import Task
+
+    ids: set[int] = set()
+    # Logged approved time on the projects.
+    ids |= set((await db.execute(
+        select(TimeEntry.user_id).where(
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+        ).distinct()
+    )).scalars().all())
+    # On the roster.
+    ids |= set((await db.execute(
+        select(UserProjectAccess.user_id).where(
+            UserProjectAccess.project_id.in_(project_ids)
+        ).distinct()
+    )).scalars().all())
+    # Task assignees on the projects' tasks.
+    ids |= set((await db.execute(
+        select(TaskAssignee.user_id)
+        .join(Task, Task.id == TaskAssignee.task_id)
+        .where(Task.project_id.in_(project_ids))
+        .distinct()
+    )).scalars().all())
+    return ids
+
+
 async def _filter_managed_project_ids(
     db: AsyncSession, project_ids: list[int], tenant_id: Optional[int]
 ) -> list[int]:
@@ -2620,6 +2656,16 @@ async def get_team_resourcing(
     team_ids = await _get_scoped_employee_ids(db, current_user)
     if resolved.user_ids is not None:
         team_ids = [u for u in team_ids if u in set(resolved.user_ids)]
+    # Keep only people who actually WORK ON the manager's projects (logged time,
+    # roster, or task assignment) — not every report in the org tree. A report
+    # who does no work on any of the manager's projects is noise on a project-
+    # analytics page. (VIEWER/ADMIN see the whole tenant, so this is a no-op for
+    # them since scoped projects = all projects.)
+    scoped_pids = await _get_scoped_project_ids(db, current_user)
+    if resolved.project_ids is not None:
+        scoped_pids = [p for p in scoped_pids if p in set(resolved.project_ids)]
+    participants = await _users_on_projects(db, scoped_pids, current_user.tenant_id)
+    team_ids = [u for u in team_ids if u in participants]
     today = date.today()
     window_end = today + timedelta(weeks=weeks_ahead)
 
