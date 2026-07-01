@@ -3774,6 +3774,12 @@ async def get_evm(
     client_name = {cid: name for cid, name in (await db.execute(
         select(Client.id, Client.name).where(Client.tenant_id == current_user.tenant_id)
     )).all()}
+    # Task completion drives "work complete %" so EVM's % done matches the task
+    # card (and health) — one completion number everywhere. Hours are only a
+    # fallback for projects that have no tasks to measure against.
+    task_completion = await _task_completion_by_project(
+        db, list(bl_by_proj.keys()), current_user.tenant_id
+    )
 
     def _pct(n: Decimal, d: Decimal) -> Decimal:
         return (n / d) if d and d > 0 else Decimal("0")
@@ -3794,8 +3800,14 @@ async def get_evm(
             sched_pct = max(Decimal("0"), min(Decimal("1"), _pct(elapsed, total)))
         else:
             sched_pct = Decimal("0")
-        # work complete %
-        work_pct = min(Decimal("1"), _pct(a["hours"], bl.planned_hours or Decimal("0")))
+        # work complete % — task done/total (so it agrees with the task card and
+        # health), falling back to hours/planned-hours when the project has no
+        # tasks to measure.
+        done_total = task_completion.get(pid)
+        if done_total and done_total[1] > 0:
+            work_pct = min(Decimal("1"), Decimal(done_total[0]) / Decimal(done_total[1]))
+        else:
+            work_pct = min(Decimal("1"), _pct(a["hours"], bl.planned_hours or Decimal("0")))
 
         pv = bac * sched_pct
         ev = bac * work_pct
