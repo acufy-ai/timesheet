@@ -419,20 +419,20 @@ function ResourcingTab() {
     );
   }
   const stateMeta = (s: string) =>
-    s === 'over' ? { label: 'Over capacity', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' }
-      : s === 'under' ? { label: 'Available capacity', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' }
-        : { label: 'At target capacity', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
+    s === 'over' ? { label: 'Over capacity', short: 'over capacity', bar: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400' }
+      : s === 'under' ? { label: 'Available capacity', short: 'has free capacity', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' }
+        : { label: 'At target capacity', short: 'on target', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
   const panelOpen = openUser != null;
   return (
     <div className="space-y-4">
       {/* summary — capacity utilization buckets for the upcoming window. Each
           tile is a filter: click to show only that bucket; click again to clear. */}
       <div className="grid grid-cols-3 gap-3">
-        <SummaryStat label="Over capacity" value={d.over_allocated} tone="rose" hint="Allocated above 100%"
+        <SummaryStat label="Over capacity" value={d.over_allocated} tone="rose" hint="Utilized above 100%"
           active={filter === 'over'} onClick={() => setFilter((f) => (f === 'over' ? 'all' : 'over'))} />
-        <SummaryStat label="At target capacity" value={d.team_size - d.over_allocated - d.under_utilized} tone="emerald" hint="60–100% allocated"
+        <SummaryStat label="At target capacity" value={d.team_size - d.over_allocated - d.under_utilized} tone="emerald" hint="60–100% utilized"
           active={filter === 'ok'} onClick={() => setFilter((f) => (f === 'ok' ? 'all' : 'ok'))} />
-        <SummaryStat label="Available capacity" value={d.under_utilized} tone="sky" hint="Below 60% allocated"
+        <SummaryStat label="Available capacity" value={d.under_utilized} tone="sky" hint="Below 60% utilized"
           active={filter === 'under'} onClick={() => setFilter((f) => (f === 'under' ? 'all' : 'under'))} />
       </div>
       {/* List + (when open) an in-flow detail panel beside it: the list shrinks
@@ -503,7 +503,9 @@ function ResourcingTab() {
                     <p className="truncate text-sm font-medium text-foreground">{r.full_name}{r.title ? <span className="ml-1.5 text-xs text-muted-foreground">{r.title}</span> : null}</p>
                     {r.allocations.length ? (
                       <p className="truncate text-[11px] text-muted-foreground">{r.allocations.map((a) => `${a.project_name} ${a.percent}%`).join(' · ')}</p>
-                    ) : <p className="text-[11px] text-muted-foreground/70">No allocations — available</p>}
+                    ) : r.allocated_pct > 0 ? (
+                      <p className="text-[11px] text-muted-foreground/80">From recent logged work (no forward booking)</p>
+                    ) : <p className="text-[11px] text-muted-foreground/70">No work booked or logged</p>}
                   </div>
                   {/* Allocation bar — narrower when the panel is open so the row
                       stays balanced in the narrower list. */}
@@ -512,7 +514,12 @@ function ResourcingTab() {
                   </div>
                   <div className={cn('shrink-0 text-right text-sm font-semibold tabular-nums', panelOpen ? 'w-20' : 'w-28', m.text)}>
                     {r.allocated_pct}%
-                    <span className="ml-1 block text-[10px] font-normal text-muted-foreground">{m.label}</span>
+                    {/* Name what the % is (utilized = planned booking or recent
+                        actual work), then the bucket, so "0%" doesn't read as
+                        "0% available" — it means nothing booked or logged. */}
+                    <span className="ml-1 block text-[10px] font-normal normal-case text-muted-foreground">
+                      utilized · {m.short}
+                    </span>
                   </div>
                 </button>
               );

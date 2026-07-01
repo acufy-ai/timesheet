@@ -2649,6 +2649,26 @@ async def get_team_resourcing(
     # (allocation and time off are kept independent; we'll revisit). The window
     # weighting below stays active.
 
+    # RECENT ACTUAL utilization: approved hours over the last few weeks, as a % of
+    # weekly capacity. Blended with planned allocation below so a person actively
+    # working (but with no forward booking) doesn't read as "0% — free". Uses a
+    # 4-week look-back to reflect current pace without over-smoothing.
+    ACTUAL_LOOKBACK_WEEKS = 4
+    actual_start = today - timedelta(weeks=ACTUAL_LOOKBACK_WEEKS)
+    actual_hours_by_user: dict[int, Decimal] = {}
+    for uid, hrs in (await db.execute(
+        select(TimeEntry.user_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(
+            TimeEntry.user_id.in_(team_ids or [-1]),
+            TimeEntry.tenant_id == current_user.tenant_id,
+            TimeEntry.status == TimeEntryStatus.APPROVED,
+            TimeEntry.entry_date >= actual_start,
+            TimeEntry.entry_date <= today,
+        )
+        .group_by(TimeEntry.user_id)
+    )).all():
+        actual_hours_by_user[uid] = Decimal(str(hrs or 0))
+
     rows: list[ResourcingRow] = []
     over = under = 0
     DEFAULT_CAP = Decimal("40")
@@ -2660,6 +2680,13 @@ async def get_team_resourcing(
         user_allocs = by_user.get(uid, [])
         c = compute_capacity(user_allocs, cap, today, window_end)
         planned = c["planned_by_proj"]
+        # Recent actual utilization % = avg weekly approved hours / weekly capacity.
+        actual_weekly = actual_hours_by_user.get(uid, Decimal("0")) / Decimal(ACTUAL_LOOKBACK_WEEKS)
+        actual_pct = int(round(actual_weekly / cap * 100)) if cap and cap > 0 else 0
+        # Blend: forward planning wins when it's higher (it's the intent), but a
+        # busy-with-no-booking person surfaces via their actual utilization.
+        planned_pct = c["allocated_pct"]
+        blended_pct = max(planned_pct, actual_pct)
         projects: list[ResourcingAllocRow] = []
         for a in user_allocs:
             projects.append(ResourcingAllocRow(
@@ -2677,14 +2704,15 @@ async def get_team_resourcing(
                 start_date=pr.start_date, end_date=pr.end_date,
             )
         projects = list(seen.values())
-        state = c["state"]
+        # State from the BLENDED %, so actual work shifts a person out of "free".
+        state = "over" if blended_pct > 100 else ("under" if blended_pct < 60 else "ok")
         if state == "over":
             over += 1
         elif state == "under":
             under += 1
         rows.append(ResourcingRow(
             user_id=uid, full_name=u.full_name, title=u.title,
-            capacity_hours=cap, allocated_pct=c["allocated_pct"], state=state, allocations=projects,
+            capacity_hours=cap, allocated_pct=blended_pct, state=state, allocations=projects,
         ))
 
     # Sort: over-allocated first (most urgent), then by allocation desc.
