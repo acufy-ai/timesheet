@@ -273,7 +273,11 @@ function buildCriticalIssues(s: IssueSignals): CriticalIssueVM[] {
     });
   }
 
-  if (s.overBudget) {
+  // Over-budget line. Skipped when the health-reason bullet above already spells
+  // out the budget (e.g. "115% of budget used but 75% of tasks are done") — with
+  // the side labels removed, two "budget used" lines would just read as a repeat.
+  const healthMentionsBudget = /budget/i.test(s.healthReason ?? '');
+  if (s.overBudget && !healthMentionsBudget) {
     issues.push({
       category: 'budget', label: 'Budget issue', tone: 'critical', severity: 3,
       detail: s.budgetUsedPct != null
@@ -411,7 +415,7 @@ export function buildProjectHealthView(
     let loggedTone: RiskTone = 'neutral';
     if (allocatedH > 0) {
       const ratio = loggedH / allocatedH;
-      loggedTone = ratio > 1.02 ? 'critical' : ratio < 0.9 ? 'subtle' : 'neutral';
+      loggedTone = ratio > 1.02 ? 'critical' : ratio < 0.95 ? 'subtle' : 'neutral';
     }
     cards.push({
       key: 'logged_hours', label: 'Hours',

@@ -14,6 +14,7 @@ import type { TaskStatus } from '@/types/admin';
 import {
   riskText,
   TASK_STATUS_LABEL,
+  TASK_STATUS_TONE,
   type SummaryCardVM,
   type CriticalIssueVM,
   type TaskRowVM,
@@ -91,16 +92,13 @@ export function CriticalIssuesPanel({ issues }: { issues: CriticalIssueVM[] }) {
   }
   return (
     <section>
-      {/* No section heading + no icons per design — each issue is a plain red
-          line: a small red dot bullet, the label, then the detail. */}
+      {/* No section heading, no icons, no side labels per design — each issue is
+          just a plain red line: a small red dot bullet then the detail sentence. */}
       <ul className="space-y-2 rounded-2xl border border-border bg-card px-4 py-3">
         {issues.map((it) => (
           <li key={it.category} className="flex items-baseline gap-2.5 text-sm text-rose-600 dark:text-rose-400">
             <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" />
-            <span>
-              <span className="font-semibold">{it.label}:</span>{' '}
-              <span>{it.detail}</span>
-            </span>
+            <span>{it.detail}</span>
           </li>
         ))}
       </ul>
@@ -134,15 +132,42 @@ function ExecCard({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-// One clickable task row in the "Tasks" tile: name + allocated/logged (red when
-// over the allocation) + an effort-share bar. Click opens the detail popup.
+// A compact task-status chip (To do / In progress / Blocked / Done), tone-colored
+// to match the status semantics used elsewhere on the page.
+const STATUS_CHIP_TONE: Record<RiskTone, string> = {
+  critical: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+  warning: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  subtle: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  neutral: 'bg-muted text-muted-foreground',
+};
+function TaskStatusChip({ status }: { status: string | null | undefined }) {
+  if (!status) return null;
+  const label = TASK_STATUS_LABEL[status] ?? status;
+  const tone = TASK_STATUS_TONE[status] ?? 'neutral';
+  return (
+    <span className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium', STATUS_CHIP_TONE[tone])}>
+      {label}
+    </span>
+  );
+}
+
+// One clickable task row in the "Tasks" tile: name + status chip + allocated/logged
+// (red when over the allocation) + an effort-share bar. Click opens the detail popup.
 function TaskLine({ t, onOpen }: { t: TaskRowVM; onOpen: () => void }) {
   return (
     <li>
       <button type="button" onClick={onOpen}
-        className="w-full rounded-md px-1 -mx-1 py-0.5 text-left transition-colors hover:bg-foreground/[0.04]">
+        className="group w-full rounded-md px-1 -mx-1 py-0.5 text-left transition-colors hover:bg-foreground/[0.04]">
         <div className="flex items-baseline justify-between gap-2 text-sm">
-          <span className="min-w-0 truncate text-foreground" title={t.name}>{t.name}</span>
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span
+              className="min-w-0 truncate text-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 group-hover:decoration-foreground"
+              title={t.name}
+            >
+              {t.name}
+            </span>
+            <TaskStatusChip status={t.task.status} />
+          </span>
           <span className={cn('shrink-0 tabular-nums', t.over ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-muted-foreground')}>
             {t.right}
           </span>
