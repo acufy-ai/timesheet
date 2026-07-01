@@ -176,6 +176,7 @@ export interface PortfolioRow {
   health: ProjectHealth;
   health_reason?: string | null;
   approved_hours: string | number;
+  allocated_hours?: string | number | null;
   revenue: string | number;
   cost: string | number;
   margin: string | number;

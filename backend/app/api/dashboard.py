@@ -3354,6 +3354,14 @@ async def get_portfolio(
     remaining_by_project = await _remaining_alloc_hours_by_project(
         db, list(managed_ids), current_user.tenant_id
     )
+    # Allocated hours per project = sum of task estimates (the plan), shown as
+    # "allocated vs logged" alongside approved hours — mirrors the dashboard.
+    from app.models.task import Task as _TaskM
+    alloc_by_project = {pid: Decimal(str(h or 0)) for pid, h in (await db.execute(
+        select(_TaskM.project_id, func.coalesce(func.sum(_TaskM.estimated_hours), 0))
+        .where(_TaskM.project_id.in_(list(managed_ids) or [-1]), _TaskM.is_active.is_(True))
+        .group_by(_TaskM.project_id)
+    )).all()}
 
     agg: dict[int, dict] = {}
     for e in entries:
@@ -3412,6 +3420,7 @@ async def get_portfolio(
             health=health, health_reason=health_reason, approved_hours=d["hours"], revenue=revenue, cost=cost,
             margin=margin, margin_pct=margin_pct, budget_amount=budget, budget_used_pct=budget_pct,
             days_until_end=days_until_end, currency=p.currency or "USD",
+            allocated_hours=(alloc_by_project.get(pid) or None),
         ))
 
     rows.sort(key=lambda r: (HEALTH_RANK.get(r.health, 9), -(r.margin_pct if r.margin_pct is not None else -999)))

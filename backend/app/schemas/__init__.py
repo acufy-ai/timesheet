@@ -1638,6 +1638,7 @@ class PortfolioRow(BaseModel):
     health: str  # excellent | on-track | at-risk | critical | blocked | not-set
     health_reason: Optional[str] = None
     approved_hours: Decimal = Decimal("0")
+    allocated_hours: Optional[Decimal] = None  # sum of task estimates (the plan)
     revenue: Decimal = Decimal("0")
     cost: Decimal = Decimal("0")
     margin: Decimal = Decimal("0")

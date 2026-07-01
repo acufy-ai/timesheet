@@ -225,11 +225,11 @@ function PortfolioTab() {
   // Group the (filtered) projects by client, like the dashboard's Projects
   // widget: a client band, then its projects, with the worst health rolled up.
   const groups = useMemo(() => {
-    const byClient = new Map<number | null, { clientId: number | null; clientName: string; projects: typeof rows; worstHealth: string; worstCount: number }>();
+    const byClient = new Map<number | null, { clientId: number | null; clientName: string; projects: typeof rows; worstHealth: string; worstCount: number; totalAllocated: number; totalLogged: number }>();
     for (const r of rows) {
       const key = r.client_id ?? null;
       let g = byClient.get(key);
-      if (!g) { g = { clientId: key, clientName: r.client_name || 'No client', projects: [], worstHealth: 'not-set', worstCount: 0 }; byClient.set(key, g); }
+      if (!g) { g = { clientId: key, clientName: r.client_name || 'No client', projects: [], worstHealth: 'not-set', worstCount: 0, totalAllocated: 0, totalLogged: 0 }; byClient.set(key, g); }
       g.projects.push(r);
     }
     const list = [...byClient.values()];
@@ -241,6 +241,8 @@ function PortfolioTab() {
         if (rank < worstRank) { worstRank = rank; g.worstHealth = p.health; }
       }
       g.worstCount = g.projects.filter((p) => p.health === g.worstHealth).length;
+      g.totalAllocated = g.projects.reduce((s, p) => s + Number(p.allocated_hours ?? 0), 0);
+      g.totalLogged = g.projects.reduce((s, p) => s + Number(p.approved_hours ?? 0), 0);
     }
     list.sort((a, b) => a.clientName.localeCompare(b.clientName));
     return list;
@@ -300,12 +302,13 @@ function PortfolioTab() {
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Revenue" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Margin" side="bottom" /></th>
                 <th className="px-4 py-2 text-right font-semibold"><InfoLabel label="Budget %" infoKey="budget burn" side="bottom" /></th>
+                <th className="px-4 py-2 text-right font-semibold">Allocated / logged</th>
                 <th className="px-4 py-2 text-right font-semibold">Ends in</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">No projects match your search.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">No projects match your search.</td></tr>
               ) : null}
               {groups.map((g) => {
                 const wm = healthMeta(g.worstHealth);
@@ -322,12 +325,18 @@ function PortfolioTab() {
                           <span className="rounded-full bg-muted px-1.5 text-[10px] font-semibold tabular-nums text-muted-foreground">{g.projects.length}</span>
                         </span>
                       </td>
-                      <td className="border-b border-border px-4 py-2.5 text-right" colSpan={4}>
+                      <td className="border-b border-border px-4 py-2.5 text-right" colSpan={3}>
                         <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
                           <span className={cn('h-1.5 w-1.5 rounded-full', wm.dot)} />
                           {g.worstCount} {wm.label.toLowerCase()} {g.worstCount === 1 ? 'project' : 'projects'}
                         </span>
                       </td>
+                      <td className="border-b border-border px-4 py-2.5 text-right tabular-nums text-[12px] text-muted-foreground">
+                        {g.totalAllocated > 0
+                          ? <>{Math.round(g.totalAllocated)}h / {Math.round(g.totalLogged)}h total</>
+                          : <>{Math.round(g.totalLogged)}h total</>}
+                      </td>
+                      <td className="border-b border-border px-4 py-2.5" />
                     </tr>
                     {g.projects.map((r) => {
                       const h = healthMeta(r.health);
@@ -351,6 +360,11 @@ function PortfolioTab() {
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums">
                             {r.budget_used_pct != null ? <span className={r.budget_used_pct > 100 ? 'text-rose-600 dark:text-rose-400' : r.budget_used_pct > 80 ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}>{r.budget_used_pct}%</span> : <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums text-foreground">
+                            {r.allocated_hours != null && Number(r.allocated_hours) > 0
+                              ? <><span className="text-muted-foreground">{Math.round(Number(r.allocated_hours))}h / </span>{Math.round(Number(r.approved_hours ?? 0))}h</>
+                              : <>{Math.round(Number(r.approved_hours ?? 0))}h</>}
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                             {r.days_until_end != null ? (r.days_until_end < 0 ? `${Math.abs(r.days_until_end)}d overdue` : `${r.days_until_end}d`) : '—'}
