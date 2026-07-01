@@ -2840,10 +2840,16 @@ export function ProjectModal({
           <div>
             <label className={labelClass}>Budget ($)</label>
             <Input type="number" step="0.01" min="0" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Client budget" />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              The spend target. Sets Billed % (revenue vs budget); it doesn’t price hours.
+            </p>
           </div>
           <div>
             <label className={labelClass}>Estimated hours</label>
             <Input type="number" step="1" min="0" value={estHours} onChange={(e) => setEstHours(e.target.value)} placeholder="Planned hours" />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Planned effort for progress and forecasting. Not used to bill.
+            </p>
           </div>
           <div>
             <label className={labelClass}>Revenue recognition</label>
@@ -2855,6 +2861,9 @@ export function ProjectModal({
           <div>
             <label className={labelClass}>Billable rate ($/h)</label>
             <Input type="number" step="0.01" min="0" value={billableRate} onChange={(e) => setBillableRate(e.target.value)} placeholder="e.g. 150" />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Fallback rate. A resource’s role rate card (Roles tab) is used first; this applies only when their role has no card.
+            </p>
           </div>
           <div>
             <label className={labelClass}>Due date</label>
