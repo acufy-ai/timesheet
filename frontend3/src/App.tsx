@@ -33,7 +33,7 @@ import { MailboxesPage } from '@/pages/MailboxesPage';
 import { ReviewPanelPage } from '@/pages/ReviewPanelPage';
 import { PlatformDashboardPage } from '@/pages/platform/PlatformDashboardPage';
 import { PlatformTenantsPage } from '@/pages/platform/PlatformTenantsPage';
-import { PlatformTenantDetailPage } from '@/pages/platform/PlatformTenantDetailPage';
+import { RequirePM } from '@/components/layout/RequirePM';
 import { PlatformSettingsPage } from '@/pages/platform/PlatformSettingsPage';
 import { PlatformAuditPage } from '@/pages/platform/PlatformAuditPage';
 import { PlatformCalendarPage } from '@/pages/platform/PlatformCalendarPage';
@@ -94,15 +94,15 @@ export default function App() {
                 <Route path="/portal/projects/:id" element={<ClientProjectDetailPage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/my-time" element={<MyTimePage />} />
-                <Route path="/my-work" element={<MyWorkPage />} />
+                <Route path="/my-work" element={<RequirePM><MyWorkPage /></RequirePM>} />
                 <Route path="/time-off" element={<TimeOffPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/approvals" element={<ApprovalsPage />} />
                 <Route path="/user-management" element={<UsersPage />} />
                 <Route path="/user-management/:userId/timesheets" element={<UserTimesheetsPage />} />
-                <Route path="/client-management" element={<ClientsPage />} />
-                <Route path="/insights" element={<InsightsPage />} />
-                <Route path="/insights/project/:id" element={<ProjectReportPage />} />
+                <Route path="/client-management" element={<RequirePM><ClientsPage /></RequirePM>} />
+                <Route path="/insights" element={<RequirePM><InsightsPage /></RequirePM>} />
+                <Route path="/insights/project/:id" element={<RequirePM><ProjectReportPage /></RequirePM>} />
                 <Route path="/audit-trail" element={<AuditTrailPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/mailboxes" element={<MailboxesPage />} />
@@ -112,7 +112,8 @@ export default function App() {
                 {/* Platform-admin console */}
                 <Route path="/platform" element={<PlatformDashboardPage />} />
                 <Route path="/platform/tenants" element={<PlatformTenantsPage />} />
-                <Route path="/platform/tenants/:slug" element={<PlatformTenantDetailPage />} />
+                {/* Master-detail: :slug selects a tenant inside the same page. */}
+                <Route path="/platform/tenants/:slug" element={<PlatformTenantsPage />} />
                 <Route path="/platform/settings" element={<PlatformSettingsPage />} />
                 <Route path="/platform/audit" element={<PlatformAuditPage />} />
                 <Route path="/platform/calendar" element={<PlatformCalendarPage />} />

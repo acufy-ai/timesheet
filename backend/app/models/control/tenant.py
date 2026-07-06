@@ -41,6 +41,12 @@ class ControlTenant(ControlBase, TimestampMixin):
     ingestion_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # Project-management module availability. Default true so existing tenants
+    # keep it; a platform admin disables it deliberately. Mirrored from the legacy
+    # row on update, same as ingestion_enabled.
+    project_management_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
     max_mailboxes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, default=None

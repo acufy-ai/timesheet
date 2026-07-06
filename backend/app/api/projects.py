@@ -9,7 +9,7 @@ from app.crud.project import (
 from app.crud.client import get_client_by_id
 from app.crud.time_entry import count_protected_entries_for_project
 from app.crud.task import validate_assignee_ids as validate_user_ids_in_tenant
-from app.core.deps import get_current_user, get_tenant_db, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_project_management_enabled
 from app.models.assignments import UserProjectAccess, ProjectManager
 from app.models.user import User, UserRole
 from app.api._client_access import (
@@ -52,7 +52,12 @@ from app.services.activity import (
     record_activity_events,
 )
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+# Every project endpoint is part of the project-management module, so gate the
+# whole router: returns 403 when the tenant has PM disabled.
+router = APIRouter(
+    prefix="/projects", tags=["projects"],
+    dependencies=[Depends(require_project_management_enabled)],
+)
 
 
 @router.get("", response_model=list[ProjectWithClient])

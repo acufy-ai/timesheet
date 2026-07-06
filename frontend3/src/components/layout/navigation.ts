@@ -55,6 +55,7 @@ const canReview = (user: User | null) =>
 export const buildNavigation = (
   user: User | null,
   ingestionEnabled: boolean,
+  pmEnabled: boolean = true,
 ): NavSection[] => {
   // Client personas are fail-closed: they see ONLY the client portal, never the
   // workspace/ops/platform sections. Returning early guarantees an unmapped or
@@ -94,10 +95,12 @@ export const buildNavigation = (
       icon: UsersRound,
       visible: isAdmin(user) || isManager(user),
     },
-    { label: 'Clients', to: `/client-management${roleSuffix}`, icon: Briefcase, visible: isAdmin(user) || isManager(user), match: ['/client-management'] },
+    // Clients + Insights are project-management module surfaces — hidden when
+    // the workspace has PM disabled.
+    { label: 'Clients', to: `/client-management${roleSuffix}`, icon: Briefcase, visible: pmEnabled && (isAdmin(user) || isManager(user)), match: ['/client-management'] },
     // PSA Insights (financials, resourcing, portfolio, forecasts). Managers +
     // viewers only — admin manages the workspace, not the money/analytics.
-    { label: 'Insights', to: '/insights', icon: TrendingUp, visible: Boolean(user && (user.role === 'MANAGER' || user.role === 'VIEWER')), match: ['/insights'] },
+    { label: 'Insights', to: '/insights', icon: TrendingUp, visible: pmEnabled && Boolean(user && (user.role === 'MANAGER' || user.role === 'VIEWER')), match: ['/insights'] },
     { label: 'Audit Trail', to: '/audit-trail', icon: ClipboardList, visible: isAdmin(user) },
     { label: 'Settings', to: '/settings', icon: Settings, visible: isAdmin(user) },
   ];
@@ -126,8 +129,9 @@ export const buildNavigation = (
           to: '/my-work',
           icon: ListChecks,
           // People who get assigned to projects/tasks (employees, managers,
-          // viewers). Admins manage rather than get assigned.
-          visible: Boolean(user && ['EMPLOYEE', 'MANAGER', 'VIEWER'].includes(user.role)),
+          // viewers). Admins manage rather than get assigned. Part of the PM
+          // module — hidden when the workspace has PM disabled.
+          visible: pmEnabled && Boolean(user && ['EMPLOYEE', 'MANAGER', 'VIEWER'].includes(user.role)),
           match: ['/my-work'],
         },
         {

@@ -9,6 +9,7 @@ export interface Tenant {
   status: TenantStatus;
   is_archived?: boolean;
   ingestion_enabled: boolean;
+  project_management_enabled?: boolean;
   max_mailboxes?: number | null;
   timezone?: string | null;
   has_logo?: boolean;

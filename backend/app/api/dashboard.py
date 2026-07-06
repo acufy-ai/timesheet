@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_current_user, get_tenant_db, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_project_management_enabled
 from app.core.permissions import shadow_check
 from app.core.timezone_utils import combine_tenant, now_for_tenant
 from app.models.assignments import EmployeeManagerAssignment
@@ -85,6 +85,12 @@ from app.api._dashboard_scope import (
 )
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+# Project-management gate for the PORTFOLIO / PROJECT / INSIGHTS dashboard
+# endpoints only. Personal dashboard, team roster/overview, team performance
+# stats (rejection/billable/on-time), analytics, activity, and health config
+# stay ungated so they work whether or not the PM module is on.
+_PM_GATE = [Depends(require_project_management_enabled)]
 
 
 async def _get_managed_employee_ids(db: AsyncSession, manager_id: int, as_of: Optional[date] = None) -> list[int]:
@@ -1742,7 +1748,7 @@ async def get_manager_team_overview(
 
 # Manager Project Health: scoped to projects the manager's team has logged against.
 
-@router.get("/manager-project-health", response_model=ManagerProjectHealthResponse)
+@router.get("/manager-project-health", response_model=ManagerProjectHealthResponse, dependencies=_PM_GATE)
 async def get_manager_project_health(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
@@ -1976,7 +1982,7 @@ async def get_manager_project_health(
     return ManagerProjectHealthResponse(rows=rows)
 
 
-@router.get("/manager-financials", response_model=ManagerFinancialsResponse)
+@router.get("/manager-financials", response_model=ManagerFinancialsResponse, dependencies=_PM_GATE)
 async def get_manager_financials(
     scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
@@ -2788,7 +2794,7 @@ async def get_team_project_matrix(
     )
 
 
-@router.get("/team-resourcing", response_model=TeamResourcingResponse)
+@router.get("/team-resourcing", response_model=TeamResourcingResponse, dependencies=_PM_GATE)
 async def get_team_resourcing(
     weeks_ahead: int = Query(4, ge=1, le=26),
     scope: DashboardScope = Depends(get_dashboard_scope),
@@ -3376,7 +3382,7 @@ async def get_scope_options(
     )
 
 
-@router.get("/portfolio", response_model=PortfolioResponse)
+@router.get("/portfolio", response_model=PortfolioResponse, dependencies=_PM_GATE)
 async def get_portfolio(
     scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
@@ -3689,7 +3695,7 @@ async def set_project_health_override(
     )
 
 
-@router.get("/manager-clients", response_model=ManagerClientsResponse)
+@router.get("/manager-clients", response_model=ManagerClientsResponse, dependencies=_PM_GATE)
 async def get_manager_clients(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
@@ -3748,7 +3754,7 @@ async def get_manager_clients(
     return ManagerClientsResponse(client_count=len(rows), rows=rows)
 
 
-@router.get("/project/{project_id}/task-breakdown", response_model=ProjectTaskBreakdownResponse)
+@router.get("/project/{project_id}/task-breakdown", response_model=ProjectTaskBreakdownResponse, dependencies=_PM_GATE)
 async def get_project_task_breakdown(
     project_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -4028,7 +4034,7 @@ async def get_project_task_breakdown(
     )
 
 
-@router.get("/evm", response_model=EvmResponse)
+@router.get("/evm", response_model=EvmResponse, dependencies=_PM_GATE)
 async def get_evm(
     scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),
@@ -4166,7 +4172,7 @@ async def get_evm(
     return EvmResponse(rows=rows)
 
 
-@router.get("/revenue-recognition", response_model=RevRecResponse)
+@router.get("/revenue-recognition", response_model=RevRecResponse, dependencies=_PM_GATE)
 async def get_revenue_recognition(
     scope: DashboardScope = Depends(get_dashboard_scope),
     db: AsyncSession = Depends(get_tenant_db),

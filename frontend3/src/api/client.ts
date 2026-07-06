@@ -941,7 +941,7 @@ export const platformApi = {
   // Remove ADMIN rights from a tenant admin (keeps the account).
   removeTenantAdmin: (id: number, userId: number) =>
     api.delete<{ id: number; email: string; removed_admin: boolean }>(`/tenants/${id}/admins/${userId}`),
-  updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; max_mailboxes: number; timezone: string }>) =>
+  updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; project_management_enabled: boolean; max_mailboxes: number; timezone: string }>) =>
     api.patch<Tenant>(`/tenants/${id}`, data),
   tenantLifecycle: (id: number, action: string, confirmation_token?: string) =>
     api.post<Tenant>(`/tenants/${id}/lifecycle`, { action, confirmation_token }),

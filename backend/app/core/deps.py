@@ -577,6 +577,52 @@ async def require_ingestion_enabled(
     return current_user
 
 
+async def require_project_management_enabled(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> User:
+    """Verify the current user's tenant has the project-management module enabled.
+
+    Gates the Clients / Projects / Tasks / Insights (portfolio) endpoints. When
+    the platform admin has turned the module off, those return 403 while personal
+    time tracking, approvals, and time off stay available. Mirrors
+    ``require_ingestion_enabled``."""
+    from app.models.tenant import Tenant
+
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project management is not available without a tenant assignment.",
+        )
+
+    # Read the flag from the CONTROL PLANE — that's the source of truth the
+    # platform admin writes via PATCH /tenants/{id}. The per-tenant DB's tenants
+    # row (what get_tenant_db would return for an isolated tenant) is not synced
+    # on that write, so reading it here would miss the toggle. Fall back to the
+    # local row only if the control plane is unreachable.
+    enabled = True
+    try:
+        from app.models.control import ControlTenant
+        from app.db_control import AsyncControlSessionLocal as ControlSession
+        async with ControlSession() as control_db:
+            ctrl = await control_db.get(ControlTenant, current_user.tenant_id)
+            if ctrl is not None:
+                enabled = bool(getattr(ctrl, "project_management_enabled", True))
+    except Exception:  # noqa: BLE001 — control plane down: fall back to local row
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        enabled = getattr(tenant, "project_management_enabled", True) is not False
+
+    if not enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "The project management module is not enabled for this workspace. "
+                "Contact your platform administrator."
+            ),
+        )
+    return current_user
+
+
 async def require_can_review(
     current_user: User = Depends(get_current_user),
 ) -> User:

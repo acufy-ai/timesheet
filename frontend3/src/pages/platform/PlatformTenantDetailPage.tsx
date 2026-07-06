@@ -1,16 +1,15 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Loader2, Pencil, Plus, ShieldMinus, X } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Check, Loader2, Pencil, Plus, ShieldMinus, X } from 'lucide-react';
 
-import { Button, Card, FieldError, Input, Modal, RequiredMark, StatusBadge, Toast, TonePill, WorkspaceHeader } from '@/components/ui';
+import { Button, Card, FieldError, Input, Modal, RequiredMark, StatusBadge, Toast, TonePill } from '@/components/ui';
+import type { Tenant } from '@/types/platform';
 import {
   useAddTenantAdmin,
   useRemoveTenantAdmin,
   useTenantAdmins,
   useTenantFeatures,
   useTenantLifecycle,
-  useTenants,
   useTenantStats,
   useUpdateTenant,
   useUpdateTenantAdmin,
@@ -22,20 +21,16 @@ function errText(err: unknown, fb: string): string {
   return typeof d === 'string' ? d : fb;
 }
 
-// Platform-admin: one tenant's detail on a SINGLE page — stats, details +
-// ingestion toggle, admins (list + add), entitlement features, and advanced
-// (lifecycle + service tokens + provision system user). Laid out in two columns
-// to use the width instead of stretching single fields. PA create/delete is
-// intentionally out of scope (PA accounts live in the control DB).
-export function PlatformTenantDetailPage() {
-  const { slug } = useParams<{ slug: string }>();
-  const navigate = useNavigate();
-  const tenantsQ = useTenants(true);
+// Platform-admin: the detail PANEL for one selected tenant — details + ingestion
+// toggle, admins (list + add/edit/remove), entitlement features, lifecycle, and
+// at-a-glance stats. Rendered inside the master-detail Tenants page (right side).
+// Takes the tenant as a prop; the parent owns list/selection/URL. ``onArchived``
+// lets the parent clear the selection after an archive.
+export function TenantDetailPanel({ tenant: t, onArchived }: { tenant: Tenant; onArchived?: () => void }) {
   const update = useUpdateTenant();
   const lifecycle = useTenantLifecycle();
 
-  const tenant = (tenantsQ.data ?? []).find((t) => t.slug === slug);
-  const statsQ = useTenantStats(Boolean(tenant));
+  const statsQ = useTenantStats(true);
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const flashAndFade = (tone: 'ok' | 'err', text: string) => { setFlash({ tone, text }); window.setTimeout(() => setFlash(null), 5000); };
 
@@ -51,22 +46,14 @@ export function PlatformTenantDetailPage() {
   const [editErr, setEditErr] = useState<string | null>(null);
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
-  if (tenantsQ.isLoading) {
-    return <div className="grid place-items-center py-20 text-muted-foreground"><Loader2 className="h-6 w-6 animate-spin" aria-label="Loading" /></div>;
-  }
-  if (!tenant) {
-    return (
-      <div className="space-y-4">
-        <button type="button" onClick={() => navigate('/platform/tenants')} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to tenants</button>
-        <Card className="px-4 py-6 text-sm text-muted-foreground">Tenant not found.</Card>
-      </div>
-    );
-  }
-  const t = tenant;
   const stats = statsQ.data?.stats?.[t.id];
 
   async function toggleIngestion() {
     try { await update.mutateAsync({ id: t.id, data: { ingestion_enabled: !t.ingestion_enabled } }); flashAndFade('ok', 'Updated.'); }
+    catch (err) { flashAndFade('err', errText(err, 'Could not update the tenant.')); }
+  }
+  async function toggleProjectManagement() {
+    try { await update.mutateAsync({ id: t.id, data: { project_management_enabled: !(t.project_management_enabled ?? true) } }); flashAndFade('ok', 'Updated.'); }
     catch (err) { flashAndFade('err', errText(err, 'Could not update the tenant.')); }
   }
 
@@ -116,7 +103,7 @@ export function PlatformTenantDetailPage() {
       };
       setConfirmAction(null); setConfirmName('');
       flashAndFade('ok', `${t.name} ${done[confirmAction] ?? 'updated'}.`);
-      if (confirmAction === 'archive') navigate('/platform/tenants');
+      if (confirmAction === 'archive') onArchived?.();
     } catch (err) {
       flashAndFade('err', errText(err, 'Could not apply that action.'));
     }
@@ -156,41 +143,43 @@ export function PlatformTenantDetailPage() {
   };
 
   return (
-    <div className="space-y-5">
-      <button type="button" onClick={() => navigate('/platform/tenants')} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to tenants</button>
-      <WorkspaceHeader
-        title={t.name}
-        description={`/${t.slug}`}
-        primary={t.is_archived
-          ? <TonePill tone="neutral">Archived</TonePill>
-          : t.status === 'active'
-            ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} />
-            : <TonePill tone={t.status === 'suspended' ? 'danger' : 'neutral'}>{t.status}</TonePill>}
-      />
+    <div className="space-y-3">
+      {/* Panel header: selected tenant name + status. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2.5">
+            <h2 className="truncate text-xl font-bold text-foreground">{t.name}</h2>
+            {t.is_archived
+              ? <TonePill tone="neutral">Archived</TonePill>
+              : t.status === 'active'
+                ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} />
+                : <TonePill tone={t.status === 'suspended' ? 'danger' : 'neutral'}>{t.status}</TonePill>}
+          </div>
+          <p className="mt-0.5 text-sm text-muted-foreground">/{t.slug}</p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={openEdit}>
+          <Pencil className="h-3.5 w-3.5" /> Edit details
+        </Button>
+      </div>
 
       {flash ? (
         <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
-      {/* Stat tiles */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {/* At-a-glance stats. */}
+      <div className="grid grid-cols-3 gap-3">
         <StatBox label="Users" value={stats?.user_count != null ? String(stats.user_count) : '—'} />
         <StatBox label="Admins" value={stats?.admin_count != null ? String(stats.admin_count) : '—'} />
         <StatBox label="Last activity" value={stats?.last_activity_at ? new Date(stats.last_activity_at).toLocaleDateString() : 'never'} />
       </div>
 
-      {/* Two-column layout to use the width. Left = details + admins; right =
-          features + advanced. Everything on one page (no tabs). */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div className="space-y-5">
-          <Card className="p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">Details</p>
-              <Button size="sm" variant="secondary" onClick={openEdit}>
-                <Pencil className="h-3.5 w-3.5" /> Edit details
-              </Button>
-            </div>
-            <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+      {/* Two-column so the panel is short: Details/Features/Lifecycle stack on the
+          left, Admins (the tall one) on the right. Both columns top-align. */}
+      <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2">
+        <div className="space-y-3">
+          <Card className="p-3">
+            <p className="mb-2 text-sm font-semibold text-foreground">Details</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
               <Detail label="Tenant ID" value={String(t.id)} />
               <Detail label="Slug" value={t.slug} />
               <Detail label="Status" value={t.is_archived ? 'archived' : t.status} />
@@ -198,24 +187,40 @@ export function PlatformTenantDetailPage() {
               <Detail label="Created" value={new Date(t.created_at).toLocaleDateString()} />
               <Detail label="Max mailboxes" value={t.max_mailboxes != null ? String(t.max_mailboxes) : '—'} />
             </div>
-            <label className="mt-4 flex w-fit cursor-pointer items-center gap-2 text-sm text-foreground">
-              <input type="checkbox" checked={t.ingestion_enabled} onChange={toggleIngestion} disabled={update.isPending} className="h-4 w-4 rounded border-border accent-[hsl(var(--primary))]" />
-              Email ingestion enabled
-            </label>
+          </Card>
+
+          <Card className="p-3">
+            <p className="mb-2 text-sm font-semibold text-foreground">Features</p>
+            <FeaturesTab tenantId={t.id} onFlash={flashAndFade} />
+          </Card>
+        </div>
+
+        <div className="space-y-3">
+          <Card className="p-3">
+            <p className="mb-1 text-sm font-semibold text-foreground">Access</p>
+            <p className="mb-1.5 text-xs text-muted-foreground">Which modules this workspace can use.</p>
+            <div className="divide-y divide-border">
+              <FeatureRow
+                label="Email Processing"
+                desc="Ingest timesheets from email (mailboxes, LLM extraction, review queue)."
+                checked={t.ingestion_enabled}
+                disabled={update.isPending}
+                onChange={() => void toggleIngestion()}
+              />
+              <FeatureRow
+                label="Project Management"
+                desc="Clients, projects, tasks, and the Insights dashboards."
+                checked={t.project_management_enabled ?? true}
+                disabled={update.isPending}
+                onChange={() => void toggleProjectManagement()}
+              />
+            </div>
           </Card>
 
           <AdminsCard tenantId={t.id} onFlash={flashAndFade} />
-        </div>
 
-        <div className="space-y-5">
-          <Card className="p-0">
-            <p className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Features</p>
-            <FeaturesTab tenantId={t.id} onFlash={flashAndFade} />
-          </Card>
-
-          <Card className="p-4">
-            <p className="mb-1 text-sm font-semibold text-foreground">Lifecycle</p>
-            <p className="mb-3 text-xs text-muted-foreground">Destructive actions require typing the tenant name to confirm.</p>
+          <Card className="border-amber-500/50 p-3">
+            <p className="mb-2 text-sm font-semibold text-foreground">Advanced</p>
             <div className="flex flex-wrap gap-2">
               {lifecycleActions.map((a) => (
                 <Button key={a.action} size="sm" variant={a.danger ? 'destructive' : 'secondary'} onClick={() => { setConfirmAction(a.action); setConfirmName(''); }}>{a.label}</Button>
@@ -358,9 +363,9 @@ function AdminsCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok'
   }
 
   return (
-    <Card className="p-4">
-      <p className="mb-1 text-sm font-semibold text-foreground">Admins {admins.length ? `· ${admins.length}` : ''}</p>
-      <p className="mb-3 text-xs text-muted-foreground">Everyone with the ADMIN role in this workspace (including a role they can switch into).</p>
+    <Card className="p-3">
+      <p className="mb-1 text-sm font-semibold text-foreground">Admins</p>
+      <p className="mb-2 text-xs text-muted-foreground">Everyone with the ADMIN role in this workspace (including a role they can switch into).</p>
 
       {adminsQ.isLoading ? (
         <div className="py-4 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-label="Loading" /></div>
@@ -415,7 +420,6 @@ function AdminsCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok'
         </div>
       </Modal>
 
-
       <p className="mb-2 text-[13px] font-medium text-foreground">Add admin</p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1">
@@ -456,7 +460,7 @@ function FeaturesTab({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok
 
 function FeatureRow({ label, desc, checked, disabled, onChange }: { label: string; desc: string; checked: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
+    <label className="flex cursor-pointer items-center justify-between gap-4 py-2.5">
       <span>
         <span className="block text-sm font-medium text-foreground">{label}</span>
         <span className="block text-xs text-muted-foreground">{desc}</span>
@@ -468,9 +472,9 @@ function FeatureRow({ label, desc, checked, disabled, onChange }: { label: strin
 
 function StatBox({ label, value }: { label: string; value: string }) {
   return (
-    <Card className="p-4">
+    <Card className="p-3">
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+      <p className="mt-0.5 text-xl font-semibold tabular-nums text-foreground">{value}</p>
     </Card>
   );
 }
