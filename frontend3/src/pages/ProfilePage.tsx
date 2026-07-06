@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Loader2, Users } from 'lucide-react';
+import { Bell, Eye, EyeOff, KeyRound, Loader2, Users } from 'lucide-react';
 
 import { Button, Card, Input, RoleBadge, Toast, WorkspaceHeader } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChangePassword, useMyProfile, useUpdateProfile } from '@/hooks/useAdmin';
+import { useUserPreferences, useUpdatePreferences } from '@/hooks/useUserPreferences';
 import { avatarTone, initials } from '@/lib/avatar';
 import { cn } from '@/lib/cn';
 
@@ -23,6 +24,10 @@ export function ProfilePage() {
   const profileQ = useMyProfile();
   const update = useUpdateProfile();
   const changePw = useChangePassword();
+  const prefsQ = useUserPreferences();
+  const updatePrefs = useUpdatePreferences();
+  // Attendance emails default ON; only false when explicitly turned off.
+  const attendanceEmails = prefsQ.data?.attendance_emails !== false;
 
   // Editable profile fields.
   const [fullName, setFullName] = useState('');
@@ -249,6 +254,39 @@ export function ProfilePage() {
               )}
             </div>
           </div>
+        </Card>
+      ) : null}
+
+      {/* Notifications — only meaningful for managers (people with reports). */}
+      {profile && profile.direct_reports.length > 0 ? (
+        <Card className="p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <p className="text-sm font-semibold text-foreground">Notifications</p>
+          </div>
+          <label className="flex cursor-pointer items-start justify-between gap-4">
+            <span>
+              <span className="text-sm font-medium text-foreground">Team clock-in / out emails</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Email me when someone who reports to me clocks in or out.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={attendanceEmails}
+              disabled={prefsQ.isLoading || updatePrefs.isPending}
+              onChange={(e) => {
+                updatePrefs.mutate(
+                  { attendance_emails: e.target.checked },
+                  {
+                    onSuccess: () => flashAndFade('ok', 'Notification preference saved.'),
+                    onError: () => flashAndFade('err', 'Could not save preference.'),
+                  },
+                );
+              }}
+              className="mt-1 h-4 w-4 shrink-0 accent-primary"
+            />
+          </label>
         </Card>
       ) : null}
     </div>

@@ -25,6 +25,7 @@ from app.api import (
     dashboards_public,
     departments,
     titles,
+    attendance,
     holidays,
     ingestion,
     leave_types,
@@ -262,6 +263,7 @@ app.include_router(client_extras.router)
 app.include_router(client_extras.notes_router)
 app.include_router(client_portal.router)
 app.include_router(departments.router)
+app.include_router(attendance.router)
 app.include_router(titles.router)
 app.include_router(holidays.router)
 app.include_router(leave_types.router)

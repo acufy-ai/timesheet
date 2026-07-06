@@ -658,6 +658,34 @@ export interface NotificationSummary {
   items: NotificationItem[];
 }
 
+// Attendance (clock in / out) — a pure presence signal, separate from hours.
+export interface AttendanceEventOut {
+  id: number;
+  event_type: 'clock_in' | 'clock_out';
+  occurred_at: string;
+  note?: string | null;
+}
+export interface AttendanceStatus {
+  clocked_in: boolean;
+  since?: string | null;
+  last_event?: 'clock_in' | 'clock_out' | null;
+  events_today: AttendanceEventOut[];
+}
+export interface TeamAttendanceRow {
+  user_id: number;
+  full_name: string;
+  clocked_in: boolean;
+  since?: string | null;
+  last_event_at?: string | null;
+  last_event?: 'clock_in' | 'clock_out' | null;
+}
+export interface TeamAttendanceResponse {
+  date: string;
+  in_count: number;
+  total: number;
+  rows: TeamAttendanceRow[];
+}
+
 // A dismissed/snoozed attention-queue signal (GET /attention-signals/dismissed).
 export interface DismissedSignal {
   signal_key: string;

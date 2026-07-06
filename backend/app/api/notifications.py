@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, get_tenant_db
 from app.core.timezone_utils import now_for_tenant
 from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess
+from app.models.attendance import AttendanceEvent
 from app.models.notification import UserNotificationDismissal, UserNotificationState
 from app.models.tenant import Tenant
 from app.models.time_entry import TimeEntry, TimeEntryStatus
@@ -417,6 +418,35 @@ async def _build_notification_summary(
             count=int(recent_assignment_count or 0),
             severity="info",
             created_at=recent_assignment_latest,
+        )
+
+        # Team clock-in/out today — count of the manager's reports' clock events
+        # since the start of the tenant's local day. Points at the dashboard's
+        # "Who's in" tile.
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        clock_count, clock_latest = (
+            await db.execute(
+                select(func.count(AttendanceEvent.id), func.max(AttendanceEvent.occurred_at))
+                .join(
+                    EmployeeManagerAssignment,
+                    EmployeeManagerAssignment.employee_id == AttendanceEvent.user_id,
+                )
+                .where(
+                    (EmployeeManagerAssignment.manager_id == current_user.id)
+                    & (AttendanceEvent.tenant_id == current_user.tenant_id)
+                    & (AttendanceEvent.occurred_at >= day_start)
+                )
+            )
+        ).one()
+        _add_notification(
+            items,
+            notification_id="team-clock-events",
+            title="Team clock-in / out",
+            message=f"{int(clock_count or 0)} clock-in/out event{'' if int(clock_count or 0) == 1 else 's'} from your team today.",
+            route="/dashboard?notif=team-clock-events",
+            count=int(clock_count or 0),
+            severity="info",
+            created_at=_naive(clock_latest),
         )
 
     if current_user.role == UserRole.ADMIN:

@@ -42,6 +42,7 @@ from .project_baseline import ProjectBaseline
 from .resource_allocation import ResourceAllocation
 from .project_health_config import ProjectHealthConfig
 from .dashboard import CustomDashboard
+from .attendance import AttendanceEvent, AttendanceEventType
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserTaskAccess", "TaskAssignee", "ProjectManager", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
@@ -53,4 +54,4 @@ __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "
            "Contract", "ContractStatus", "ClientContact", "ClientRoleRate", "ClientNote",
            "Holiday", "HolidayType", "ClientAccessGrant", "ClientEmployeeLink", "ClientTaskReview",
            "ProjectBaseline", "ResourceAllocation", "ProjectHealthConfig", "TaskDependency",
-           "CustomDashboard"]
+           "CustomDashboard", "AttendanceEvent", "AttendanceEventType"]

@@ -30,6 +30,12 @@ backups/
 frontend/src/pages/DevQuickLogin.tsx
 frontend2/src/pages/DevQuickLogin.tsx
 
+# Legacy frontends — frontend3 is the live app; these are unused (frontend2 is
+# rollback-only, frontend is old). Ignore future changes to them. Files already
+# tracked stay tracked until explicitly removed.
+frontend/
+frontend2/
+
 # Local-only artifacts (mockups, plan docs, dev overlay)
 local/
 docs/redesign-roadmap.md

@@ -2661,3 +2661,40 @@ class ClientReviewItem(BaseModel):
 
 class ClientReviewAction(BaseModel):
     note: Optional[str] = None
+
+
+# ── Attendance (clock in / out) ──────────────────────────────────────────────
+class AttendanceClockRequest(BaseModel):
+    note: Optional[str] = None
+
+
+class AttendanceEventOut(BaseModel):
+    id: int
+    event_type: str  # clock_in | clock_out
+    occurred_at: datetime
+    note: Optional[str] = None
+    model_config = {"from_attributes": True}
+
+
+class AttendanceStatus(BaseModel):
+    """The caller's own attendance state today."""
+    clocked_in: bool
+    since: Optional[datetime] = None       # when the current clock-in started
+    last_event: Optional[str] = None       # clock_in | clock_out | None
+    events_today: List[AttendanceEventOut] = []
+
+
+class TeamAttendanceRow(BaseModel):
+    user_id: int
+    full_name: str
+    clocked_in: bool
+    since: Optional[datetime] = None       # start of current session (if in)
+    last_event_at: Optional[datetime] = None
+    last_event: Optional[str] = None       # clock_in | clock_out | None
+
+
+class TeamAttendanceResponse(BaseModel):
+    date: date
+    in_count: int
+    total: int
+    rows: List[TeamAttendanceRow] = []
