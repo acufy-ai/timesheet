@@ -70,6 +70,31 @@ async def notify_timesheet_rejected(
         logger.warning("Failed to send rejection notification to %s: %s", employee_email, exc)
 
 
+async def notify_attendance_event(
+    manager_email: str,
+    manager_name: str,
+    employee_name: str,
+    action: str,      # "clocked in" | "clocked out"
+    when: str,        # e.g. "9:03 AM"
+    db: Optional[AsyncSession] = None,
+) -> None:
+    subject = f"{employee_name} {action} ({when})"
+    body_text = (
+        f"Hi {manager_name},\n\n"
+        f"{employee_name} {action} at {when} today.\n\n"
+        f"-- Acufy AI"
+    )
+    body_html = (
+        f"<p>Hi {manager_name},</p>"
+        f"<p><strong>{employee_name}</strong> {action} at <strong>{when}</strong> today.</p>"
+        f"<p>-- Acufy AI</p>"
+    )
+    try:
+        await send_email(manager_email, subject, body_text, body_html, db=db)
+    except Exception as exc:
+        logger.warning("Failed to send attendance notification to %s: %s", manager_email, exc)
+
+
 async def notify_time_off_approved(
     employee_email: str,
     employee_name: str,

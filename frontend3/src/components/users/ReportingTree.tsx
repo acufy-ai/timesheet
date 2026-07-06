@@ -87,19 +87,33 @@ function ReportLine({
 // One report node (compact single line), expandable to its own reports. The
 // nested reports-of-reports start collapsed to keep the list short.
 function ReportNode({
-  user, childrenByManager, depth, clickFor,
+  user, childrenByManager, depth, clickFor, ancestors,
 }: {
   user: ManagedUser;
   childrenByManager: Map<number, ManagedUser[]>;
   depth: number;
   // Returns an onClick only for openable ids (gates the data-leak fix).
   clickFor: (id: number) => (() => void) | undefined;
+  // Ids on the path from the root to (and including) this node. A child already
+  // in this set is a cycle; we stop descending so the render can't recurse
+  // forever (the graph may contain A->B->A loops from bad data).
+  ancestors: Set<number>;
 }) {
-  const kids = childrenByManager.get(user.id) ?? [];
+  // Skip children that would close a cycle back onto an ancestor.
+  const kids = (childrenByManager.get(user.id) ?? []).filter((k) => !ancestors.has(k.id));
   const [open, setOpen] = useState(false);
   const descendantCount = useMemo(() => {
+    // Cycle-guarded: the reporting graph can contain cycles (A manages B and B
+    // manages A, or a self-manage from bad data). Without `seen`, this recursion
+    // loops forever and overflows the stack. `seen` also prevents double-counting
+    // a person reachable through two managers.
+    const seen = new Set<number>([user.id]);
     const count = (uid: number): number =>
-      (childrenByManager.get(uid) ?? []).reduce((acc, c) => acc + 1 + count(c.id), 0);
+      (childrenByManager.get(uid) ?? []).reduce((acc, c) => {
+        if (seen.has(c.id)) return acc;
+        seen.add(c.id);
+        return acc + 1 + count(c.id);
+      }, 0);
     return count(user.id);
   }, [user.id, childrenByManager]);
 
@@ -134,7 +148,14 @@ function ReportNode({
       {open && kids.length ? (
         <div className="ml-2.5 mt-0.5 space-y-0.5 border-l border-border pl-2">
           {kids.map((k) => (
-            <ReportNode key={k.id} user={k} childrenByManager={childrenByManager} depth={depth + 1} clickFor={clickFor} />
+            <ReportNode
+              key={k.id}
+              user={k}
+              childrenByManager={childrenByManager}
+              depth={depth + 1}
+              clickFor={clickFor}
+              ancestors={new Set([...ancestors, k.id])}
+            />
           ))}
         </div>
       ) : null}
@@ -335,7 +356,14 @@ export function ReportingTree({
           ) : (
             <div className="space-y-0.5">
               {pagedReports.map((r) => (
-                <ReportNode key={r.id} user={r} childrenByManager={childrenByManager} depth={0} clickFor={clickFor} />
+                <ReportNode
+                  key={r.id}
+                  user={r}
+                  childrenByManager={childrenByManager}
+                  depth={0}
+                  clickFor={clickFor}
+                  ancestors={new Set([user.id, r.id])}
+                />
               ))}
             </div>
           )}

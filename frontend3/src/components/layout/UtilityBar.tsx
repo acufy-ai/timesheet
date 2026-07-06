@@ -8,6 +8,7 @@ import { AcufyLogo } from './AcufyLogo';
 import { NotificationsBell } from './NotificationsBell';
 import { ThemePicker } from './ThemePicker';
 import { TopbarTimer } from '@/components/timer/TopbarTimer';
+import { TopbarClock } from '@/components/attendance/TopbarClock';
 import { UserMenu } from './UserMenu';
 import { roleLabel } from '@/lib/roleLabels';
 
@@ -81,6 +82,7 @@ export function UtilityBar() {
             <span className="max-w-[160px] truncate">{workspaceName}</span>
           </span>
         ) : null}
+        {!isClient ? <TopbarClock /> : null}
         {!isClient ? <TopbarTimer /> : null}
         <ThemePicker />
         {!isClient ? <NotificationsBell /> : null}

@@ -8,9 +8,12 @@ import { useUserPreferences, useUpdatePreferences } from '@/hooks/useUserPrefere
 // users.preferences, so it follows the user across devices. No backend change:
 // it rides the existing GET/PATCH /users/me/preferences endpoints.
 
-// Stable identity for every customizable manager tile. The stat strip is fixed
-// (always first) and intentionally not in the registry.
+// Stable identity for every customizable manager tile. The top stat strip and
+// the team attendance ("Who's in") tile are registered too, so they can be
+// shown/hidden/reordered like everything else.
 export type ManagerTileKey =
+  | 'stats'
+  | 'attendance'
   | 'project-health'
   | 'project-matrix'
   | 'financials'
@@ -28,6 +31,8 @@ export interface ManagerTileDef {
 // The registry: the source of truth for tile identity, default order, labels,
 // and per-tile columns. Order here is the DEFAULT order.
 export const MANAGER_TILES: ManagerTileDef[] = [
+  { key: 'stats', label: 'Summary stats (team, approvals, PTO, rejections)' },
+  { key: 'attendance', label: "Who's in (clock-in/out)" },
   {
     key: 'project-health',
     label: 'Projects',

@@ -77,6 +77,8 @@ import type {
   Title,
   CreateUserResult,
   DismissedSignal,
+  AttendanceStatus,
+  TeamAttendanceResponse,
   EmailAlias,
   ImportPreview,
   ImportValidateResult,
@@ -757,6 +759,14 @@ export const notificationsApi = {
   markAllRead: () => api.post('/notifications/read-all', {}),
   deleteOne: (notification_id: string) => api.post('/notifications/delete', { notification_id }),
   deleteAll: () => api.post('/notifications/delete-all', {}),
+};
+
+// Clock in / out attendance (presence only; separate from time entries).
+export const attendanceApi = {
+  me: () => api.get<AttendanceStatus>('/attendance/me'),
+  clockIn: (note?: string) => api.post<AttendanceStatus>('/attendance/clock-in', note ? { note } : {}),
+  clockOut: (note?: string) => api.post<AttendanceStatus>('/attendance/clock-out', note ? { note } : {}),
+  team: () => api.get<TeamAttendanceResponse>('/attendance/team'),
 };
 
 // Per-user dismissal/snooze of dashboard attention-queue cards.

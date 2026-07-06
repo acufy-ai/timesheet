@@ -21,6 +21,7 @@ import { Card, Input, Pager, Skeleton, StatTile, TableSkeleton, TonePill, Worksp
 import { useClientPagination } from '@/hooks/useClientPagination';
 import { fmtMoney } from '@/lib/format';
 import { ManagerDashboardCustomizer } from '@/components/dashboard/ManagerDashboardCustomizer';
+import { TeamAttendanceTile } from '@/components/attendance/TeamAttendanceTile';
 import { useManagerDashboardPrefs, type ManagerTileKey } from '@/hooks/useManagerDashboardPrefs';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -1097,51 +1098,59 @@ export function DashboardPage() {
         </Card>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatTile
-              Icon={Users}
-              tone="primary"
-              value={`${onTrack}/${overview?.team_size ?? 0}`}
-              label="Team on track"
-              info={infoTextFor('Team on track')}
-              hint={weekOffset < 0 ? 'full week' : 'as of today'}
-            />
-            <StatTile
-              Icon={Clock}
-              tone="amber"
-              value={pending}
-              label="Approvals pending"
-              info={infoTextFor('Approvals pending')}
-              hint={
-                overview?.pending_approvals_oldest_hours != null
-                  ? describeAge(overview.pending_approvals_oldest_hours)
-                  : 'none waiting'
-              }
-              onClick={() => navigate('/approvals')}
-            />
-            <StatTile
-              Icon={TreePalm}
-              tone="sky"
-              value={ptoThisWeek}
-              label={weekOffset < 0 ? 'PTO that week' : 'PTO this week'}
-              info={infoTextFor('PTO this week')}
-              hint={`${overview?.pending_time_off_count ?? 0} requests pending`}
-            />
-            <StatTile
-              Icon={CheckCircle2}
-              tone="emerald"
-              value={overview?.rejected_recent_count ?? 0}
-              label="Recent rejections"
-              info={infoTextFor('Recent rejections')}
-              hint={overview?.rejected_recent_count ? 'needs follow-up' : 'all clear'}
-            />
-          </div>
-
           {/* Tiles render in the user's customized order, hidden ones skipped.
               Each tile's JSX is keyed in tileNodes; the registry/prefs drive
-              which appear and in what sequence. */}
+              which appear and in what sequence. The top stat strip and the
+              team-attendance tile are registered tiles too, so they follow the
+              same show/hide/reorder rules as everything else. */}
           {(() => {
             const tileNodes: Partial<Record<ManagerTileKey, React.ReactNode>> = {};
+
+            // Summary stat strip (team, approvals, PTO, rejections).
+            tileNodes['stats'] = (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatTile
+                  Icon={Users}
+                  tone="primary"
+                  value={`${onTrack}/${overview?.team_size ?? 0}`}
+                  label="Team on track"
+                  info={infoTextFor('Team on track')}
+                  hint={weekOffset < 0 ? 'full week' : 'as of today'}
+                />
+                <StatTile
+                  Icon={Clock}
+                  tone="amber"
+                  value={pending}
+                  label="Approvals pending"
+                  info={infoTextFor('Approvals pending')}
+                  hint={
+                    overview?.pending_approvals_oldest_hours != null
+                      ? describeAge(overview.pending_approvals_oldest_hours)
+                      : 'none waiting'
+                  }
+                  onClick={() => navigate('/approvals')}
+                />
+                <StatTile
+                  Icon={TreePalm}
+                  tone="sky"
+                  value={ptoThisWeek}
+                  label={weekOffset < 0 ? 'PTO that week' : 'PTO this week'}
+                  info={infoTextFor('PTO this week')}
+                  hint={`${overview?.pending_time_off_count ?? 0} requests pending`}
+                />
+                <StatTile
+                  Icon={CheckCircle2}
+                  tone="emerald"
+                  value={overview?.rejected_recent_count ?? 0}
+                  label="Recent rejections"
+                  info={infoTextFor('Recent rejections')}
+                  hint={overview?.rejected_recent_count ? 'needs follow-up' : 'all clear'}
+                />
+              </div>
+            );
+
+            // Team attendance — a small "Who's in" tile (clock-in/out presence).
+            tileNodes['attendance'] = <TeamAttendanceTile />;
 
             tileNodes['project-health'] = (
               <ProjectsWidget
