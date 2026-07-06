@@ -12,6 +12,7 @@ from app.models.control.platform_audit import PlatformAuditCategory, PlatformAud
 from app.models.service_token import ServiceToken
 from app.schemas import (
     TenantAdminCreate,
+    TenantAdminUpdate,
     TenantCreate,
     TenantResponse,
     TenantUpdate,
@@ -361,6 +362,109 @@ async def add_tenant_admin_endpoint(
         actor=current_user,
     )
     return result
+
+
+async def _count_tenant_admins(tdb, tenant_id: int) -> int:
+    """Admins in a tenant by MULTI-ROLE membership (active role ADMIN OR ADMIN in
+    the roles array). Used for the last-admin guard."""
+    from sqlalchemy import func as _func, or_ as _or, select as _select
+    return int((await tdb.execute(
+        _select(_func.count()).select_from(User).where(
+            User.tenant_id == tenant_id,
+            _or(User.role == UserRole.ADMIN, User.roles.contains(["ADMIN"])),
+        )
+    )).scalar() or 0)
+
+
+@router.patch("/{tenant_id}/admins/{user_id}", status_code=status.HTTP_200_OK)
+async def edit_tenant_admin_endpoint(
+    tenant_id: int,
+    user_id: int,
+    payload: TenantAdminUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("PLATFORM_ADMIN")),
+):
+    """Edit a tenant admin's name/email (PLATFORM_ADMIN only). Routes to the
+    tenant's own DB; ``update_user`` syncs the email/name to the shared-DB
+    email->tenant index so login keeps working."""
+    from app.db_tenant import tenant_session
+    from app.crud.user import update_user, get_user_by_email, get_user_by_id
+    from app.schemas import UserUpdate
+
+    tenant = await get_tenant(db, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    async with tenant_session(tenant.slug) as tdb:
+        target = await get_user_by_id(tdb, user_id)
+        if target is None or target.tenant_id != tenant_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin not found in this tenant.")
+        # New email must not collide with a DIFFERENT user in this tenant.
+        if payload.email is not None and str(payload.email).lower() != (target.email or "").lower():
+            clash = await get_user_by_email(tdb, str(payload.email))
+            if clash is not None and clash.id != target.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"{payload.email} already belongs to a user in this tenant.",
+                )
+        fields = payload.model_dump(exclude_unset=True)
+        if not fields:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nothing to update.")
+        await update_user(tdb, target, UserUpdate(**fields))
+        await tdb.commit()
+        return {"id": target.id, "full_name": target.full_name, "email": target.email}
+
+
+@router.delete("/{tenant_id}/admins/{user_id}", status_code=status.HTTP_200_OK)
+async def remove_tenant_admin_endpoint(
+    tenant_id: int,
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("PLATFORM_ADMIN")),
+):
+    """Remove ADMIN rights from a tenant admin (PLATFORM_ADMIN only). This does
+    NOT delete the account: it strips ADMIN from the user's roles and reassigns
+    their active role. Guarded so a tenant is never left with zero admins."""
+    from app.db_tenant import tenant_session
+    from app.crud.user import update_user, get_user_by_id
+    from app.schemas import UserUpdate
+
+    tenant = await get_tenant(db, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    async with tenant_session(tenant.slug) as tdb:
+        target = await get_user_by_id(tdb, user_id)
+        if target is None or target.tenant_id != tenant_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin not found in this tenant.")
+
+        is_admin = target.role == UserRole.ADMIN or "ADMIN" in (target.roles or [])
+        if not is_admin:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This user is not an admin.")
+
+        # Last-admin guard: don't strip the only admin's rights.
+        if await _count_tenant_admins(tdb, tenant_id) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Can't remove the only admin. Add another admin first.",
+            )
+
+        # New role set = current roles minus ADMIN; empty -> EMPLOYEE. New active
+        # role = keep it unless it was ADMIN, then fall to the first remaining.
+        remaining = [r for r in (target.roles or []) if r != "ADMIN"]
+        if not remaining:
+            remaining = ["EMPLOYEE"]
+        new_active = target.role.value if target.role != UserRole.ADMIN else remaining[0]
+
+        await update_user(
+            tdb, target,
+            UserUpdate(
+                roles=[UserRole(r) for r in remaining],
+                role=UserRole(new_active),
+            ),
+        )
+        await tdb.commit()
+        return {"id": target.id, "email": target.email, "removed_admin": True}
 
 
 @router.get("/{tenant_id}", response_model=TenantResponse)

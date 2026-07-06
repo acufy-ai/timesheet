@@ -12,7 +12,7 @@ import {
   Users,
   Wrench,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { ComponentType } from 'react';
 
 import { Card, StatTile, WorkspaceHeader } from '@/components/ui';
@@ -54,6 +54,7 @@ function relTime(iso: string): string {
 
 // Platform-admin fleet dashboard: cross-tenant summary metrics + a health grid.
 export function PlatformDashboardPage() {
+  const navigate = useNavigate();
   const summary = usePlatformSummary();
   const health = usePlatformHealth();
   // Recent activity: 7 most recent control-plane events (same endpoint as
@@ -71,7 +72,7 @@ export function PlatformDashboardPage() {
         <Card className="px-4 py-6 text-sm text-rose-600 dark:text-rose-300">Couldn't load the platform summary. You may not have platform-admin access.</Card>
       ) : summary.data ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatTile Icon={Building2} tone="primary" value={summary.data.active_tenants} label="Active tenants" hint={summary.data.active_tenants_delta ?? undefined} />
+          <StatTile Icon={Building2} tone="primary" value={summary.data.active_tenants} label="Active tenants" hint={summary.data.active_tenants_delta ?? undefined} onClick={() => navigate('/platform/tenants')} />
           <StatTile Icon={Users} tone="sky" value={summary.data.total_users} label="Total users" hint={summary.data.total_users_delta ?? undefined} />
           <StatTile Icon={TrendingUp} tone="violet" value={summary.data.fetch_jobs_24h} label="Fetch jobs (24h)" hint={summary.data.fetch_jobs_24h_delta ?? undefined} />
           <StatTile Icon={Clock} tone="emerald" value={`${Math.round(summary.data.hours_logged_this_week)}h`} label="Hours this week" hint={summary.data.hours_logged_delta ?? undefined} />

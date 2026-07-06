@@ -22,6 +22,9 @@ export function UtilityBar() {
   // them), and the portal isn't part of the timer context. Covers all three
   // client roles (CLIENT / CLIENT_MANAGER / CLIENT_EMPLOYEE).
   const isClient = isClientUser(user);
+  // Platform admins have no tenant, so tenant-scoped personal controls (clock
+  // in/out, timer) don't apply to them.
+  const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
   const tenantQ = useMyTenant();
   const workspaceName = tenantQ.data?.name;
 
@@ -82,7 +85,7 @@ export function UtilityBar() {
             <span className="max-w-[160px] truncate">{workspaceName}</span>
           </span>
         ) : null}
-        {!isClient ? <TopbarClock /> : null}
+        {!isClient && !isPlatformAdmin ? <TopbarClock /> : null}
         {!isClient ? <TopbarTimer /> : null}
         <ThemePicker />
         {!isClient ? <NotificationsBell /> : null}

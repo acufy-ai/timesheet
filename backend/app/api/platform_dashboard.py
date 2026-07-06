@@ -34,8 +34,9 @@ from app.models.control import (
     TenantProvisioningJob,
 )
 from app.models.control.tenant import ControlTenantStatus
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntry, TimeEntryStatus
+from app.models.ingested_email import IngestedEmail
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,20 @@ class TenantStatsResponse(BaseModel):
     stats: dict[int, TenantStatsEntry]
 
 
+class TenantAdminEntry(BaseModel):
+    """One admin of a tenant (by multi-role membership)."""
+
+    id: int
+    full_name: str
+    email: str
+    is_active_role: bool  # True if ADMIN is their currently-active role
+    last_login_at: Optional[datetime] = None
+
+
+class TenantAdminsResponse(BaseModel):
+    admins: list[TenantAdminEntry]
+
+
 # ── Dashboard: summary ──────────────────────────────────────────────
 
 
@@ -221,12 +236,13 @@ async def get_dashboard_summary(
         )
         tenants = list(tenants_q.scalars().all())
 
-    # Fan-out across tenant DBs for user count + hours-this-week.
+    # Fan-out across tenant DBs for user count + hours-this-week + fetch jobs.
     total_users = 0
     hours_this_week = 0.0
-    week_start = (datetime.now(timezone.utc).date() - timedelta(
-        days=datetime.now(timezone.utc).date().weekday()
-    ))
+    fetch_jobs_24h = 0
+    now = datetime.now(timezone.utc)
+    week_start = now.date() - timedelta(days=now.date().weekday())
+    day_ago = now - timedelta(hours=24)
 
     for tenant in tenants:
         try:
@@ -239,13 +255,16 @@ async def get_dashboard_summary(
         try:
             async with factory() as tenant_session:
                 count = await tenant_session.scalar(
-                    select(func.count()).select_from(User)
+                    select(func.count()).select_from(User).where(
+                        User.tenant_id == tenant.id
+                    )
                 )
                 total_users += int(count or 0)
 
                 hours = await tenant_session.scalar(
                     select(func.coalesce(func.sum(TimeEntry.hours), 0)).where(
                         and_(
+                            TimeEntry.tenant_id == tenant.id,
                             TimeEntry.entry_date >= week_start,
                             TimeEntry.status.in_(
                                 [
@@ -257,6 +276,19 @@ async def get_dashboard_summary(
                     )
                 )
                 hours_this_week += float(hours or 0)
+
+                # Fetch jobs (24h) = emails fetched across all mailboxes in the
+                # last 24h (IngestedEmail.fetched_at). Real signal, replacing the
+                # old hardcoded 0 / "Pending wiring" stub.
+                fetched = await tenant_session.scalar(
+                    select(func.count()).select_from(IngestedEmail).where(
+                        and_(
+                            IngestedEmail.tenant_id == tenant.id,
+                            IngestedEmail.fetched_at >= day_ago,
+                        )
+                    )
+                )
+                fetch_jobs_24h += int(fetched or 0)
         except Exception as exc:  # noqa: BLE001 - per-tenant resilience
             logger.warning(
                 "dashboard_summary: tenant %s contributed zero (%s)",
@@ -264,12 +296,7 @@ async def get_dashboard_summary(
                 exc,
             )
 
-    # Fetch jobs in the last 24h: the worker writes to the per-tenant
-    # ingestion_jobs table, but the count there isn't currently surfaced
-    # to the control plane. For now we surface 0 with a "TBD" detail to
-    # match the dashboard spec; a follow-up will pipe job counts through.
-    fetch_jobs_24h = 0
-    fetch_jobs_delta = "Pending wiring"
+    fetch_jobs_delta = "emails fetched" if fetch_jobs_24h else "none in last 24h"
 
     return DashboardSummary(
         active_tenants=active_tenants,
@@ -819,7 +846,6 @@ async def get_tenant_stats(
     Tenants we can't reach come back with ``error`` set so the UI can
     label them honestly.
     """
-    from app.models.user import UserRole
 
     stats: dict[int, TenantStatsEntry] = {}
 
@@ -846,10 +872,17 @@ async def get_tenant_stats(
                         User.tenant_id == tenant.id
                     )
                 )
+                # Count admins by MULTI-ROLE membership, not just the active
+                # role. A user can be an admin (ADMIN in users.roles) while their
+                # active `role` is something else after a role switch — counting
+                # only User.role == ADMIN undercounts those.
                 admin_count = await tenant_session.scalar(
                     select(func.count()).select_from(User).where(
                         User.tenant_id == tenant.id,
-                        User.role == UserRole.ADMIN,
+                        or_(
+                            User.role == UserRole.ADMIN,
+                            User.roles.contains(["ADMIN"]),
+                        ),
                     )
                 )
                 last_login = await tenant_session.scalar(
@@ -872,3 +905,47 @@ async def get_tenant_stats(
             stats[tenant.id] = TenantStatsEntry(error=str(exc)[:200])
 
     return TenantStatsResponse(stats=stats)
+
+
+@router.get("/tenants/{tenant_id}/admins", response_model=TenantAdminsResponse)
+async def get_tenant_admins(
+    tenant_id: int,
+    _: User = Depends(require_role("PLATFORM_ADMIN")),
+) -> TenantAdminsResponse:
+    """List a tenant's admins by MULTI-ROLE membership (ADMIN in users.roles OR
+    the active role is ADMIN). Counts/lists admins a role-switch would otherwise
+    hide. Routes to the tenant's own DB (isolated) or the shared legacy DB."""
+    async with AsyncControlSessionLocal() as control:
+        tenant = (await control.execute(
+            select(ControlTenant).where(ControlTenant.id == tenant_id)
+        )).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found.")
+
+    try:
+        factory = await get_session_factory_for_slug(tenant.slug)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Tenant DB not resolvable.")
+
+    async with factory() as tenant_session:
+        rows = (await tenant_session.execute(
+            select(User).where(
+                User.tenant_id == tenant.id,
+                or_(
+                    User.role == UserRole.ADMIN,
+                    User.roles.contains(["ADMIN"]),
+                ),
+            ).order_by(User.full_name)
+        )).scalars().all()
+
+    admins = [
+        TenantAdminEntry(
+            id=u.id,
+            full_name=u.full_name or u.email,
+            email=u.email,
+            is_active_role=(u.role == UserRole.ADMIN),
+            last_login_at=u.last_login_at,
+        )
+        for u in rows
+    ]
+    return TenantAdminsResponse(admins=admins)

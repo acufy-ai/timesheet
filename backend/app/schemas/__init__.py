@@ -2177,6 +2177,12 @@ class TenantAdminCreate(BaseModel):
     email: EmailStr
 
 
+class TenantAdminUpdate(BaseModel):
+    """Edit a tenant admin's name / email (PLATFORM_ADMIN only)."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[EmailStr] = None
+
+
 class TenantUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     slug: Optional[str] = Field(None, min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
