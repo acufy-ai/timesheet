@@ -106,29 +106,38 @@ export function PlatformTenantDetailPage() {
   }
   async function runLifecycle() {
     if (!confirmAction) return;
-    const needsToken = confirmAction !== 'resume';
+    // Non-destructive actions (resume, unarchive) skip the type-to-confirm gate.
+    const needsToken = !['resume', 'unarchive'].includes(confirmAction);
     if (needsToken && confirmName !== t.name) { flashAndFade('err', 'Type the tenant name exactly to confirm.'); return; }
     try {
       await lifecycle.mutateAsync({ id: t.id, action: confirmAction, token: needsToken ? confirmName : undefined });
       const done: Record<string, string> = {
-        mark_inactive: 'marked inactive', suspend: 'suspended', delete: 'deleted', resume: 'resumed',
+        mark_inactive: 'marked inactive', suspend: 'suspended', archive: 'archived', unarchive: 'unarchived', resume: 'resumed',
       };
       setConfirmAction(null); setConfirmName('');
       flashAndFade('ok', `${t.name} ${done[confirmAction] ?? 'updated'}.`);
-      if (confirmAction === 'delete') navigate('/platform/tenants');
+      if (confirmAction === 'archive') navigate('/platform/tenants');
     } catch (err) {
       flashAndFade('err', errText(err, 'Could not apply that action.'));
     }
   }
 
+  // Archived tenants only get "Unarchive" (a real, working restore). Active
+  // tenants can be marked inactive, suspended, or archived. A merely
+  // inactive/suspended (not archived) tenant can be resumed or archived.
   const lifecycleActions: Array<{ action: string; label: string; danger?: boolean }> =
-    t.status === 'active'
-      ? [{ action: 'mark_inactive', label: 'Mark Inactive' }, { action: 'suspend', label: 'Suspend', danger: true }, { action: 'delete', label: 'Delete', danger: true }]
-      : [{ action: 'resume', label: 'Resume' }, { action: 'delete', label: 'Delete', danger: true }];
+    t.is_archived
+      ? [{ action: 'unarchive', label: 'Unarchive' }]
+      : t.status === 'active'
+        ? [{ action: 'mark_inactive', label: 'Mark Inactive' }, { action: 'suspend', label: 'Suspend', danger: true }, { action: 'archive', label: 'Archive', danger: true }]
+        : [{ action: 'resume', label: 'Resume' }, { action: 'archive', label: 'Archive', danger: true }];
+
+  // "resume" and "unarchive" are non-destructive — no type-to-confirm needed.
+  const nonDestructiveActions = new Set(['resume', 'unarchive']);
 
   // Short title-case label for the confirm dialog heading.
   const actionTitle: Record<string, string> = {
-    mark_inactive: 'Mark Inactive', suspend: 'Suspend', delete: 'Delete', resume: 'Resume',
+    mark_inactive: 'Mark Inactive', suspend: 'Suspend', archive: 'Archive', unarchive: 'Unarchive', resume: 'Resume',
   };
   // Grammatical confirm sentence: verb + the tenant name (object) so it never
   // reads "mark inactive Infosys". Returns JSX with the name emphasized.
@@ -139,8 +148,8 @@ export function PlatformTenantDetailPage() {
         return <>This will mark {name} as inactive. Type the tenant name to confirm.</>;
       case 'suspend':
         return <>This will suspend {name}. Type the tenant name to confirm.</>;
-      case 'delete':
-        return <>This will delete {name}. Type the tenant name to confirm.</>;
+      case 'archive':
+        return <>This will archive {name} (a reversible soft-delete). Type the tenant name to confirm.</>;
       default:
         return <>This will update {name}. Type the tenant name to confirm.</>;
     }
@@ -152,7 +161,11 @@ export function PlatformTenantDetailPage() {
       <WorkspaceHeader
         title={t.name}
         description={`/${t.slug}`}
-        primary={t.status === 'active' ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} /> : <TonePill tone={t.status === 'suspended' ? 'danger' : 'neutral'}>{t.status}</TonePill>}
+        primary={t.is_archived
+          ? <TonePill tone="neutral">Archived</TonePill>
+          : t.status === 'active'
+            ? <StatusBadge status="approved" variant="timesheet" label="Active" showIcon={false} />
+            : <TonePill tone={t.status === 'suspended' ? 'danger' : 'neutral'}>{t.status}</TonePill>}
       />
 
       {flash ? (
@@ -180,7 +193,7 @@ export function PlatformTenantDetailPage() {
             <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
               <Detail label="Tenant ID" value={String(t.id)} />
               <Detail label="Slug" value={t.slug} />
-              <Detail label="Status" value={t.status} />
+              <Detail label="Status" value={t.is_archived ? 'archived' : t.status} />
               <Detail label="Timezone" value={t.timezone ?? 'UTC'} />
               <Detail label="Created" value={new Date(t.created_at).toLocaleDateString()} />
               <Detail label="Max mailboxes" value={t.max_mailboxes != null ? String(t.max_mailboxes) : '—'} />
@@ -247,8 +260,10 @@ export function PlatformTenantDetailPage() {
 
       <Modal open={confirmAction != null} onClose={() => setConfirmAction(null)} title={confirmAction ? `Confirm: ${actionTitle[confirmAction] ?? confirmAction}` : 'Confirm'}>
         <div className="space-y-3">
-          {confirmAction === 'resume' ? (
-            <p className="text-sm text-muted-foreground">Resume <strong className="text-foreground">{t.name}</strong>? This re-enables access.</p>
+          {confirmAction && nonDestructiveActions.has(confirmAction) ? (
+            <p className="text-sm text-muted-foreground">
+              {confirmAction === 'unarchive' ? 'Unarchive' : 'Resume'} <strong className="text-foreground">{t.name}</strong>? This restores access.
+            </p>
           ) : (
             <>
               <p className="text-sm text-muted-foreground">{confirmAction ? confirmSentence(confirmAction) : null}</p>
@@ -257,7 +272,12 @@ export function PlatformTenantDetailPage() {
           )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => setConfirmAction(null)}>Cancel</Button>
-            <Button variant={confirmAction === 'resume' ? 'primary' : 'destructive'} size="sm" onClick={() => void runLifecycle()} disabled={lifecycle.isPending || (confirmAction !== 'resume' && confirmName !== t.name)}>
+            <Button
+              variant={confirmAction && nonDestructiveActions.has(confirmAction) ? 'primary' : 'destructive'}
+              size="sm"
+              onClick={() => void runLifecycle()}
+              disabled={lifecycle.isPending || (confirmAction != null && !nonDestructiveActions.has(confirmAction) && confirmName !== t.name)}
+            >
               {lifecycle.isPending ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Applying…</>) : 'Confirm'}
             </Button>
           </div>

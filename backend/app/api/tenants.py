@@ -159,15 +159,14 @@ async def list_all_tenants(
     "show archived" toggle on the list page if/when that's needed.
     """
     tenants = await list_tenants(db)
-    if include_archived:
-        return tenants
-    # Filter against the control-plane is_archived flag. Tenants not
-    # mirrored in the control plane (legacy / half-provisioned) are
-    # treated as not-archived.
+    # Resolve the control-plane is_archived flag per tenant so the response
+    # carries it (the legacy tenant row doesn't). Also used to filter the
+    # default list.
     from app.models.control import ControlTenant
     from app.db_control import AsyncControlSessionLocal as ControlSession
 
     archived_ids: set[int] = set()
+    control_reachable = True
     try:
         async with ControlSession() as control_db:
             rows = await control_db.execute(
@@ -175,11 +174,20 @@ async def list_all_tenants(
             )
             archived_ids = {row[0] for row in rows.all()}
     except Exception:  # noqa: BLE001 - control DB unreachable, fail open
-        # If we can't reach the control plane, return the unfiltered
-        # list rather than 500 the whole page. The Advanced tab won't
-        # be reachable in this state anyway.
-        return tenants
-    return [t for t in tenants if t.id not in archived_ids]
+        control_reachable = False
+
+    if not include_archived:
+        # If the control plane is unreachable we can't tell which are archived;
+        # return the unfiltered list rather than 500 the page.
+        if control_reachable:
+            tenants = [t for t in tenants if t.id not in archived_ids]
+
+    def _to_resp(t) -> TenantResponse:
+        r = TenantResponse.model_validate(t)
+        r.is_archived = t.id in archived_ids
+        return r
+
+    return [_to_resp(t) for t in tenants]
 
 
 @router.post("", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
@@ -711,31 +719,54 @@ async def update_tenant_lifecycle(
         new_is_archived = False
         verb = "resumed"
         severity = PlatformAuditSeverity.info
-    elif body.action == TenantLifecycleAction.delete:
+    elif body.action in (TenantLifecycleAction.archive, TenantLifecycleAction.delete):
+        # Archive = soft-delete. (``delete`` is the legacy alias.) Suspend the
+        # tenant AND set the archive flag.
         new_status_value = "suspended"
         new_is_archived = True
-        verb = "deleted (archived)"
+        verb = "archived"
         severity = PlatformAuditSeverity.critical
+    elif body.action == TenantLifecycleAction.unarchive:
+        # Restore an archived tenant to active.
+        new_status_value = "active"
+        new_is_archived = False
+        verb = "unarchived"
+        severity = PlatformAuditSeverity.info
     else:  # pragma: no cover - schema enforces enum
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported lifecycle action: {body.action}",
         )
 
-    # Resume on an archived tenant would defeat the soft-delete; reject.
-    # Tested via the control-plane row, not the legacy mirror, since the
-    # legacy row doesn't carry is_archived.
+    # Read the archive flag up front for the guards below and the audit trail.
+    # Tested via the control-plane row, not the legacy mirror, since the legacy
+    # row doesn't carry is_archived.
     async with ControlSession() as control_db_read:
         control_row = await control_db_read.get(ControlTenant, tenant_id)
         if control_row is not None:
             previous_is_archived = control_row.is_archived
+            # Resume on an archived tenant would defeat the soft-delete; the
+            # correct action is Unarchive.
             if body.action == TenantLifecycleAction.resume and control_row.is_archived:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "Tenant is archived. Resume is not available; "
-                        "an archived tenant must be unarchived manually."
-                    ),
+                    detail="Tenant is archived. Use Unarchive to restore it.",
+                )
+            # Archiving an already-archived tenant is a no-op — reject clearly
+            # instead of silently succeeding.
+            if (
+                body.action in (TenantLifecycleAction.archive, TenantLifecycleAction.delete)
+                and control_row.is_archived
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Tenant is already archived.",
+                )
+            # Unarchiving a non-archived tenant is also a no-op.
+            if body.action == TenantLifecycleAction.unarchive and not control_row.is_archived:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Tenant is not archived.",
                 )
 
     # Apply to the legacy tenants table (the source of truth for status

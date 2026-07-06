@@ -7,6 +7,7 @@ export interface Tenant {
   name: string;
   slug: string;
   status: TenantStatus;
+  is_archived?: boolean;
   ingestion_enabled: boolean;
   max_mailboxes?: number | null;
   timezone?: string | null;

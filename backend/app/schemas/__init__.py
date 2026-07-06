@@ -2206,6 +2206,10 @@ class TenantLifecycleAction(str, Enum):
     mark_inactive = "mark_inactive"
     suspend = "suspend"
     resume = "resume"
+    archive = "archive"
+    unarchive = "unarchive"
+    # ``delete`` is a legacy alias for ``archive`` (soft-delete). Kept so older
+    # clients don't break; both set is_archived=true.
     delete = "delete"
 
 
@@ -2238,6 +2242,10 @@ class TenantResponse(BaseModel):
     name: str
     slug: str
     status: TenantStatus
+    # Soft-delete flag from the control plane. Set by the route handler (the
+    # legacy tenant row doesn't carry it), so archived tenants render as
+    # "Archived" instead of falling back to their status ("suspended").
+    is_archived: bool = False
     ingestion_enabled: bool = False
     max_mailboxes: Optional[int] = None
     timezone: Optional[str] = None
