@@ -43,6 +43,30 @@ export function useAddTenantAdmin() {
   });
 }
 
+// Shared invalidation for admin mutations: refresh the admin list + counts.
+function invalidateAdmins(qc: ReturnType<typeof useQueryClient>, id: number) {
+  void qc.invalidateQueries({ queryKey: ['platform', 'tenant-admins', id] });
+  void qc.invalidateQueries({ queryKey: ['platform', 'tenant-stats'] });
+}
+
+export function useUpdateTenantAdmin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, userId, full_name, email }: { id: number; userId: number; full_name?: string; email?: string }) =>
+      platformApi.updateTenantAdmin(id, userId, { full_name, email }).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateAdmins(qc, v.id),
+  });
+}
+
+export function useRemoveTenantAdmin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, userId }: { id: number; userId: number }) =>
+      platformApi.removeTenantAdmin(id, userId).then((r) => r.data),
+    onSuccess: (_d, v) => invalidateAdmins(qc, v.id),
+  });
+}
+
 export function useUpdateTenant() {
   const qc = useQueryClient();
   return useMutation({
@@ -131,6 +155,16 @@ export function useTenantStats(enabled = true) {
     queryKey: ['platform', 'tenant-stats'],
     queryFn: () => platformApi.tenantStats().then((r) => r.data),
     enabled,
+    staleTime: 60_000,
+  });
+}
+
+// A tenant's admins (by multi-role membership).
+export function useTenantAdmins(id: number | null) {
+  return useQuery({
+    queryKey: ['platform', 'tenant-admins', id],
+    queryFn: () => platformApi.tenantAdmins(id as number).then((r) => r.data),
+    enabled: id != null,
     staleTime: 60_000,
   });
 }

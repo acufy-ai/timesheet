@@ -37,6 +37,7 @@ import type {
   SmtpConfig,
   SmtpConfigUpdate,
   Tenant,
+  TenantAdminEntry,
   TenantFeatures,
   TenantStatsEntry,
 } from '@/types/platform';
@@ -934,6 +935,12 @@ export const platformApi = {
   createTenant: (data: CreateTenantBody) => api.post<Tenant>('/tenants', data),
   addTenantAdmin: (id: number, data: { full_name: string; email: string }) =>
     api.post<{ id: number; email: string; invited: boolean }>(`/tenants/${id}/admins`, data),
+  // Edit a tenant admin's name/email.
+  updateTenantAdmin: (id: number, userId: number, data: { full_name?: string; email?: string }) =>
+    api.patch<{ id: number; full_name: string; email: string }>(`/tenants/${id}/admins/${userId}`, data),
+  // Remove ADMIN rights from a tenant admin (keeps the account).
+  removeTenantAdmin: (id: number, userId: number) =>
+    api.delete<{ id: number; email: string; removed_admin: boolean }>(`/tenants/${id}/admins/${userId}`),
   updateTenant: (id: number, data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; max_mailboxes: number; timezone: string }>) =>
     api.patch<Tenant>(`/tenants/${id}`, data),
   tenantLifecycle: (id: number, action: string, confirmation_token?: string) =>
@@ -960,6 +967,8 @@ export const platformApi = {
   deleteSmtp: () => api.delete('/platform/settings/smtp'),
   // Per-tenant compact stats (user/admin counts, last activity), keyed by id.
   tenantStats: () => api.get<{ stats: Record<number, TenantStatsEntry> }>('/platform/tenants/stats'),
+  // A tenant's admins (by multi-role membership).
+  tenantAdmins: (id: number) => api.get<{ admins: TenantAdminEntry[] }>(`/platform/tenants/${id}/admins`),
   // Per-tenant feature flags (read + partial update).
   tenantFeatures: (id: number) => api.get<TenantFeatures>(`/tenants/${id}/features`),
   updateTenantFeatures: (id: number, updates: Partial<Omit<TenantFeatures, 'tenant_id'>>) =>

@@ -23,6 +23,15 @@ export interface TenantStatsEntry {
   error?: string | null;
 }
 
+// A tenant's admins by multi-role membership (GET /platform/tenants/{id}/admins).
+export interface TenantAdminEntry {
+  id: number;
+  full_name: string;
+  email: string;
+  is_active_role: boolean;
+  last_login_at?: string | null;
+}
+
 // Per-tenant feature flags (GET/PATCH /tenants/{id}/features).
 export interface TenantFeatures {
   tenant_id: number;

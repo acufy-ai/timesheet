@@ -1,34 +1,32 @@
 import { useState } from 'react';
-import { ArrowLeft, Copy, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, Check, Loader2, Pencil, Plus, ShieldMinus, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Button, Card, FieldError, Input, Modal, RequiredMark, StatusBadge, Toast, TonePill, WorkspaceHeader } from '@/components/ui';
 import {
   useAddTenantAdmin,
-  useCreateServiceToken,
-  useProvisionSystemUser,
-  useRevokeServiceToken,
-  useServiceTokens,
+  useRemoveTenantAdmin,
+  useTenantAdmins,
   useTenantFeatures,
   useTenantLifecycle,
   useTenants,
   useTenantStats,
   useUpdateTenant,
+  useUpdateTenantAdmin,
   useUpdateTenantFeatures,
 } from '@/hooks/usePlatform';
-import { cn } from '@/lib/cn';
 
 function errText(err: unknown, fb: string): string {
   const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
   return typeof d === 'string' ? d : fb;
 }
 
-type Tab = 'overview' | 'features' | 'advanced';
-
-// Platform-admin: one tenant's detail across tabs — Overview (details +
-// ingestion toggle + stats), Features (entitlement flags), Advanced (lifecycle
-// + service tokens + provision system user). PA create/delete is intentionally
-// out of scope (PA accounts live in the control DB, no tenant-scoped endpoint).
+// Platform-admin: one tenant's detail on a SINGLE page — stats, details +
+// ingestion toggle, admins (list + add), entitlement features, and advanced
+// (lifecycle + service tokens + provision system user). Laid out in two columns
+// to use the width instead of stretching single fields. PA create/delete is
+// intentionally out of scope (PA accounts live in the control DB).
 export function PlatformTenantDetailPage() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
@@ -38,7 +36,6 @@ export function PlatformTenantDetailPage() {
 
   const tenant = (tenantsQ.data ?? []).find((t) => t.slug === slug);
   const statsQ = useTenantStats(Boolean(tenant));
-  const [tab, setTab] = useState<Tab>('overview');
   const [flash, setFlash] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const flashAndFade = (tone: 'ok' | 'err', text: string) => { setFlash({ tone, text }); window.setTimeout(() => setFlash(null), 5000); };
 
@@ -113,8 +110,11 @@ export function PlatformTenantDetailPage() {
     if (needsToken && confirmName !== t.name) { flashAndFade('err', 'Type the tenant name exactly to confirm.'); return; }
     try {
       await lifecycle.mutateAsync({ id: t.id, action: confirmAction, token: needsToken ? confirmName : undefined });
+      const done: Record<string, string> = {
+        mark_inactive: 'marked inactive', suspend: 'suspended', delete: 'deleted', resume: 'resumed',
+      };
       setConfirmAction(null); setConfirmName('');
-      flashAndFade('ok', `Tenant ${confirmAction.replace('_', ' ')} applied.`);
+      flashAndFade('ok', `${t.name} ${done[confirmAction] ?? 'updated'}.`);
       if (confirmAction === 'delete') navigate('/platform/tenants');
     } catch (err) {
       flashAndFade('err', errText(err, 'Could not apply that action.'));
@@ -123,14 +123,28 @@ export function PlatformTenantDetailPage() {
 
   const lifecycleActions: Array<{ action: string; label: string; danger?: boolean }> =
     t.status === 'active'
-      ? [{ action: 'mark_inactive', label: 'Mark inactive' }, { action: 'suspend', label: 'Suspend', danger: true }, { action: 'delete', label: 'Delete', danger: true }]
+      ? [{ action: 'mark_inactive', label: 'Mark Inactive' }, { action: 'suspend', label: 'Suspend', danger: true }, { action: 'delete', label: 'Delete', danger: true }]
       : [{ action: 'resume', label: 'Resume' }, { action: 'delete', label: 'Delete', danger: true }];
 
-  const TABS: { key: Tab; label: string }[] = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'features', label: 'Features' },
-    { key: 'advanced', label: 'Advanced' },
-  ];
+  // Short title-case label for the confirm dialog heading.
+  const actionTitle: Record<string, string> = {
+    mark_inactive: 'Mark Inactive', suspend: 'Suspend', delete: 'Delete', resume: 'Resume',
+  };
+  // Grammatical confirm sentence: verb + the tenant name (object) so it never
+  // reads "mark inactive Infosys". Returns JSX with the name emphasized.
+  const confirmSentence = (action: string) => {
+    const name = <strong className="text-foreground">{t.name}</strong>;
+    switch (action) {
+      case 'mark_inactive':
+        return <>This will mark {name} as inactive. Type the tenant name to confirm.</>;
+      case 'suspend':
+        return <>This will suspend {name}. Type the tenant name to confirm.</>;
+      case 'delete':
+        return <>This will delete {name}. Type the tenant name to confirm.</>;
+      default:
+        return <>This will update {name}. Type the tenant name to confirm.</>;
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -145,21 +159,17 @@ export function PlatformTenantDetailPage() {
         <Toast tone={flash.tone} message={flash.text} onDismiss={() => setFlash(null)} />
       ) : null}
 
-      {/* Tab rail */}
-      <div className="flex items-center gap-1.5 border-b border-border pb-3">
-        {TABS.map((x) => (
-          <button key={x.key} type="button" onClick={() => setTab(x.key)} className={cn('rounded-full px-3.5 py-1.5 text-sm transition-colors', tab === x.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-primary/5')}>{x.label}</button>
-        ))}
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <StatBox label="Users" value={stats?.user_count != null ? String(stats.user_count) : '—'} />
+        <StatBox label="Admins" value={stats?.admin_count != null ? String(stats.admin_count) : '—'} />
+        <StatBox label="Last activity" value={stats?.last_activity_at ? new Date(stats.last_activity_at).toLocaleDateString() : 'never'} />
       </div>
 
-      {tab === 'overview' ? (
-        <>
-          {/* Stat tiles */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <StatBox label="Users" value={stats?.user_count != null ? String(stats.user_count) : '—'} />
-            <StatBox label="Admins" value={stats?.admin_count != null ? String(stats.admin_count) : '—'} />
-            <StatBox label="Last activity" value={stats?.last_activity_at ? new Date(stats.last_activity_at).toLocaleDateString() : 'never'} />
-          </div>
+      {/* Two-column layout to use the width. Left = details + admins; right =
+          features + advanced. Everything on one page (no tabs). */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div className="space-y-5">
           <Card className="p-4">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm font-semibold text-foreground">Details</p>
@@ -180,14 +190,16 @@ export function PlatformTenantDetailPage() {
               Email ingestion enabled
             </label>
           </Card>
-          <AddAdminCard tenantId={t.id} onFlash={flashAndFade} />
-        </>
-      ) : null}
 
-      {tab === 'features' ? <FeaturesTab tenantId={t.id} onFlash={flashAndFade} /> : null}
+          <AdminsCard tenantId={t.id} onFlash={flashAndFade} />
+        </div>
 
-      {tab === 'advanced' ? (
-        <>
+        <div className="space-y-5">
+          <Card className="p-0">
+            <p className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Features</p>
+            <FeaturesTab tenantId={t.id} onFlash={flashAndFade} />
+          </Card>
+
           <Card className="p-4">
             <p className="mb-1 text-sm font-semibold text-foreground">Lifecycle</p>
             <p className="mb-3 text-xs text-muted-foreground">Destructive actions require typing the tenant name to confirm.</p>
@@ -197,10 +209,8 @@ export function PlatformTenantDetailPage() {
               ))}
             </div>
           </Card>
-          <ServiceTokensCard tenantId={t.id} onFlash={flashAndFade} />
-          <ProvisionCard tenantId={t.id} onFlash={flashAndFade} />
-        </>
-      ) : null}
+        </div>
+      </div>
 
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title={`Edit · ${t.name}`}>
         <div className="space-y-3">
@@ -235,13 +245,13 @@ export function PlatformTenantDetailPage() {
         </div>
       </Modal>
 
-      <Modal open={confirmAction != null} onClose={() => setConfirmAction(null)} title={`Confirm: ${confirmAction?.replace('_', ' ')}`}>
+      <Modal open={confirmAction != null} onClose={() => setConfirmAction(null)} title={confirmAction ? `Confirm: ${actionTitle[confirmAction] ?? confirmAction}` : 'Confirm'}>
         <div className="space-y-3">
           {confirmAction === 'resume' ? (
             <p className="text-sm text-muted-foreground">Resume <strong className="text-foreground">{t.name}</strong>? This re-enables access.</p>
           ) : (
             <>
-              <p className="text-sm text-muted-foreground">This will <strong className="text-foreground">{confirmAction?.replace('_', ' ')}</strong> <strong className="text-foreground">{t.name}</strong>. Type the tenant name to confirm.</p>
+              <p className="text-sm text-muted-foreground">{confirmAction ? confirmSentence(confirmAction) : null}</p>
               <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} placeholder={t.name} autoFocus />
             </>
           )}
@@ -257,13 +267,31 @@ export function PlatformTenantDetailPage() {
   );
 }
 
-// Add an ADMIN to this tenant (created in the tenant DB + emailed a set-password
-// invite). Lets a platform admin seed/grow a tenant's admins anytime.
-function AddAdminCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok' | 'err', m: string) => void }) {
+// Admins of this tenant: the LIST (by multi-role membership) + an inline form to
+// add another (created in the tenant DB + emailed a set-password invite). The
+// list is why "2 admins" now shows both — including a tenant-self-added admin
+// whose active role isn't ADMIN.
+function AdminsCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok' | 'err', m: string) => void }) {
+  const qc = useQueryClient();
+  const adminsQ = useTenantAdmins(tenantId);
   const addAdmin = useAddTenantAdmin();
+  const updateAdmin = useUpdateTenantAdmin();
+  const removeAdmin = useRemoveTenantAdmin();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Inline edit state (one row at a time).
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  // Confirm removing admin rights.
+  const [removeTarget, setRemoveTarget] = useState<{ id: number; name: string } | null>(null);
+  const admins = adminsQ.data?.admins ?? [];
+
+  const errMsg = (err: unknown, fb: string) => {
+    const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    return typeof d === 'string' ? d : fb;
+  };
 
   async function submit() {
     const next: Record<string, string> = {};
@@ -275,17 +303,100 @@ function AddAdminCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'o
     try {
       const r = await addAdmin.mutateAsync({ id: tenantId, full_name: name.trim(), email: email.trim() });
       setName(''); setEmail(''); setErrors({});
+      qc.invalidateQueries({ queryKey: ['platform', 'tenant-admins', tenantId] });
+      qc.invalidateQueries({ queryKey: ['platform', 'tenant-stats'] });
       onFlash('ok', r.invited ? `Admin added — invite emailed to ${r.email}.` : `Admin added (${r.email}). Invite email could not be sent; resend from their account.`);
     } catch (err) {
-      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onFlash('err', typeof d === 'string' ? d : 'Could not add the admin.');
+      onFlash('err', errMsg(err, 'Could not add the admin.'));
+    }
+  }
+
+  function startEdit(a: { id: number; full_name: string; email: string }) {
+    setEditId(a.id); setEditName(a.full_name); setEditEmail(a.email);
+  }
+  async function saveEdit(id: number) {
+    if (!editName.trim() || !editEmail.trim() || !editEmail.includes('@')) {
+      onFlash('err', 'Enter a valid name and email.'); return;
+    }
+    try {
+      await updateAdmin.mutateAsync({ id: tenantId, userId: id, full_name: editName.trim(), email: editEmail.trim() });
+      setEditId(null);
+      onFlash('ok', 'Admin updated.');
+    } catch (err) {
+      onFlash('err', errMsg(err, 'Could not update the admin.'));
+    }
+  }
+  async function confirmRemove() {
+    if (!removeTarget) return;
+    try {
+      await removeAdmin.mutateAsync({ id: tenantId, userId: removeTarget.id });
+      setRemoveTarget(null);
+      onFlash('ok', 'Admin rights removed.');
+    } catch (err) {
+      onFlash('err', errMsg(err, 'Could not remove admin rights.'));
     }
   }
 
   return (
     <Card className="p-4">
-      <p className="mb-1 text-sm font-semibold text-foreground">Add admin</p>
-      <p className="mb-3 text-xs text-muted-foreground">Creates an ADMIN in this workspace and emails them a set-password invite.</p>
+      <p className="mb-1 text-sm font-semibold text-foreground">Admins {admins.length ? `· ${admins.length}` : ''}</p>
+      <p className="mb-3 text-xs text-muted-foreground">Everyone with the ADMIN role in this workspace (including a role they can switch into).</p>
+
+      {adminsQ.isLoading ? (
+        <div className="py-4 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-label="Loading" /></div>
+      ) : admins.length === 0 ? (
+        <p className="mb-3 text-sm text-muted-foreground">No admins yet.</p>
+      ) : (
+        <ul className="mb-3 divide-y divide-border rounded-lg border border-border">
+          {admins.map((a) => (
+            <li key={a.id} className="px-3 py-2">
+              {editId === a.id ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" className="flex-1" />
+                  <Input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="Email" className="flex-1" />
+                  <div className="flex shrink-0 gap-1">
+                    <button type="button" aria-label="Save" disabled={updateAdmin.isPending} onClick={() => void saveEdit(a.id)} className="grid h-7 w-7 place-items-center rounded text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-50">
+                      {updateAdmin.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-4 w-4" />}
+                    </button>
+                    <button type="button" aria-label="Cancel" onClick={() => setEditId(null)} className="grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-foreground/10"><X className="h-4 w-4" /></button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground">{a.full_name}</p>
+                    <p className="truncate text-xs text-muted-foreground">{a.email}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="hidden text-[11px] text-muted-foreground sm:inline">
+                      {a.last_login_at ? `last login ${new Date(a.last_login_at).toLocaleDateString()}` : 'never logged in'}
+                    </span>
+                    <button type="button" aria-label="Edit admin" onClick={() => startEdit(a)} className="grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button type="button" aria-label="Remove admin rights" onClick={() => setRemoveTarget({ id: a.id, name: a.full_name })} className="grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-rose-500/10 hover:text-rose-500"><ShieldMinus className="h-3.5 w-3.5" /></button>
+                  </div>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Modal open={removeTarget != null} onClose={() => setRemoveTarget(null)} title="Remove admin rights">
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Remove admin rights from <strong className="text-foreground">{removeTarget?.name}</strong>? Their account stays, but they'll no longer be an admin of this workspace.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setRemoveTarget(null)}>Cancel</Button>
+            <Button variant="destructive" size="sm" onClick={() => void confirmRemove()} disabled={removeAdmin.isPending}>
+              {removeAdmin.isPending ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Removing…</>) : 'Remove admin'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+
+      <p className="mb-2 text-[13px] font-medium text-foreground">Add admin</p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1">
           <label className="mb-1 block text-[13px] font-medium text-muted-foreground">Name<RequiredMark /></label>
@@ -314,12 +425,12 @@ function FeaturesTab({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok
       .then(() => onFlash('ok', 'Feature updated.'))
       .catch((e) => onFlash('err', errText(e, 'Could not update the feature.')));
   }
-  if (q.isLoading) return <Card className="grid place-items-center py-10 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" /></Card>;
+  if (q.isLoading) return <div className="grid place-items-center py-10 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" aria-label="Loading" /></div>;
   return (
-    <Card className="divide-y divide-border">
+    <div className="divide-y divide-border">
       <FeatureRow label="Custom outbound email" desc="Tenant can configure its own SMTP / OAuth sending." checked={!!f?.custom_outbound_email} disabled={update.isPending} onChange={(v) => toggle('custom_outbound_email', v)} />
       <FeatureRow label="Custom email templates" desc="Tenant can edit invite / reset email templates." checked={!!f?.custom_email_template} disabled={update.isPending} onChange={(v) => toggle('custom_email_template', v)} />
-    </Card>
+    </div>
   );
 }
 
@@ -332,94 +443,6 @@ function FeatureRow({ label, desc, checked, disabled, onChange }: { label: strin
       </span>
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0 rounded border-border accent-[hsl(var(--primary))]" />
     </label>
-  );
-}
-
-function ServiceTokensCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok' | 'err', m: string) => void }) {
-  const q = useServiceTokens(tenantId);
-  const create = useCreateServiceToken();
-  const revoke = useRevokeServiceToken();
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [issuer, setIssuer] = useState('');
-  const [plaintext, setPlaintext] = useState<string | null>(null);
-
-  async function submit() {
-    if (!name.trim() || !issuer.trim()) return;
-    try {
-      const res = await create.mutateAsync({ id: tenantId, name: name.trim(), issuer: issuer.trim() });
-      setPlaintext(res.token ?? null);
-      setName(''); setIssuer(''); setAdding(false);
-      onFlash('ok', 'Service token created. Copy it now — it cannot be shown again.');
-    } catch (e) { onFlash('err', errText(e, 'Could not create the token.')); }
-  }
-
-  return (
-    <Card className="p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-sm font-semibold text-foreground">Service tokens</p>
-        <Button size="sm" variant="secondary" onClick={() => setAdding((v) => !v)}><Plus className="h-3.5 w-3.5" /> New token</Button>
-      </div>
-
-      {plaintext ? (
-        <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
-          <p className="mb-1 text-xs font-medium text-amber-700 dark:text-amber-300">Copy this token now — it will not be shown again.</p>
-          <div className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded bg-card px-2 py-1 text-xs text-foreground">{plaintext}</code>
-            <button type="button" onClick={() => { navigator.clipboard?.writeText(plaintext); }} className="grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-foreground/10"><Copy className="h-3.5 w-3.5" /></button>
-          </div>
-        </div>
-      ) : null}
-
-      {adding ? (
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Label (e.g. Ingestion platform)" className="flex-1" />
-          <Input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Issuer" className="w-40" />
-          <Button size="sm" onClick={() => void submit()} disabled={create.isPending || !name.trim() || !issuer.trim()}>{create.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Create'}</Button>
-        </div>
-      ) : null}
-
-      {q.isLoading ? (
-        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading" />
-      ) : (q.data ?? []).length === 0 ? (
-        <p className="text-sm text-muted-foreground">No service tokens.</p>
-      ) : (
-        <div className="space-y-1.5">
-          {(q.data ?? []).map((tok) => (
-            <div key={tok.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
-              <div className="min-w-0">
-                <p className="truncate text-foreground">{tok.name} {!tok.is_active ? <span className="text-xs text-rose-500">(revoked)</span> : null}</p>
-                <p className="text-xs text-muted-foreground">{tok.issuer}{tok.last_used_at ? ` · last used ${new Date(tok.last_used_at).toLocaleDateString()}` : ' · never used'}</p>
-              </div>
-              {tok.is_active ? (
-                <button type="button" aria-label="Revoke" onClick={() => revoke.mutate({ id: tenantId, tokenId: tok.id })} className="grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-3.5 w-3.5" /></button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function ProvisionCard({ tenantId, onFlash }: { tenantId: number; onFlash: (t: 'ok' | 'err', m: string) => void }) {
-  const provision = useProvisionSystemUser();
-  async function run() {
-    try { await provision.mutateAsync(tenantId); onFlash('ok', 'System user provisioned.'); }
-    catch (e) { onFlash('err', errText(e, 'Could not provision the system user.')); }
-  }
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-foreground">System user</p>
-          <p className="text-xs text-muted-foreground">Provision (or repair) the tenant's ingestion system user.</p>
-        </div>
-        <Button size="sm" variant="secondary" onClick={() => void run()} disabled={provision.isPending}>
-          {provision.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Provision
-        </Button>
-      </div>
-    </Card>
   );
 }
 
