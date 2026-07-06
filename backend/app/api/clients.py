@@ -11,7 +11,7 @@ from app.schemas import (
 )
 from app.crud.client import get_client_by_id, get_client_by_name, create_client, update_client, delete_client, list_clients
 from app.crud.time_entry import count_protected_entries_for_client
-from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review, require_project_management_enabled
 from app.models.client import Client
 from app.models.client_email_domain import ClientEmailDomain
 from app.models.ingested_email import IngestedEmail
@@ -35,7 +35,12 @@ from app.services.activity import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/clients", tags=["clients"])
+# Every client endpoint is part of the project-management module, so gate the
+# whole router: returns 403 when the tenant has PM disabled.
+router = APIRouter(
+    prefix="/clients", tags=["clients"],
+    dependencies=[Depends(require_project_management_enabled)],
+)
 
 
 async def _require_admin_or_reviewer(

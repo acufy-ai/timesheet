@@ -70,7 +70,7 @@ export function useRemoveTenantAdmin() {
 export function useUpdateTenant() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; max_mailboxes: number; timezone: string }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; slug: string; status: string; ingestion_enabled: boolean; project_management_enabled: boolean; max_mailboxes: number; timezone: string }> }) =>
       platformApi.updateTenant(id, data).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['platform', 'tenants'] }),
   });

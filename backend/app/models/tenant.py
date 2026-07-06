@@ -27,6 +27,13 @@ class Tenant(Base, TimestampMixin):
     ingestion_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # Whether the project-management module (clients/projects/tasks/insights) is
+    # available to this tenant. Default true so existing tenants keep it; a
+    # platform admin turns it off deliberately. (Enforcement gating is a later
+    # step; this just persists the flag.)
+    project_management_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
     # Cap on number of mailboxes a tenant can connect. Only meaningful when
     # ingestion_enabled is True. NULL = no cap (legacy / unlimited plans).
     # Default 1 for new ingestion-enabled tenants — platform admin raises it.

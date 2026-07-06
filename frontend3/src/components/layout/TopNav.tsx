@@ -4,6 +4,7 @@ import { Briefcase, ChevronDown, Folder, PanelLeft } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useProjectManagementEnabled } from '@/hooks/useProjectManagementEnabled';
 import { clientPortalApi } from '@/api/client';
 import { isClientUser } from '@/lib/clientRole';
 import { cn } from '@/lib/cn';
@@ -30,7 +31,8 @@ export function TopNav({
   canSwitch?: boolean;
 }) {
   const { user } = useAuth();
-  const sections = buildNavigation(user, ingestionEnabled);
+  const pmEnabled = useProjectManagementEnabled();
+  const sections = buildNavigation(user, ingestionEnabled, pmEnabled);
   const isClient = isClientUser(user);
 
   return (

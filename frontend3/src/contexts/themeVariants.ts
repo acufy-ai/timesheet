@@ -44,6 +44,10 @@ export interface ThemeVariant {
     ring: string;
     popover: string;
     popoverForeground: string;
+    /** Optional per-theme danger color. Defaults to rose-600 when omitted, so
+        destructive buttons stay red on every theme. */
+    destructive?: string;
+    destructiveForeground?: string;
   };
   /** Legacy semantic vars consumed by older components in this codebase. */
   legacy: {
@@ -441,6 +445,12 @@ export function applyThemeVariant(variant: ThemeVariant) {
   root.style.setProperty('--ring', t.ring);
   root.style.setProperty('--popover', t.popover);
   root.style.setProperty('--popover-foreground', t.popoverForeground);
+  // Destructive is a semantic danger color, kept consistent (rose-600) across
+  // every theme. The variants don't define it, so set it explicitly here —
+  // otherwise a themed view can leave --destructive unset/stale and destructive
+  // buttons (Suspend / Archive / delete confirms) render pale instead of red.
+  root.style.setProperty('--destructive', t.destructive ?? '347 77% 50%');
+  root.style.setProperty('--destructive-foreground', t.destructiveForeground ?? '0 0% 100%');
 
   const l = variant.legacy;
   root.style.setProperty('--accent-blue', l.accentBlue);

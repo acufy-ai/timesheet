@@ -3,7 +3,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, get_tenant_db, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_project_management_enabled
+
+# Project-management gate for the task routes. Applied to every task endpoint
+# EXCEPT PATCH /{task_id}/progress, which internal assignees use to update their
+# own task status/description regardless of the PM module.
+_PM_GATE = [Depends(require_project_management_enabled)]
 from app.crud.task import (
     create_task,
     delete_task,
@@ -127,7 +132,7 @@ from app.services.activity import (
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.get("", response_model=list[TaskWithProject])
+@router.get("", response_model=list[TaskWithProject], dependencies=_PM_GATE)
 async def list_tasks(
     project_id: Optional[int] = Query(None),
     active_only: bool = Query(True),
@@ -155,7 +160,7 @@ async def list_tasks(
     return await _attach_assignees(db, tasks)
 
 
-@router.get("/{task_id}", response_model=TaskWithProject)
+@router.get("/{task_id}", response_model=TaskWithProject, dependencies=_PM_GATE)
 async def get_task(
     task_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -188,7 +193,7 @@ async def get_task(
     return await _attach_assignees(db, task)
 
 
-@router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, dependencies=_PM_GATE)
 async def create_task_endpoint(
     payload: TaskCreate,
     db: AsyncSession = Depends(get_tenant_db),
@@ -281,7 +286,7 @@ async def create_task_endpoint(
     return await _attach_assignees(db, new_task)
 
 
-@router.put("/{task_id}", response_model=TaskResponse)
+@router.put("/{task_id}", response_model=TaskResponse, dependencies=_PM_GATE)
 async def update_task_endpoint(
     task_id: int,
     payload: TaskUpdate,
@@ -446,7 +451,7 @@ async def update_task_progress(
     }
 
 
-@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=_PM_GATE)
 async def delete_task_endpoint(
     task_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -524,7 +529,7 @@ async def _dependency_to_response(db: AsyncSession, dep) -> TaskDependencyRespon
     )
 
 
-@router.get("/dependencies/project/{project_id}", response_model=list[TaskDependencyResponse])
+@router.get("/dependencies/project/{project_id}", response_model=list[TaskDependencyResponse], dependencies=_PM_GATE)
 async def list_task_dependencies(
     project_id: int,
     db: AsyncSession = Depends(get_tenant_db),
@@ -559,7 +564,7 @@ async def list_task_dependencies(
     ]
 
 
-@router.post("/dependencies", response_model=TaskDependencyResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/dependencies", response_model=TaskDependencyResponse, status_code=status.HTTP_201_CREATED, dependencies=_PM_GATE)
 async def create_task_dependency(
     payload: TaskDependencyCreate,
     db: AsyncSession = Depends(get_tenant_db),
@@ -589,7 +594,7 @@ async def create_task_dependency(
     return await _dependency_to_response(db, dep)
 
 
-@router.delete("/dependencies/{dependency_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/dependencies/{dependency_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=_PM_GATE)
 async def delete_task_dependency(
     dependency_id: int,
     db: AsyncSession = Depends(get_tenant_db),

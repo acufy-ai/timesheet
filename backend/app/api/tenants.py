@@ -141,6 +141,19 @@ async def get_my_tenant(
     payload = TenantResponse.model_validate(tenant)
     payload.has_logo = bool(getattr(tenant, "logo_storage_key", None))
     payload.logo_mime_type = getattr(tenant, "logo_mime_type", None)
+    # Overlay the project-management flag from the CONTROL PLANE (the source of
+    # truth the platform admin writes). For an isolated tenant, ``tenant`` here is
+    # the per-tenant DB row, which isn't synced on the PATCH — so read control.
+    try:
+        from app.models.control import ControlTenant
+        async with AsyncControlSessionLocal() as control_db:
+            ctrl = await control_db.get(ControlTenant, tenant.id)
+            if ctrl is not None:
+                payload.project_management_enabled = bool(
+                    getattr(ctrl, "project_management_enabled", True)
+                )
+    except Exception:  # noqa: BLE001 — control plane down: keep the local value
+        pass
     return respond_with_etag(request, response, payload.model_dump(mode="json"))
 
 
@@ -510,6 +523,7 @@ async def update_tenant_endpoint(
     previous_slug = tenant.slug
     previous_status = tenant.status
     previous_ingestion = tenant.ingestion_enabled
+    previous_pm = tenant.project_management_enabled
     updated_tenant = await update_tenant(db, tenant, **tenant_in.model_dump(exclude_unset=True))
 
     # Mirror name / slug / status / ingestion_enabled into the control
@@ -524,6 +538,7 @@ async def update_tenant_endpoint(
         or previous_slug != updated_tenant.slug
         or previous_status != updated_tenant.status
         or previous_ingestion != updated_tenant.ingestion_enabled
+        or previous_pm != updated_tenant.project_management_enabled
     ):
         from app.models.control import ControlTenant
         from app.models.control.tenant import ControlTenantStatus
@@ -543,6 +558,7 @@ async def update_tenant_endpoint(
                     slug=updated_tenant.slug,
                     status=ControlTenantStatus(updated_tenant.status.value),
                     ingestion_enabled=bool(updated_tenant.ingestion_enabled),
+                    project_management_enabled=bool(updated_tenant.project_management_enabled),
                     max_mailboxes=updated_tenant.max_mailboxes,
                     timezone=updated_tenant.timezone,
                 ))
@@ -551,6 +567,7 @@ async def update_tenant_endpoint(
                 ctrl.slug = updated_tenant.slug
                 ctrl.status = ControlTenantStatus(updated_tenant.status.value)
                 ctrl.ingestion_enabled = bool(updated_tenant.ingestion_enabled)
+                ctrl.project_management_enabled = bool(updated_tenant.project_management_enabled)
             await control_db.commit()
 
     activity_events: list[dict] = []

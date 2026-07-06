@@ -2188,6 +2188,7 @@ class TenantUpdate(BaseModel):
     slug: Optional[str] = Field(None, min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
     status: Optional[TenantStatus] = None
     ingestion_enabled: Optional[bool] = None
+    project_management_enabled: Optional[bool] = None
     max_mailboxes: Optional[int] = Field(None, ge=0)
     # IANA timezone name (e.g. "America/New_York"). ``None`` means "fall back
     # to UTC." Empty string is treated as clearing the value — the endpoint
@@ -2247,6 +2248,7 @@ class TenantResponse(BaseModel):
     # "Archived" instead of falling back to their status ("suspended").
     is_archived: bool = False
     ingestion_enabled: bool = False
+    project_management_enabled: bool = True
     max_mailboxes: Optional[int] = None
     timezone: Optional[str] = None
     # Branding. We expose a boolean and the mime type but never the raw
